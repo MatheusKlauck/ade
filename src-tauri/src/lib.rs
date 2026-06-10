@@ -29,6 +29,12 @@ pub fn run() {
             });
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            ipc::settings::setting_get,
+            ipc::settings::setting_set,
+            ipc::settings::ui_state_get,
+            ipc::settings::ui_state_set,
+        ])
         .run(tauri::generate_context!());
 
     if let Err(e) = result {
