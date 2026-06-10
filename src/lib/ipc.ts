@@ -134,6 +134,10 @@ export function cardDelete(cardId: string): Promise<void> {
   return invoke("card_delete", { cardId });
 }
 
+export function cardDetail(cardId: string): Promise<Card> {
+  return invoke("card_detail", { cardId });
+}
+
 export function cardMove(
   cardId: string,
   toColumnId: string,

@@ -192,6 +192,7 @@ impl serde::Serialize for AdeError { /* serialize as {code, message}; code from 
 | `card_create` | `workspace_id, column_id, title` | `Card` (source=local, position=append §15) |
 | `card_update` | `card_id, title?, body_preview?` | `Card` |
 | `card_move` | `card_id, to_column_id, before_card_id?, after_card_id?` | `Card` — **user drag only**; triggers M4 flow when target column is Doing |
+| `card_delete` | `card_id` | — (deletes local card; emits `evt:board`) |
 | `card_detail` | `card_id` | local: row fields; linked: fetch full issue via §11 |
 | `card_promote` | `card_id` | `Card` — creates GitHub issue (§11), sets source=github. **If the card's column ≠ Backlog, also `add_label` the matching `kanban:*` label (§11) so the column is represented remotely — otherwise the next incremental poll reconciles the card to Backlog (§12 row 7)**. Synchronous, not via outbox |
 | `terminal_open` | `workspace_id, window_id?` | `{pane_id, window_id}` (§8 flow) |

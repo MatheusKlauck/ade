@@ -20,8 +20,8 @@
 ## M2 — Kanban + sync spike
 - [x] M2-T1 Board data layer
 - [x] M2-T2 Positions + rebalance
-- [ ] M2-T3 Board UI (dnd)
-- [ ] M2-T4 Local card detail
+- [x] M2-T3 Board UI (dnd)
+- [x] M2-T4 Local card detail
 - [ ] M2-T5 Sync engine (decision table)
 - [ ] M2-T6 Outbox table ops
 - [ ] M2-T7 GitHub client (wiremock)

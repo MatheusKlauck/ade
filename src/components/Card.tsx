@@ -5,6 +5,7 @@ import type { Card as CardType } from "../lib/ipc";
 interface CardProps {
   card: CardType;
   onDropBefore?: (cardId: string, beforeCardId: string) => void;
+  onDoubleClick?: () => void;
 }
 
 function sourceBadge(card: CardType): string {
@@ -19,7 +20,7 @@ function assigneeInitials(assignee: string | null): string | null {
   return assignee.slice(0, 2).toUpperCase();
 }
 
-export default function Card({ card, onDropBefore }: CardProps) {
+export default function Card({ card, onDropBefore, onDoubleClick }: CardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [over, setOver] = useState(false);
@@ -63,6 +64,7 @@ export default function Card({ card, onDropBefore }: CardProps) {
   return (
     <div
       ref={ref}
+      onDoubleClick={onDoubleClick}
       style={{
         padding: "8px 12px",
         marginBottom: 8,

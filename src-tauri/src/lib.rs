@@ -96,6 +96,7 @@ pub fn run() {
             ipc::board::card_update,
             ipc::board::card_delete,
             ipc::board::card_move,
+            ipc::card::card_detail,
             ipc::github::github_set_token,
             ipc::settings::setting_get,
             ipc::settings::setting_set,

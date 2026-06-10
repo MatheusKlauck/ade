@@ -5,6 +5,7 @@ import {
 import { boardGet, cardCreate, cardMove, subscribeBoard } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
 import Card from "./Card";
+import CardDetail from "./CardDetail";
 
 const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
@@ -15,6 +16,7 @@ export default function Board() {
   const optimisticMove = useBoardStore((s) => s.optimisticMove);
 
   const [newTitle, setNewTitle] = useState("");
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 
   useEffect(() => {
     boardGet("dev").then((res) => {
@@ -71,21 +73,37 @@ export default function Board() {
     (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
   );
 
+  const selectedCard = selectedCardId
+    ? Object.values(cardsByColumn)
+        .flat()
+        .find((c) => c.id === selectedCardId) || null
+    : null;
+
   return (
-    <div style={{ display: "flex", gap: 12, padding: 16, overflowX: "auto" }}>
-      {sortedColumns.map((col) => (
-        <Column
-          key={col.id}
-          column={col}
-          cards={cardsByColumn[col.id] || []}
-          onDropCard={handleDropOnColumn}
-          onDropBeforeCard={handleDropBeforeCard}
-          showNewCardInput={col.name === "Backlog"}
-          newTitle={newTitle}
-          setNewTitle={setNewTitle}
-          onCreateCard={handleCreateCard}
+    <div style={{ display: "flex", flex: 1 }}>
+      <div style={{ display: "flex", gap: 12, padding: 16, overflowX: "auto", flex: 1 }}>
+        {sortedColumns.map((col) => (
+          <Column
+            key={col.id}
+            column={col}
+            cards={cardsByColumn[col.id] || []}
+            onDropCard={handleDropOnColumn}
+            onDropBeforeCard={handleDropBeforeCard}
+            showNewCardInput={col.name === "Backlog"}
+            newTitle={newTitle}
+            setNewTitle={setNewTitle}
+            onCreateCard={handleCreateCard}
+            onCardDoubleClick={setSelectedCardId}
+          />
+        ))}
+      </div>
+      {selectedCardId && (
+        <CardDetail
+          card={selectedCard}
+          onClose={() => setSelectedCardId(null)}
+          onDeleted={() => setSelectedCardId(null)}
         />
-      ))}
+      )}
     </div>
   );
 }
@@ -99,6 +117,7 @@ function Column({
   newTitle,
   setNewTitle,
   onCreateCard,
+  onCardDoubleClick,
 }: {
   column: { id: string; name: string };
   cards: import("../lib/ipc").Card[];
@@ -108,6 +127,7 @@ function Column({
   newTitle: string;
   setNewTitle: (s: string) => void;
   onCreateCard: () => void;
+  onCardDoubleClick: (cardId: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [over, setOver] = useState(false);
@@ -157,6 +177,7 @@ function Column({
             key={card.id}
             card={card}
             onDropBefore={onDropBeforeCard}
+            onDoubleClick={() => onCardDoubleClick(card.id)}
           />
         ))}
       </div>

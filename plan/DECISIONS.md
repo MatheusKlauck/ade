@@ -58,3 +58,8 @@ mudou a API: Entry vive em `keyring_core` com métodos `set_password`, `get_pass
 **Why:** As funções livres `keyring::set_password` / `get_password` / `delete_password`
 não existem em v4.0.1; os métodos Entry estão em `keyring-core`.
 **Where:** `Cargo.toml` (keyring-core), `src/ipc/github.rs`.
+
+## 2026-06-10 — M2-T4
+**What:** `card_delete` added to CONTRACTS §7 table.
+**Why:** The command was implemented in M2-T1 (board.rs) and registered in lib.rs but was missing from the IPC surface table.
+**Where:** CONTRACTS §7.
