@@ -24,7 +24,7 @@
 - [x] M2-T4 Local card detail
 - [x] M2-T5 Sync engine (decision table)
 - [x] M2-T6 Outbox table ops
-- [ ] M2-T7 GitHub client (wiremock)
+- [x] M2-T7 GitHub client (wiremock)
 - [ ] M2-T8 Spike scenarios (3)
 
 ## M3 — Multi-workspace

@@ -1,50 +1,8 @@
 // M2-T5: Sync engine — pure functions, no I/O
-// M2-T7: RemoteIssue will move to gh/types.rs with serde derives.
-// Public types consumed by outbox (T6), gh/types (T7), and worker (T8).
-#![allow(dead_code)]
-// For now we define it here so the engine compiles independently.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RemoteIssue {
-    pub number: u64,
-    pub title: String,
-    pub state: String, // "open" | "closed"
-    pub updated_at: String,
-    pub assignee: Option<String>,
-    pub labels: Vec<String>,
-    pub html_url: String,
-    pub is_pull_request: bool,
-    pub body_preview: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColumnName {
-    Backlog,
-    Doing,
-    Paused,
-    Pr,
-    Done,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SyncAction {
-    CreateCard {
-        issue: RemoteIssue,
-        column: ColumnName,
-    },
-    MoveCard {
-        card_id: String,
-        to: ColumnName,
-    },
-    RefreshCardFields {
-        card_id: String,
-    },
-    TouchRemoteUpdatedAt {
-        card_id: String,
-    },
-    Ignore,
-}
+use crate::gh::types::{ColumnName, RemoteIssue, SyncAction};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CardSnapshot {
     pub card_id: String,
     pub column: ColumnName,
@@ -52,6 +10,7 @@ pub struct CardSnapshot {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PendingIntent {
     pub base_remote_updated_at: Option<String>,
     pub to: ColumnName,
@@ -59,6 +18,7 @@ pub struct PendingIntent {
 
 /// desired_column: closed → Done; has label kanban:doing → Doing;
 /// kanban:paused → Paused; kanban:pr → Pr; else → Backlog.
+#[allow(dead_code)]
 pub fn desired_column(issue: &RemoteIssue) -> ColumnName {
     if issue.state == "closed" {
         return ColumnName::Done;
@@ -76,6 +36,7 @@ pub fn desired_column(issue: &RemoteIssue) -> ColumnName {
 }
 
 /// reconcile: first-match-wins decision table per CONTRACTS §12.
+#[allow(dead_code)]
 pub fn reconcile(
     remote: &RemoteIssue,
     local: Option<&CardSnapshot>,
@@ -130,6 +91,7 @@ pub fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gh::types::{ColumnName, RemoteIssue, SyncAction};
 
     fn make_issue(number: u64, state: &str, labels: &[&str], updated_at: &str) -> RemoteIssue {
         RemoteIssue {
@@ -333,7 +295,6 @@ mod tests {
                             remote.is_pull_request = is_pr;
 
                             let result = reconcile(&remote, local.as_ref(), pending.as_ref());
-
                             // Verify the result is a valid SyncAction variant (not panicking)
                             match result {
                                 SyncAction::CreateCard { .. }

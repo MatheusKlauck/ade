@@ -68,3 +68,8 @@ não existem em v4.0.1; os métodos Entry estão em `keyring-core`.
 **What:** Added `last_attempt_at` column to outbox table via migration 0002.
 **Why:** Backoff calculation needs the timestamp of the most recent failure attempt; CONTRACTS §13 specifies "from created_at+last attempt time" for delay calculation. Added as a new migration (append-only policy).
 **Where:** migrations/0002_outbox_last_attempt.sql, CONTRACTS §4.
+
+## 2026-06-11 — M2-T7
+**What:** Added `reqwest = "0.12" (features: json)` as a direct dependency. Moved `RemoteIssue`, `SyncAction`, `ColumnName` from `sync/engine.rs` to `gh/types.rs`.
+**Why:** GitHub client needs injectable base URL for wiremock testing. `octocrab` doesn't expose a way to override the base URL easily; `reqwest` is already a transitive dep (via octocrab/tauri) and is the standard HTTP client for Rust. Making it a direct dep allows `GitHubClient` to use it with custom base URLs. Types moved per CONTRACTS §2 layout (RemoteIssue → gh/types.rs, §5 serde derives).
+**Where:** Cargo.toml (reqwest added), CONTRACTS §1 (reqwest added), gh/types.rs (new), sync/engine.rs (imports changed).

@@ -13,8 +13,8 @@ Added once in M0-T2 with `cargo add` / `npm install`, then **frozen by committin
 **Rust (src-tauri/Cargo.toml):**
 `tauri` (v2, features: default), `tauri-plugin-dialog` (v2), `portable-pty`, `tokio`
 (features: full), `sqlx` (features: runtime-tokio, sqlite, migrate, chrono), `octocrab`,
-`git2`, `keyring`, `serde` + `serde_json`, `toml`, `thiserror`, `chrono` (serde),
-`uuid` (v4, serde). **dev-deps:** `wiremock`, `tempfile`.
+`reqwest` (features: json), `git2`, `keyring`, `serde` + `serde_json`, `toml`, `thiserror`,
+`chrono` (serde), `uuid` (v4, serde). **dev-deps:** `wiremock`, `tempfile`.
 
 **Frontend (package.json):**
 `react`, `react-dom`, `typescript`, `vite`, `@tauri-apps/api`, `@tauri-apps/plugin-dialog`,
