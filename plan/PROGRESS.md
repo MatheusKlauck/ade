@@ -5,7 +5,7 @@
 - [x] M0-T2 Dependencies frozen (lockfiles committed)
 - [x] M0-T3 DB + migration 0001
 - [x] M0-T4 Error type + notify plumbing
-- [ ] M0-T5 Settings + ui_state commands
+- [x] M0-T5 Settings + ui_state commands
 - [ ] M0-T6 Keychain token storage
 
 ## M1 — Terminal

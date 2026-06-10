@@ -15,6 +15,10 @@ export async function subscribeNotify(
 }
 
 // ---- settings ----
+export function githubSetToken(token: string): Promise<{ login: string }> {
+  return invoke("github_set_token", { token });
+}
+
 export function settingGet(key: string): Promise<string | null> {
   return invoke("setting_get", { key });
 }

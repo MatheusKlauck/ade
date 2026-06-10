@@ -30,6 +30,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ipc::github::github_set_token,
             ipc::settings::setting_get,
             ipc::settings::setting_set,
             ipc::settings::ui_state_get,

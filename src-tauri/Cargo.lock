@@ -9,6 +9,7 @@ dependencies = [
  "chrono",
  "git2",
  "keyring",
+ "keyring-core",
  "octocrab",
  "portable-pty",
  "serde",

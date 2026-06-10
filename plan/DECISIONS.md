@@ -50,3 +50,11 @@ M2-T8 cenário 3 + 2ª asserção).
 **Why:** Worker de sync + handlers IPC escrevem concorrentemente; o lock de escritor único
 do SQLite apareceria como `SQLITE_BUSY` intermitente sem busy timeout.
 **Where:** CONTRACTS §4 (nota), M0.md (M0-T3 steps).
+
+## 2026-06-10 — M0-T6
+**What:** Adicionado `keyring-core = "1.0.0"` como dependência direta. O `keyring` v4.0.1
+mudou a API: Entry vive em `keyring_core` com métodos `set_password`, `get_password`,
+`delete_credential`. `delete_password` não existe.
+**Why:** As funções livres `keyring::set_password` / `get_password` / `delete_password`
+não existem em v4.0.1; os métodos Entry estão em `keyring-core`.
+**Where:** `Cargo.toml` (keyring-core), `src/ipc/github.rs`.
