@@ -22,8 +22,8 @@
 - [x] M2-T2 Positions + rebalance
 - [x] M2-T3 Board UI (dnd)
 - [x] M2-T4 Local card detail
-- [ ] M2-T5 Sync engine (decision table)
-- [ ] M2-T6 Outbox table ops
+- [x] M2-T5 Sync engine (decision table)
+- [x] M2-T6 Outbox table ops
 - [ ] M2-T7 GitHub client (wiremock)
 - [ ] M2-T8 Spike scenarios (3)
 

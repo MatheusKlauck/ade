@@ -63,3 +63,8 @@ não existem em v4.0.1; os métodos Entry estão em `keyring-core`.
 **What:** `card_delete` added to CONTRACTS §7 table.
 **Why:** The command was implemented in M2-T1 (board.rs) and registered in lib.rs but was missing from the IPC surface table.
 **Where:** CONTRACTS §7.
+
+## 2026-06-10 — M2-T6
+**What:** Added `last_attempt_at` column to outbox table via migration 0002.
+**Why:** Backoff calculation needs the timestamp of the most recent failure attempt; CONTRACTS §13 specifies "from created_at+last attempt time" for delay calculation. Added as a new migration (append-only policy).
+**Where:** migrations/0002_outbox_last_attempt.sql, CONTRACTS §4.

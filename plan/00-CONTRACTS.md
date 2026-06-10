@@ -106,6 +106,7 @@ CREATE TABLE outbox (
   base_remote_updated_at TEXT NOT NULL,
   attempts      INTEGER NOT NULL DEFAULT 0,
   last_error    TEXT,
+  last_attempt_at TEXT,
   created_at    TEXT NOT NULL
 );
 
