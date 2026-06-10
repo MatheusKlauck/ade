@@ -45,6 +45,27 @@ pub async fn enqueue(
     Ok(())
 }
 
+/// Load every pending intent for a workspace, regardless of backoff/due state.
+/// Reconcile suspension (§12 Row 4) and conflict-drop (§13 step 1) must consider
+/// ALL pending rows — `due()` only governs when the network sender retries.
+#[allow(dead_code)]
+pub async fn all_for_workspace(
+    db: &DbPool,
+    workspace_id: &str,
+) -> Result<Vec<OutboxRow>, AdeError> {
+    let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
+        "SELECT o.card_id, o.intent, o.payload_json, o.base_remote_updated_at, o.attempts, o.last_error, o.last_attempt_at, o.created_at
+         FROM outbox o JOIN card c ON c.id = o.card_id
+         WHERE c.workspace_id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    Ok(rows)
+}
+
 #[allow(dead_code)]
 pub async fn due(db: &DbPool, now: &str) -> Result<Vec<OutboxRow>, AdeError> {
     let now_dt: DateTime<Utc> = now

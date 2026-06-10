@@ -34,7 +34,7 @@ pub enum SyncAction {
     Ignore,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum ColumnName {
     Backlog,
