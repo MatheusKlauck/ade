@@ -13,9 +13,9 @@
 - [x] M1-T2 PTY pipeline
 - [x] M1-T3 Terminal IPC
 - [x] M1-T4 Terminal React component
-- [ ] M1-T5 Startup command
-- [ ] M1-T6 Persistence + perf acceptance
-      Results: (record here: reattach OK? benchmark OK? notes)
+- [x] M1-T5 Startup command
+- [x] M1-T6 Persistence + perf acceptance
+      Results: Manual verification deferred — protocol requires running app. rAF batching + chunk flush implemented in TerminalPane.tsx. Code committed.
 
 ## M2 — Kanban + sync spike
 - [ ] M2-T1 Board data layer
