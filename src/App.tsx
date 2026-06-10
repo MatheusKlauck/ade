@@ -1,51 +1,46 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from "react";
+import { subscribeNotify } from "./lib/ipc";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [toast, setToast] = useState<{
+    level: string;
+    code: string;
+    message: string;
+  } | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    subscribeNotify((payload) => {
+      setToast(payload);
+      setTimeout(() => setToast(null), 6000);
+    }).then((u) => {
+      unsub = u;
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <div style={{ position: "relative", minHeight: "100vh" }}>
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            top: 16,
+            right: 16,
+            padding: "12px 16px",
+            borderRadius: 6,
+            background: toast.level === "error" ? "#c0392b" : "#2980b9",
+            color: "#fff",
+            zIndex: 9999,
+          }}
+        >
+          <strong>{toast.code}</strong>: {toast.message}
+        </div>
+      )}
+      <h1>ADE</h1>
+      <p>App carregado.</p>
+    </div>
   );
 }
-
-export default App;

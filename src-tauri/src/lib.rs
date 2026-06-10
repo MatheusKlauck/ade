@@ -19,7 +19,7 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -29,6 +29,10 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    if let Err(e) = result {
+        eprintln!("tauri application error: {}", e);
+        std::process::exit(1);
+    }
 }
