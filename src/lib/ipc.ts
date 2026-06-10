@@ -78,3 +78,76 @@ export function terminalKillWindow(
 ): Promise<void> {
   return invoke("terminal_kill_window", { workspaceId, windowId });
 }
+
+// ---- board ----
+export interface BoardGetResult {
+  columns: BoardColumn[];
+  cards: Card[];
+}
+
+export interface BoardColumn {
+  id: string;
+  workspace_id: string;
+  name: string;
+  position: number;
+}
+
+export interface Card {
+  id: string;
+  workspace_id: string;
+  column_id: string;
+  title: string;
+  body_preview: string | null;
+  position: number;
+  source: string;
+  github_issue_number: number | null;
+  github_state: string | null;
+  assignee: string | null;
+  labels_json: string | null;
+  remote_updated_at: string | null;
+  terminal_window_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function boardGet(workspaceId: string): Promise<BoardGetResult> {
+  return invoke("board_get", { workspaceId });
+}
+
+export function cardCreate(
+  workspaceId: string,
+  columnId: string,
+  title: string
+): Promise<Card> {
+  return invoke("card_create", { workspaceId, columnId, title });
+}
+
+export function cardUpdate(
+  cardId: string,
+  title?: string,
+  bodyPreview?: string
+): Promise<Card> {
+  return invoke("card_update", { cardId, title, bodyPreview });
+}
+
+export function cardDelete(cardId: string): Promise<void> {
+  return invoke("card_delete", { cardId });
+}
+
+export function cardMove(
+  cardId: string,
+  toColumnId: string,
+  beforeCardId?: string,
+  afterCardId?: string
+): Promise<Card> {
+  return invoke("card_move", { cardId, toColumnId, beforeCardId, afterCardId });
+}
+
+// ---- events ----
+export function subscribeBoard(
+  cb: (payload: { workspace_id: string; columns: BoardColumn[]; cards: Card[] }) => void
+) {
+  return listen<{ workspace_id: string; columns: BoardColumn[]; cards: Card[] }>("evt:board", (ev) => {
+    cb(ev.payload);
+  });
+}

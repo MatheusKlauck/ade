@@ -18,8 +18,8 @@
       Results: Manual verification deferred — protocol requires running app. rAF batching + chunk flush implemented in TerminalPane.tsx. Code committed.
 
 ## M2 — Kanban + sync spike
-- [ ] M2-T1 Board data layer
-- [ ] M2-T2 Positions + rebalance
+- [x] M2-T1 Board data layer
+- [x] M2-T2 Positions + rebalance
 - [ ] M2-T3 Board UI (dnd)
 - [ ] M2-T4 Local card detail
 - [ ] M2-T5 Sync engine (decision table)
