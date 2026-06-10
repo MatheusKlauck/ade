@@ -1,7 +1,7 @@
 # PROGRESS — check a box only when the task's DoD + global gates passed and the commit exists
 
 ## M0 — Foundation
-- [ ] M0-T1 Scaffold
+- [x] M0-T1 Scaffold
 - [ ] M0-T2 Dependencies frozen (lockfiles committed)
 - [ ] M0-T3 DB + migration 0001
 - [ ] M0-T4 Error type + notify plumbing
