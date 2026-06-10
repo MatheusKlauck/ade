@@ -2,7 +2,7 @@
 
 ## M0 — Foundation
 - [x] M0-T1 Scaffold
-- [ ] M0-T2 Dependencies frozen (lockfiles committed)
+- [x] M0-T2 Dependencies frozen (lockfiles committed)
 - [ ] M0-T3 DB + migration 0001
 - [ ] M0-T4 Error type + notify plumbing
 - [ ] M0-T5 Settings + ui_state commands
