@@ -25,7 +25,7 @@
 - [x] M2-T5 Sync engine (decision table)
 - [x] M2-T6 Outbox table ops
 - [x] M2-T7 GitHub client (wiremock)
-- [ ] M2-T8 Spike scenarios (3)
+- [x] M2-T8 Spike scenarios (3)
 
 ## M3 — Multi-workspace
 - [ ] M3-T1 workspace_create + remote parsing

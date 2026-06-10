@@ -11,11 +11,15 @@ use chrono::Utc;
 
 /// Trait for emitting notifications. In production, this wraps `app.emit`.
 /// In tests, it appends to a Vec for assertion.
+/// `#[allow(dead_code)]`: the worker is not yet wired into the Tauri app — that
+/// lands in M5-T3, which removes the need for these allows.
+#[allow(dead_code)]
 pub trait Notifier: Send + Sync {
     fn notify(&self, level: &str, code: &str, message: &str);
 }
 
 /// A no-op notifier that discards all notifications.
+#[allow(dead_code)]
 pub struct NoopNotifier;
 
 impl Notifier for NoopNotifier {
@@ -23,10 +27,12 @@ impl Notifier for NoopNotifier {
 }
 
 /// A notifier that captures (level, code, message) triples for test assertion.
+#[allow(dead_code)]
 pub struct CaptureNotifier {
     events: std::sync::Mutex<Vec<(String, String, String)>>,
 }
 
+#[allow(dead_code)]
 impl CaptureNotifier {
     pub fn new() -> Self {
         Self {
@@ -41,10 +47,32 @@ impl CaptureNotifier {
 
 impl Notifier for CaptureNotifier {
     fn notify(&self, level: &str, code: &str, message: &str) {
-        self.events
-            .lock()
-            .expect("lock")
-            .push((level.to_string(), code.to_string(), message.to_string()));
+        self.events.lock().expect("lock").push((
+            level.to_string(),
+            code.to_string(),
+            message.to_string(),
+        ));
+    }
+}
+
+/// Parse the `from_column_name` field of an outbox payload into a `ColumnName`.
+/// §13: the conflict check compares this source column against
+/// `desired_column(remote_now)`.
+#[allow(dead_code)]
+fn parse_column_name(payload_json: &str) -> Result<ColumnName, AdeError> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|e| AdeError::Other(format!("outbox payload json: {}", e)))?;
+    let from_col_str = payload
+        .get("from_column_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AdeError::Other("outbox payload missing from_column_name".into()))?;
+    match from_col_str {
+        "Backlog" => Ok(ColumnName::Backlog),
+        "Doing" => Ok(ColumnName::Doing),
+        "Paused" => Ok(ColumnName::Paused),
+        "PR" => Ok(ColumnName::Pr),
+        "Done" => Ok(ColumnName::Done),
+        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
     }
 }
 
@@ -55,6 +83,7 @@ impl Notifier for CaptureNotifier {
 /// 4. Apply actions in one DB transaction
 /// 5. Run outbox sender pass (check each due intent against remote state)
 /// 6. Update sync_state
+#[allow(dead_code)]
 pub async fn run_cycle(
     db: &DbPool,
     gh: &GitHubClient,
@@ -78,13 +107,12 @@ pub async fn run_cycle(
         .ok_or_else(|| AdeError::Other("workspace has no github_repo".into()))?;
 
     // 2. Check sync_state for last_sync
-    let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
-        "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_optional(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let last_sync: Option<String> =
+        sqlx::query_scalar::<_, String>("SELECT last_sync FROM sync_state WHERE workspace_id = ?")
+            .bind(workspace_id)
+            .fetch_optional(db)
+            .await
+            .map_err(AdeError::Db)?;
 
     // 3. Fetch remote issues.
     // §11: the next `last_sync` watermark is captured BEFORE the request starts,
@@ -105,7 +133,8 @@ pub async fn run_cycle(
     .await
     .map_err(AdeError::Db)?;
 
-    let mut local_by_number: std::collections::HashMap<i64, Card> = std::collections::HashMap::new();
+    let mut local_by_number: std::collections::HashMap<i64, Card> =
+        std::collections::HashMap::new();
     for card in &local_cards {
         if let Some(num) = card.github_issue_number {
             local_by_number.insert(num, card.clone());
@@ -124,14 +153,13 @@ pub async fn run_cycle(
     }
 
     // Build column name lookup: column_id -> ColumnName
-    let columns: Vec<crate::models::BoardColumn> =
-        sqlx::query_as::<_, crate::models::BoardColumn>(
-            "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ?",
-        )
-        .bind(workspace_id)
-        .fetch_all(db)
-        .await
-        .map_err(AdeError::Db)?;
+    let columns: Vec<crate::models::BoardColumn> = sqlx::query_as::<_, crate::models::BoardColumn>(
+        "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)?;
 
     let mut col_name_by_id: std::collections::HashMap<String, ColumnName> =
         std::collections::HashMap::new();
@@ -163,22 +191,55 @@ pub async fn run_cycle(
 
         // Build CardSnapshot if local card exists
         let snapshot = local_card.and_then(|card| {
-            col_name_by_id.get(&card.column_id).map(|&col_name| CardSnapshot {
-                card_id: card.id.clone(),
-                column: col_name,
-                remote_updated_at: card.remote_updated_at.clone(),
-            })
+            col_name_by_id
+                .get(&card.column_id)
+                .map(|&col_name| CardSnapshot {
+                    card_id: card.id.clone(),
+                    column: col_name,
+                    remote_updated_at: card.remote_updated_at.clone(),
+                })
         });
 
-        // Build PendingIntent if outbox row exists for this card
         let card_id_opt = local_card.map(|c| c.id.clone());
+
+        // §13 step 1 — drop-before-reconcile: if a queued intent exists and the
+        // remote has moved the card to a *different* column than `from_column_name`,
+        // that's a genuine column conflict. Drop the intent (in-tx) and remove it
+        // from the in-memory pending map BEFORE reconciling, so the card is
+        // reconciled to the remote state in the SAME cycle (§12 Row 7 produces
+        // MoveCard once `pending` is None). A metadata-only bump
+        // (`desired == from_column`) keeps the intent and Row 4 still Ignores.
+        if let Some(card_id) = &card_id_opt {
+            // Read the source column out of the pending row (if any), then release
+            // the immutable borrow before we may mutate the map below.
+            let from_col_name = match pending_by_card_id.get(card_id) {
+                Some(outbox_row) => Some(parse_column_name(&outbox_row.payload_json)?),
+                None => None,
+            };
+
+            if let Some(from_col_name) = from_col_name {
+                let desired_now = desired_column(remote);
+                if desired_now != from_col_name {
+                    // Genuine column conflict: drop intent, queue INTENT_DROPPED.
+                    sqlx::query("DELETE FROM outbox WHERE card_id = ?")
+                        .bind(card_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(AdeError::Db)?;
+                    pending_by_card_id.remove(card_id);
+                    dropped_intents.push(remote.number);
+                }
+                // If desired_now == from_col_name, the remote change was metadata-only
+                // (e.g., a comment). The intent is still valid; leave it for M5 sender.
+            }
+        }
+
+        // Build PendingIntent from any intent that survived the conflict check.
         let pending = card_id_opt
             .as_ref()
             .and_then(|cid| pending_by_card_id.get(cid))
             .and_then(|row| {
-                let payload: serde_json::Value =
-                    serde_json::from_str(&row.payload_json).ok()?;
-                let from_col_str = payload.get("from_column_name")?.as_str()?;
+                let payload: serde_json::Value = serde_json::from_str(&row.payload_json).ok()?;
                 let to_col_str = payload.get("to_column_name")?.as_str()?;
                 let to_col = match to_col_str {
                     "Backlog" => ColumnName::Backlog,
@@ -265,61 +326,15 @@ pub async fn run_cycle(
                 .map_err(AdeError::Db)?;
             }
             SyncAction::TouchRemoteUpdatedAt { card_id } => {
-                sqlx::query(
-                    "UPDATE card SET remote_updated_at = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(&remote.updated_at)
-                .bind(&now)
-                .bind(&card_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(AdeError::Db)?;
+                sqlx::query("UPDATE card SET remote_updated_at = ?, updated_at = ? WHERE id = ?")
+                    .bind(&remote.updated_at)
+                    .bind(&now)
+                    .bind(&card_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(AdeError::Db)?;
             }
             SyncAction::Ignore => {}
-        }
-
-        // 7. Outbox sender pass for this issue
-        // Per §13: check if desired_column(remote_now) differs from from_column_name
-        if let Some(card_id) = &card_id_opt {
-            if let Some(outbox_row) = pending_by_card_id.get(card_id) {
-                let desired_now = desired_column(remote);
-
-                let payload: serde_json::Value = serde_json::from_str(&outbox_row.payload_json)
-                    .map_err(|e| AdeError::Other(format!("outbox payload json: {}", e)))?;
-                let from_col_str = payload
-                    .get("from_column_name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AdeError::Other("outbox payload missing from_column_name".into())
-                    })?;
-
-                let from_col_name = match from_col_str {
-                    "Backlog" => ColumnName::Backlog,
-                    "Doing" => ColumnName::Doing,
-                    "Paused" => ColumnName::Paused,
-                    "PR" => ColumnName::Pr,
-                    "Done" => ColumnName::Done,
-                    other => {
-                        return Err(AdeError::Other(format!(
-                            "unknown column name: {}",
-                            other
-                        )))
-                    }
-                };
-
-                if desired_now != from_col_name {
-                    // Remote moved the card to a different column than from_column
-                    // → drop intent (in-tx), reconcile card, queue INTENT_DROPPED.
-                    sqlx::query("DELETE FROM outbox WHERE card_id = ?")
-                        .bind(card_id)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(AdeError::Db)?;
-                    dropped_intents.push(remote.number);
-                }
-                // If desired_now == from_col_name, the remote change was metadata-only
-                // (e.g., a comment). The intent is still valid; leave it for M5 sender.
-            }
         }
     }
 
@@ -332,14 +347,12 @@ pub async fn run_cycle(
             .await
             .map_err(AdeError::Db)?;
     } else {
-        sqlx::query(
-            "INSERT OR REPLACE INTO sync_state (workspace_id, last_sync) VALUES (?, ?)",
-        )
-        .bind(workspace_id)
-        .bind(&cycle_start)
-        .execute(&mut *tx)
-        .await
-        .map_err(AdeError::Db)?;
+        sqlx::query("INSERT OR REPLACE INTO sync_state (workspace_id, last_sync) VALUES (?, ?)")
+            .bind(workspace_id)
+            .bind(&cycle_start)
+            .execute(&mut *tx)
+            .await
+            .map_err(AdeError::Db)?;
     }
 
     tx.commit().await.map_err(AdeError::Db)?;
@@ -362,7 +375,6 @@ pub async fn run_cycle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gh::types::RemoteIssue;
     use chrono::Utc;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -473,21 +485,34 @@ mod tests {
         card_id
     }
 
-    fn make_issue(number: u64, state: &str, labels: &[&str], updated_at: &str) -> RemoteIssue {
-        RemoteIssue {
-            number,
-            title: format!("Issue #{}", number),
-            state: state.to_string(),
-            updated_at: updated_at.to_string(),
-            assignee: None,
-            labels: labels.iter().map(|s| s.to_string()).collect(),
-            html_url: format!(
+    /// Build a GitHub-API-shaped issue JSON object, mirroring
+    /// `gh::client::tests::issue_json`. The worker consumes raw GitHub JSON via
+    /// `GitHubClient::map_issue`, so labels must be objects `{"name": ...}` and
+    /// `assignee` must be null or `{"login": ...}` — serializing a `RemoteIssue`
+    /// would emit `labels: ["..."]` (string array), which `map_issue` drops.
+    fn issue_json(
+        number: u64,
+        state: &str,
+        labels: &[&str],
+        updated_at: &str,
+    ) -> serde_json::Value {
+        let label_objs: Vec<serde_json::Value> = labels
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect();
+        serde_json::json!({
+            "number": number,
+            "title": format!("Issue #{}", number),
+            "state": state,
+            "updated_at": updated_at,
+            "assignee": serde_json::Value::Null,
+            "labels": label_objs,
+            "html_url": format!(
                 "https://github.com/testowner/testrepo/issues/{}",
                 number
             ),
-            is_pull_request: false,
-            body_preview: None,
-        }
+            "body": serde_json::Value::Null,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -512,23 +537,19 @@ mod tests {
         .await;
 
         // Initialize sync_state (has last_sync → incremental fetch)
-        sqlx::query(
-            "INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)",
-        )
-        .bind(&ws_id)
-        .bind("2025-01-01T00:00:00Z")
-        .execute(&pool)
-        .await
-        .expect("insert sync_state");
+        sqlx::query("INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)")
+            .bind(&ws_id)
+            .bind("2025-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("insert sync_state");
 
         // Wiremock: return issue #42 closed (no kanban labels → desired_column = Done for closed)
         let server = wiremock::MockServer::start().await;
-        let closed_issue = make_issue(42, "closed", &[], "2025-01-02T00:00:00Z");
+        let closed_issue = issue_json(42, "closed", &[], "2025-01-02T00:00:00Z");
         let body = serde_json::to_string(&vec![closed_issue]).expect("json");
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_string(&body),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
             .mount(&server)
             .await;
 
@@ -572,7 +593,15 @@ mod tests {
         let paused_id = col_ids.get(&ColumnName::Paused).expect("Paused column");
 
         // Card optimistically already in Paused (the user moved Backlog -> Paused).
-        let card_id = insert_card(&pool, &ws_id, paused_id, 77, "Backoff issue", "2025-01-01T00:00:00Z").await;
+        let card_id = insert_card(
+            &pool,
+            &ws_id,
+            paused_id,
+            77,
+            "Backoff issue",
+            "2025-01-01T00:00:00Z",
+        )
+        .await;
 
         // Outbox intent from=Backlog to=Paused, attempts=2, last_attempt 5s ago -> NOT due.
         let recent = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
@@ -603,7 +632,7 @@ mod tests {
         // Remote: issue #77 open, NO kanban label (desired=Backlog=from_column,
         // i.e. a comment-only bump), updated_at advanced to T2.
         let server = wiremock::MockServer::start().await;
-        let issue = make_issue(77, "open", &[], "2025-01-02T00:00:00Z");
+        let issue = issue_json(77, "open", &[], "2025-01-02T00:00:00Z");
         let body = serde_json::to_string(&vec![issue]).expect("json");
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
@@ -640,7 +669,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("count");
-        assert_eq!(count, 1, "comment-only bump must not drop the pending intent");
+        assert_eq!(
+            count, 1,
+            "comment-only bump must not drop the pending intent"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -667,24 +699,19 @@ mod tests {
         )
         .await;
 
-        sqlx::query(
-            "INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)",
-        )
-        .bind(&ws_id)
-        .bind("2025-01-01T00:00:00Z")
-        .execute(&pool)
-        .await
-        .expect("sync_state");
+        sqlx::query("INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)")
+            .bind(&ws_id)
+            .bind("2025-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("sync_state");
 
         // Wiremock: issue #10 open with kanban:doing label, updated_at = T2
         let server = wiremock::MockServer::start().await;
-        let echo_issue =
-            make_issue(10, "open", &["kanban:doing"], "2025-01-02T00:00:00Z");
+        let echo_issue = issue_json(10, "open", &["kanban:doing"], "2025-01-02T00:00:00Z");
         let body = serde_json::to_string(&vec![echo_issue]).expect("json");
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_string(&body),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
             .mount(&server)
             .await;
 
@@ -775,26 +802,22 @@ mod tests {
         .await
         .expect("enqueue B");
 
-        sqlx::query(
-            "INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)",
-        )
-        .bind(&ws_id)
-        .bind("2025-01-01T00:00:00Z")
-        .execute(&pool)
-        .await
-        .expect("sync_state");
+        sqlx::query("INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)")
+            .bind(&ws_id)
+            .bind("2025-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("sync_state");
 
         // Wiremock:
         //   issue #55 has kanban:doing (remote moved to Doing ≠ Backlog=from_column)
         //   issue #56 has no kanban labels (desired=Backlog = from_column)
         let server = wiremock::MockServer::start().await;
-        let issue_55 = make_issue(55, "open", &["kanban:doing"], "2025-01-02T00:00:00Z");
-        let issue_56 = make_issue(56, "open", &[], "2025-01-02T00:00:00Z");
+        let issue_55 = issue_json(55, "open", &["kanban:doing"], "2025-01-02T00:00:00Z");
+        let issue_56 = issue_json(56, "open", &[], "2025-01-02T00:00:00Z");
         let body = serde_json::to_string(&vec![issue_55, issue_56]).expect("json");
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_string(&body),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
             .mount(&server)
             .await;
 
@@ -818,12 +841,11 @@ mod tests {
         );
 
         // Outbox row for card A should be resolved (deleted)
-        let count_a: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
-                .bind(&card_a_id)
-                .fetch_one(&pool)
-                .await
-                .expect("count");
+        let count_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
+            .bind(&card_a_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
         assert_eq!(
             count_a, 0,
             "outbox row for card A should be resolved (deleted)"
@@ -855,12 +877,11 @@ mod tests {
         );
 
         // Outbox row for card B should still exist
-        let count_b: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
-                .bind(&card_b_id)
-                .fetch_one(&pool)
-                .await
-                .expect("count");
+        let count_b: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
+            .bind(&card_b_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
         assert_eq!(
             count_b, 1,
             "outbox row for card B should still exist (intent not dropped)"

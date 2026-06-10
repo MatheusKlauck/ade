@@ -73,3 +73,19 @@ não existem em v4.0.1; os métodos Entry estão em `keyring-core`.
 **What:** Added `reqwest = "0.12" (features: json)` as a direct dependency. Moved `RemoteIssue`, `SyncAction`, `ColumnName` from `sync/engine.rs` to `gh/types.rs`.
 **Why:** GitHub client needs injectable base URL for wiremock testing. `octocrab` doesn't expose a way to override the base URL easily; `reqwest` is already a transitive dep (via octocrab/tauri) and is the standard HTTP client for Rust. Making it a direct dep allows `GitHubClient` to use it with custom base URLs. Types moved per CONTRACTS §2 layout (RemoteIssue → gh/types.rs, §5 serde derives).
 **Where:** Cargo.toml (reqwest added), CONTRACTS §1 (reqwest added), gh/types.rs (new), sync/engine.rs (imports changed).
+
+## 2026-06-10 — M2-T8
+**What:** Em `run_cycle`, o descarte de intent em conflito de coluna passou a ocorrer
+**antes** de `reconcile` (drop-before-reconcile), não depois. A detecção (§13 passo 1)
+compara `desired_column(remote)` com `from_column_name`; havendo conflito real, o intent é
+deletado do outbox (na transação) e removido do mapa de pendências em memória, então
+`reconcile` vê `pending = None` e a §12 Row 7 move o card para a coluna remota no mesmo
+ciclo. A notificação `INTENT_DROPPED` continua adiada para depois do `tx.commit()`.
+**Why:** §13 manda "reconcile card to remote state" no ato do descarte. Na ordem anterior
+(reconcile→drop), a Row 4 retornava `Ignore` por causa do intent pendente e o card só
+seria movido no ciclo seguinte. Também: o fixture dos testes do worker passou a emitir JSON
+no formato da API do GitHub (labels como `[{"name":...}]`, assignee `{"login":...}`) em vez
+de serializar `RemoteIssue`, pois `gh::client::map_issue` descarta labels-string no
+round-trip.
+**Where:** `src-tauri/src/sync/worker.rs` (run_cycle + helper `parse_column_name` + fixture
+`issue_json`).
