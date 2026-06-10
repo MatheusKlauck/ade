@@ -8,7 +8,7 @@ mod ipc;
 mod models;
 mod pty;
 mod sync;
-mod tmux;
+pub mod tmux;
 
 use std::sync::Arc;
 use tauri::Manager;

@@ -6,10 +6,10 @@
 - [x] M0-T3 DB + migration 0001
 - [x] M0-T4 Error type + notify plumbing
 - [x] M0-T5 Settings + ui_state commands
-- [ ] M0-T6 Keychain token storage
+- [x] M0-T6 Keychain token storage
 
 ## M1 — Terminal
-- [ ] M1-T1 tmux module
+- [x] M1-T1 tmux module
 - [ ] M1-T2 PTY pipeline
 - [ ] M1-T3 Terminal IPC
 - [ ] M1-T4 Terminal React component
