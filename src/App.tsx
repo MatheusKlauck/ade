@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { subscribeNotify, terminalOpen } from "./lib/ipc";
 import TerminalPane from "./components/TerminalPane";
+import Board from "./components/Board";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 
 export default function App() {
@@ -64,27 +65,29 @@ export default function App() {
           <strong>{toast.code}</strong>: {toast.message}
         </div>
       )}
-      <h1>ADE</h1>
-      <button onClick={handleNewTerminal}>New terminal</button>
+      <Board />
+      <div style={{ marginTop: 16 }}>
+        <button onClick={handleNewTerminal}>New terminal</button>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
-        {panes.map((pane) => (
-          <div
-            key={pane.paneId}
-            style={{
-              width: "48%",
-              height: 300,
-              border: "1px solid #333",
-              borderRadius: 4,
-              overflow: "hidden",
-            }}
-          >
-            <TerminalPane
-              pane={pane}
-              onRemove={() => handleRemove(pane.paneId)}
-            />
-          </div>
-        ))}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
+          {panes.map((pane) => (
+            <div
+              key={pane.paneId}
+              style={{
+                width: "48%",
+                height: 300,
+                border: "1px solid #333",
+                borderRadius: 4,
+                overflow: "hidden",
+              }}
+            >
+              <TerminalPane
+                pane={pane}
+                onRemove={() => handleRemove(pane.paneId)}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
