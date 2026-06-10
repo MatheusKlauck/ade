@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 pub struct AppState {
+    pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
 }
 
@@ -25,7 +26,12 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
                 let pool = db::init_db(&handle).await.expect("db init failed");
-                handle.manage(Arc::new(AppState { db: pool }));
+                handle.manage(Arc::new(AppState {
+                    db: pool,
+                    pty: std::sync::Arc::new(std::sync::Mutex::new(
+                        std::collections::HashMap::new(),
+                    )),
+                }));
             });
             Ok(())
         })
@@ -35,6 +41,11 @@ pub fn run() {
             ipc::settings::setting_set,
             ipc::settings::ui_state_get,
             ipc::settings::ui_state_set,
+            ipc::terminal::terminal_open,
+            ipc::terminal::terminal_write,
+            ipc::terminal::terminal_resize,
+            ipc::terminal::terminal_close,
+            ipc::terminal::terminal_kill_window,
         ])
         .run(tauri::generate_context!());
 

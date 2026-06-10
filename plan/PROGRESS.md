@@ -10,8 +10,8 @@
 
 ## M1 — Terminal
 - [x] M1-T1 tmux module
-- [ ] M1-T2 PTY pipeline
-- [ ] M1-T3 Terminal IPC
+- [x] M1-T2 PTY pipeline
+- [x] M1-T3 Terminal IPC
 - [ ] M1-T4 Terminal React component
 - [ ] M1-T5 Startup command
 - [ ] M1-T6 Persistence + perf acceptance

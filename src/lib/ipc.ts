@@ -34,3 +34,39 @@ export function uiStateGet(key: string): Promise<string | null> {
 export function uiStateSet(key: string, valueJson: string): Promise<void> {
   return invoke("ui_state_set", { key, valueJson });
 }
+
+// ---- terminal ----
+export interface TerminalOpenResult {
+  paneId: string;
+  windowId: string;
+}
+
+export function terminalOpen(
+  workspaceId: string,
+  windowId?: string
+): Promise<TerminalOpenResult> {
+  return invoke("terminal_open", { workspaceId, windowId });
+}
+
+export function terminalWrite(paneId: string, data: string): Promise<void> {
+  return invoke("terminal_write", { paneId, data });
+}
+
+export function terminalResize(
+  paneId: string,
+  cols: number,
+  rows: number
+): Promise<void> {
+  return invoke("terminal_resize", { paneId, cols, rows });
+}
+
+export function terminalClose(paneId: string): Promise<void> {
+  return invoke("terminal_close", { paneId });
+}
+
+export function terminalKillWindow(
+  workspaceId: string,
+  windowId: string
+): Promise<void> {
+  return invoke("terminal_kill_window", { workspaceId, windowId });
+}
