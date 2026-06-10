@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
-import { subscribeNotify } from "./lib/ipc";
+import { useState, useEffect } from "react";
+import { subscribeNotify, terminalOpen } from "./lib/ipc";
+import TerminalPane from "./components/TerminalPane";
+import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 
 export default function App() {
   const [toast, setToast] = useState<{
@@ -7,6 +9,10 @@ export default function App() {
     code: string;
     message: string;
   } | null>(null);
+
+  const panes = useTerminalsStore((s) => s.panes);
+  const addPane = useTerminalsStore((s) => s.addPane);
+  const removePane = useTerminalsStore((s) => s.removePane);
 
   useEffect(() => {
     let unsub: (() => void) | null = null;
@@ -21,8 +27,27 @@ export default function App() {
     };
   }, []);
 
+  const handleNewTerminal = async () => {
+    try {
+      const result = await terminalOpen("dev");
+      const pane: OpenTerminal = {
+        paneId: result.paneId,
+        windowId: result.windowId,
+        workspaceId: "dev",
+        channel: result.channel,
+      };
+      addPane(pane);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleRemove = (paneId: string) => {
+    removePane(paneId);
+  };
+
   return (
-    <div style={{ position: "relative", minHeight: "100vh" }}>
+    <div style={{ position: "relative", minHeight: "100vh", padding: 16 }}>
       {toast && (
         <div
           style={{
@@ -40,7 +65,27 @@ export default function App() {
         </div>
       )}
       <h1>ADE</h1>
-      <p>App carregado.</p>
+      <button onClick={handleNewTerminal}>New terminal</button>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
+        {panes.map((pane) => (
+          <div
+            key={pane.paneId}
+            style={{
+              width: "48%",
+              height: 300,
+              border: "1px solid #333",
+              borderRadius: 4,
+              overflow: "hidden",
+            }}
+          >
+            <TerminalPane
+              pane={pane}
+              onRemove={() => handleRemove(pane.paneId)}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

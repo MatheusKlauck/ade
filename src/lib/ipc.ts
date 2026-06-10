@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Channel } from "@tauri-apps/api/core";
 
 // ---- notifications ----
 export async function subscribeNotify(
@@ -39,13 +40,20 @@ export function uiStateSet(key: string, valueJson: string): Promise<void> {
 export interface TerminalOpenResult {
   paneId: string;
   windowId: string;
+  channel: Channel<unknown>;
 }
 
 export function terminalOpen(
   workspaceId: string,
   windowId?: string
 ): Promise<TerminalOpenResult> {
-  return invoke("terminal_open", { workspaceId, windowId });
+  const channel = new Channel<unknown>();
+  return invoke("terminal_open", { workspaceId, windowId, channel }).then(
+    (res: unknown) => {
+      const r = res as { paneId: string; windowId: string };
+      return { paneId: r.paneId, windowId: r.windowId, channel };
+    }
+  );
 }
 
 export function terminalWrite(paneId: string, data: string): Promise<void> {

@@ -1,6 +1,7 @@
 use crate::error::AdeError;
 use crate::pty;
 use crate::tmux;
+use sqlx::Row;
 use tauri::ipc::Channel;
 use tauri::ipc::InvokeResponseBody;
 use tauri::State;
@@ -23,10 +24,23 @@ pub async fn terminal_open(
     let (slug, root_path) = tmux::dev_workspace()?;
     tmux::ensure_base_session(&slug, &root_path)?;
 
+    let is_new_window = window_id.is_none();
     let window_id = match window_id {
         Some(w) => w,
         None => tmux::new_app_window(&slug, &root_path)?,
     };
+
+    if is_new_window {
+        let cmd = sqlx::query("SELECT value FROM setting WHERE key = 'startup_command_global'")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AdeError::Db)?
+            .map(|r| r.get::<String, _>("value"))
+            .filter(|v| !v.is_empty());
+        if let Some(cmd) = cmd {
+            tmux::send_keys(&window_id, &cmd)?;
+        }
+    }
 
     let viewer = tmux::viewer_session(&slug, &uuid::Uuid::new_v4().to_string()[..8]);
 

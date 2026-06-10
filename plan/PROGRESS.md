@@ -12,7 +12,7 @@
 - [x] M1-T1 tmux module
 - [x] M1-T2 PTY pipeline
 - [x] M1-T3 Terminal IPC
-- [ ] M1-T4 Terminal React component
+- [x] M1-T4 Terminal React component
 - [ ] M1-T5 Startup command
 - [ ] M1-T6 Persistence + perf acceptance
       Results: (record here: reattach OK? benchmark OK? notes)

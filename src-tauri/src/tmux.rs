@@ -311,6 +311,25 @@ pub fn kill_viewer(viewer: &str) -> Result<(), AdeError> {
     Ok(())
 }
 
+/// Capture the visible content of a pane.
+pub fn capture_pane(window_id: &str) -> Result<String, AdeError> {
+    let out = Command::new(TMUX_BIN)
+        .arg("capture-pane")
+        .arg("-p")
+        .arg("-t")
+        .arg(window_id)
+        .output()
+        .map_err(|e| AdeError::Tmux(e.to_string()))?;
+
+    if !out.status.success() {
+        return Err(AdeError::Tmux(
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +439,36 @@ mod tests {
         let (slug, root) = dev_workspace().unwrap();
         assert_eq!(slug, "dev");
         assert!(std::path::Path::new(&root).exists());
+    }
+
+    #[test]
+    #[ignore = "needs-tmux"]
+    fn startup_command_injection() {
+        let (slug, root) = dev_workspace().unwrap();
+        let base = base_session(&slug);
+        let _ = Command::new(TMUX_BIN)
+            .arg("kill-session")
+            .arg("-t")
+            .arg(&base)
+            .output();
+        ensure_base_session(&slug, &root).unwrap();
+        let win = new_app_window(&slug, &root).unwrap();
+        send_keys(&win, "export ADE_TEST=1").unwrap();
+        // wait for shell
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        send_keys(&win, "echo $ADE_TEST").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let captured = capture_pane(&win).unwrap();
+        assert!(
+            captured.contains("1"),
+            "expected captured pane to contain 1, got: {}",
+            captured
+        );
+        kill_window(&win).unwrap();
+        let _ = Command::new(TMUX_BIN)
+            .arg("kill-session")
+            .arg("-t")
+            .arg(&base)
+            .output();
     }
 }
