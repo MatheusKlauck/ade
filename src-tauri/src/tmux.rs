@@ -82,6 +82,17 @@ pub fn dev_workspace() -> Result<(String, String), AdeError> {
     Ok(("dev".into(), root.to_string_lossy().into_owned()))
 }
 
+/// Return true if a tmux session with the exact given name exists.
+pub fn session_exists(session: &str) -> bool {
+    Command::new(TMUX_BIN)
+        .arg("has-session")
+        .arg("-t")
+        .arg(format!("={}", session))
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Ensure the base tmux session exists.
 pub fn ensure_base_session(slug: &str, root_path: &str) -> Result<(), AdeError> {
     let base = base_session(slug);

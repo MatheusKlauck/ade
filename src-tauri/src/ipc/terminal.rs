@@ -93,7 +93,23 @@ pub async fn terminal_open(
 
     let pane_id = pane.id.clone();
 
-    tmux::viewer_status_off(&viewer)?;
+    // Turn off the viewer's tmux status bar. The viewer session is created
+    // asynchronously by the PTY child we just spawned, so it may not exist yet:
+    // poll until it comes up, then set the option. Best-effort on a background
+    // thread — a cosmetic failure here must NOT fail terminal_open, which would
+    // leave the freshly-created tmux window orphaned (the BUG-001 process leak).
+    {
+        let viewer = viewer.clone();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                if tmux::session_exists(&viewer) {
+                    let _ = tmux::viewer_status_off(&viewer);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+    }
 
     {
         let mut reg = state.pty.lock().map_err(|e| AdeError::Pty(e.to_string()))?;

@@ -30,13 +30,19 @@ export default function Tabs() {
 
   const handleAddWorkspace = async () => {
     if (creating) return;
-    const selected = await open({ directory: true, multiple: false });
-    if (!selected) return;
-    setCreating(true);
     try {
-      await addWorkspace(selected as string);
-    } finally {
-      setCreating(false);
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected) return;
+      setCreating(true);
+      try {
+        await addWorkspace(selected as string);
+      } finally {
+        setCreating(false);
+      }
+    } catch (e) {
+      // Dialog plugin error (e.g. missing permission) — surface instead of
+      // dropping it as an unhandled rejection that looks like a dead button.
+      console.error("Failed to open folder picker:", e);
     }
   };
 

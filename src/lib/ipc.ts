@@ -50,8 +50,10 @@ export function terminalOpen(
   const channel = new Channel<unknown>();
   return invoke("terminal_open", { workspaceId, windowId, channel }).then(
     (res: unknown) => {
-      const r = res as { paneId: string; windowId: string };
-      return { paneId: r.paneId, windowId: r.windowId, channel };
+      // Backend serializes snake_case (TerminalOpenResult { pane_id, window_id }),
+      // per CONTRACTS §7. Read those keys, not camelCase.
+      const r = res as { pane_id: string; window_id: string };
+      return { paneId: r.pane_id, windowId: r.window_id, channel };
     }
   );
 }
