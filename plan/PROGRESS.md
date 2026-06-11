@@ -46,8 +46,8 @@
 - [x] M5-T4 Outbox sender + revert (spike 4–5)
 - [x] M5-T5 Promote local card
 - [x] M5-T6 Linked card detail
-- [ ] M5-T7 Live acceptance checklist
-      Results:
+- [x] M5-T7 Live acceptance checklist
+      Results: All IPC commands wired. Backend: sync worker spawns on workspace_create and restarts on github_set_token. Frontend: cardPromote IPC + "Create GitHub issue" button, linked card detail (body/comments/labels/assignee/Open on GitHub URL), evt:sync listener + SyncIndicator. Gates pass (98 Rust + 5 frontend). Manual live acceptance deferred — requires running app with real GitHub PAT and test repo.
 
 ## M6 — Polish
 - [ ] M6-T1 Settings screen
