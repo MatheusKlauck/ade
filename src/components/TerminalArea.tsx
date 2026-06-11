@@ -1,6 +1,8 @@
 import { useState, type CSSProperties } from "react";
 import TerminalPane from "./TerminalPane";
 import { useBoardStore } from "../store/board";
+import { useTerminalsStore } from "../store/terminals";
+import { ChevronIcon, LockIcon } from "./icons";
 import type { OpenTerminal } from "../store/terminals";
 
 interface TerminalAreaProps {
@@ -19,8 +21,13 @@ export default function TerminalArea({
   onHighlightDone,
 }: TerminalAreaProps) {
   const boards = useBoardStore((s) => s.boards);
+  const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
+  const toggleLock = useTerminalsStore((s) => s.toggleLock);
   const [minimized, setMinimized] = useState<Record<string, boolean>>({});
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+
+  const isLocked = (pane: OpenTerminal): boolean =>
+    (lockedByWorkspace[pane.workspaceId] ?? []).includes(pane.windowId);
 
   // Title from the linked card/issue, e.g. "#123 | Fix login". Falls back to
   // "Terminal" for ad-hoc shells with no linked card.
@@ -63,6 +70,10 @@ export default function TerminalArea({
   };
 
   const handleRemove = (paneId: string) => {
+    // Locked terminals can't be closed. The header's close button is already
+    // disabled when locked; this guards every other path into removal too.
+    const pane = panes.find((p) => p.paneId === paneId);
+    if (pane && isLocked(pane)) return;
     setMinimized((m) => {
       const next = { ...m };
       delete next[paneId];
@@ -171,12 +182,20 @@ export default function TerminalArea({
               // Hidden panes stay mounted (display:none) so their PTY keeps
               // running and the terminal refits when shown again.
               const isHidden = maxId ? !isMax : !!minimized[pane.paneId];
+              const locked = isLocked(pane);
+              // Locked panes get an accented, ringed border so they stand out
+              // from the freely-closeable ones.
+              const borderColor = locked ? "var(--accent)" : "var(--border)";
+              const lockedRing: CSSProperties = locked
+                ? { boxShadow: "0 0 0 1px var(--accent)" }
+                : {};
               const wrapperStyle: CSSProperties = isMax
                 ? {
                     position: "absolute",
                     inset: 0,
                     zIndex: 20,
-                    border: "1px solid var(--border)",
+                    border: `1px solid ${borderColor}`,
+                    ...lockedRing,
                     borderRadius: 4,
                     overflow: "hidden",
                     background: "var(--bg)",
@@ -186,7 +205,8 @@ export default function TerminalArea({
                 : {
                     minHeight: 200,
                     minWidth: 0,
-                    border: "1px solid var(--border)",
+                    border: `1px solid ${borderColor}`,
+                    ...lockedRing,
                     borderRadius: 4,
                     overflow: "hidden",
                   };
@@ -200,6 +220,8 @@ export default function TerminalArea({
                     pane={pane}
                     title={titleFor(pane)}
                     maximized={isMax}
+                    locked={locked}
+                    onToggleLock={() => toggleLock(pane.workspaceId, pane.windowId)}
                     onRemove={() => handleRemove(pane.paneId)}
                     onToggleMinimize={() => toggleMinimize(pane.paneId)}
                     onToggleMaximize={() => toggleMaximize(pane.paneId)}
@@ -242,7 +264,10 @@ export default function TerminalArea({
                     overflow: "hidden",
                   }}
                 >
-                  <span aria-hidden>▸</span>
+                  <ChevronIcon size={12} style={{ transform: "rotate(-90deg)" }} />
+                  {isLocked(pane) && (
+                    <LockIcon size={12} style={{ color: "var(--accent)" }} />
+                  )}
                   <span
                     style={{ overflow: "hidden", textOverflow: "ellipsis" }}
                   >

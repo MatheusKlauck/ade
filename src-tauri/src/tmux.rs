@@ -168,7 +168,9 @@ pub fn new_app_window(slug: &str, root_path: &str) -> Result<String, AdeError> {
         ));
     }
 
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let window_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    inject_shell_integration(&window_id);
+    Ok(window_id)
 }
 
 /// Create a new issue window with env vars.
@@ -208,7 +210,69 @@ pub fn new_issue_window(
         ));
     }
 
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let window_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    inject_shell_integration(&window_id);
+    Ok(window_id)
+}
+
+/// Shell snippet that makes bash/zsh emit an OSC 133;D;<exit> marker whenever an
+/// interactive command finishes. ADE reads that marker off the raw pane output
+/// (via `pipe-pane`, see `term_monitor`) to notify on completion. Sourced once
+/// per freshly created window; the hooks live in the shell process, so they
+/// persist across detach/reattach (tmux windows outlive the app's viewers).
+const SHELL_INTEGRATION: &str = r#"# ade shell integration — emit OSC 133;D;<exit> when an interactive command finishes.
+if [ -n "${ZSH_VERSION:-}" ]; then
+  autoload -Uz add-zsh-hook 2>/dev/null
+  __ade_preexec() { __ade_ran=1 }
+  __ade_precmd() {
+    local __e=$?
+    if [ "${__ade_ran:-0}" = "1" ]; then
+      __ade_ran=0
+      printf '\033]133;D;%s\007' "$__e"
+    fi
+  }
+  add-zsh-hook preexec __ade_preexec 2>/dev/null
+  add-zsh-hook precmd __ade_precmd 2>/dev/null
+elif [ -n "${BASH_VERSION:-}" ]; then
+  __ade_precmd() {
+    local __e=$?
+    if [ "${__ade_last:-}" != "$HISTCMD" ]; then
+      __ade_last=$HISTCMD
+      printf '\033]133;D;%s\007' "$__e"
+    fi
+  }
+  __ade_last=$HISTCMD
+  case ";${PROMPT_COMMAND:-};" in
+    *";__ade_precmd;"*) ;;
+    *) PROMPT_COMMAND="__ade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+  esac
+fi
+"#;
+
+/// Stable path of the sourced shell-integration script.
+fn integration_script_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("ade-shell-integration.sh")
+}
+
+/// Write the shell-integration snippet to a stable temp path so new windows can
+/// `source` it. Returns the path on success. Best-effort; overwrites each call
+/// so the snippet stays current with the running build.
+pub fn ensure_integration_script() -> Result<std::path::PathBuf, AdeError> {
+    let path = integration_script_path();
+    std::fs::write(&path, SHELL_INTEGRATION).map_err(|e| AdeError::Tmux(e.to_string()))?;
+    Ok(path)
+}
+
+/// Source the shell-integration snippet into a freshly created window's shell.
+/// The shell only reads our keys once its rc has finished (it's blocked reading
+/// the first prompt line), so our hooks append cleanly on top of the user's
+/// PROMPT_COMMAND. Best-effort: a failure only means no completion markers for
+/// that window — it must NEVER fail window creation (BUG-001 leak invariant).
+pub fn inject_shell_integration(window_id: &str) {
+    if let Ok(path) = ensure_integration_script() {
+        // Leading space keeps it out of history when HISTCONTROL has ignorespace.
+        let _ = send_keys(window_id, &format!(" source '{}'", path.display()));
+    }
 }
 
 /// Return the argv array for viewer attach (runs inside PTY).

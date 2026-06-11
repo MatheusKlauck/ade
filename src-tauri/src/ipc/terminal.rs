@@ -32,6 +32,7 @@ pub async fn terminal_open(
     workspace_id: String,
     window_id: Option<String>,
     channel: Channel<InvokeResponseBody>,
+    app: tauri::AppHandle,
     state: State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<TerminalOpenResult, AdeError> {
     tmux::check_version()?;
@@ -55,6 +56,16 @@ pub async fn terminal_open(
         }
         None => tmux::new_app_window(slug, root_path)?,
     };
+
+    // Start (or keep) a completion monitor for this window. Idempotent per
+    // window id, so reattaches don't stack monitors; the monitor outlives the
+    // viewer, so completions are caught even after switching workspaces.
+    crate::term_monitor::ensure(
+        app.clone(),
+        state.monitors.clone(),
+        workspace_id.clone(),
+        window_id.clone(),
+    );
 
     // Startup command is sent from the frontend (per-workspace, after a
     // configurable delay) once the pane is open — see App.tsx

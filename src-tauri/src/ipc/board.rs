@@ -593,8 +593,8 @@ pub async fn card_promote(
         .get::<Option<String>, _>("github_repo")
         .ok_or_else(|| AdeError::Other("workspace has no GitHub repo".to_string()))?;
 
-    // 4. Get GitHub token from keychain
-    let token = crate::ipc::github::keychain_get()?
+    // 4. Get GitHub token from keychain (per-workspace, with legacy global fallback)
+    let token = crate::ipc::github::keychain_get_for_workspace(&card.workspace_id)?
         .ok_or_else(|| AdeError::Other("GitHub token not found in keychain".to_string()))?;
 
     // 5. Create GitHubClient

@@ -9,10 +9,12 @@ mod ipc;
 mod models;
 mod pty;
 mod sync;
+mod term_monitor;
 pub mod tmux;
 
 use chrono::Utc;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -27,6 +29,8 @@ pub struct AppState {
     pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
     pub workers: tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
+    /// Window ids with a live completion monitor (see `term_monitor`).
+    pub monitors: term_monitor::Monitors,
 }
 
 async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeError> {
@@ -136,7 +140,7 @@ async fn spawn_sync_workers(
     workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 ) {
     let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE github_owner IS NOT NULL",
+        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL",
     )
     .fetch_all(&pool)
     .await
@@ -174,6 +178,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Register the OS-native credential store (macOS Keychain / Windows
+            // Credential Manager / Linux Secret Service) as keyring-core's
+            // default. keyring-core's Entry::new() has NO store until one is set
+            // here — without it every GitHub token set/get fails, so tokens are
+            // never persisted and sync workers never get a credential.
+            if let Err(e) = keyring::use_native_store(true) {
+                eprintln!("failed to initialize OS keychain store: {e}");
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
                 let pool = db::init_db(&handle).await.expect("db init failed");
@@ -187,6 +199,7 @@ pub fn run() {
                         std::collections::HashMap::new(),
                     )),
                     workers: tokio::sync::Mutex::new(HashMap::new()),
+                    monitors: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 });
 
                 spawn_sync_workers(pool, handle.clone(), &state.workers).await;

@@ -57,3 +57,55 @@ export function PlusIcon({ size = 16, style }: IconProps) {
     </svg>
   );
 }
+
+// Down-chevron at rest; rotate via the parent's `style.transform` to point in
+// any direction (board toggle, tray restore) so disclosure glyphs share the
+// same stroke family as the rest of the chrome instead of text triangles.
+export function ChevronIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+// Checkmark — terminal completion badge on the workspace pill.
+export function CheckIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+// Closed padlock — marks a locked terminal (can't be closed until unlocked).
+export function LockIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
+// Open padlock — the "Unlock" affordance in the terminal header context menu.
+export function LockOpenIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 7.5-1.7" />
+    </svg>
+  );
+}
+
+// Circular refresh arrows — the "re-sync" affordance on the aggregate sync chip.
+export function RefreshIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}

@@ -1,0 +1,59 @@
+name: E2E (Linux / tauri-driver)
+
+# Drives the REAL ADE binary via tauri-driver — terminals (tmux), sync, webview
+# all run for real. macOS is intentionally excluded: no WKWebView WebDriver
+# exists (see docs/QA.md). This workflow doubles as the executable spec of the
+# environment the gstack QA runner must replicate.
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # webkit2gtk + its WebDriver (WebKitWebDriver) + tmux (real terminals) + xvfb (headless display)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            webkit2gtk-driver \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            tmux \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install e2e dependencies
+        run: npm --prefix e2e install
+
+      # ADE_QA_SEED makes the backend seed deterministic board data on boot.
+      - name: Run E2E under a virtual display
+        env:
+          ADE_QA_SEED: "1"
+        run: xvfb-run -a npm --prefix e2e test

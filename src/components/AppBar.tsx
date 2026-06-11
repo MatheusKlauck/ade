@@ -44,22 +44,11 @@ const iconBtnStyle: CSSProperties = {
 
 export default function AppBar({ onOpenSettings }: AppBarProps) {
   return (
-    <div style={barStyle}>
-      {/* Identity anchor — also a drag handle */}
-      <span
-        data-tauri-drag-region
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          letterSpacing: "-0.02em",
-          color: "var(--fg)",
-          userSelect: "none",
-          flexShrink: 0,
-        }}
-      >
-        ADE
-      </span>
-
+    // The whole bar is the window drag handle. Tauri starts a native window drag
+    // only when the mousedown target itself carries data-tauri-drag-region, so
+    // the tabs/buttons nested inside still receive their own clicks. paddingLeft
+    // clears the macOS traffic lights and is itself part of the drag surface.
+    <div data-tauri-drag-region style={barStyle}>
       {/* Workspace tabs — shrink + scroll when crowded */}
       <div
         style={{

@@ -123,7 +123,7 @@ pub async fn github_set_token(
             .try_state()
             .ok_or_else(|| crate::error::AdeError::Other("app state not available".to_string()))?;
         let is_github: Option<(String,)> = sqlx::query_as::<_, (String,)>(
-            "SELECT id FROM workspace WHERE id = ? AND github_owner IS NOT NULL",
+            "SELECT id FROM workspace WHERE id = ? AND github_owner IS NOT NULL AND closed_at IS NULL",
         )
         .bind(&workspace_id)
         .fetch_optional(&state.db)

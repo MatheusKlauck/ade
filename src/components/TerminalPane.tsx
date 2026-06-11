@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -8,11 +8,16 @@ import {
   terminalWrite,
 } from "../lib/ipc";
 import type { OpenTerminal } from "../store/terminals";
+import { useTerminalsStore } from "../store/terminals";
+import { useWorkspacesStore } from "../store/workspaces";
+import { LockIcon, LockOpenIcon } from "./icons";
 
 interface TerminalPaneProps {
   pane: OpenTerminal;
   title: string;
   maximized?: boolean;
+  locked?: boolean;
+  onToggleLock?: () => void;
   onRemove: () => void;
   onToggleMinimize?: () => void;
   onToggleMaximize?: () => void;
@@ -36,16 +41,35 @@ const iconBtnStyle: React.CSSProperties = {
   lineHeight: 1,
 };
 
+const menuItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  padding: "6px 10px",
+  background: "transparent",
+  border: "none",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--fg)",
+  cursor: "pointer",
+  fontSize: 13,
+  textAlign: "left",
+};
+
 export default function TerminalPane({
   pane,
   title,
   maximized,
+  locked,
+  onToggleLock,
   onRemove,
   onToggleMinimize,
   onToggleMaximize,
   highlighted,
   onHighlightDone,
 }: TerminalPaneProps) {
+  // Position of the header context menu (right-click), or null when closed.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -135,8 +159,28 @@ export default function TerminalPane({
       ro.observe(containerRef.current);
     }
 
+    // Track keyboard focus for this terminal. focusin/focusout bubble up from
+    // xterm's hidden textarea. The focused terminal is the one you're watching,
+    // so the alert monitor suppresses its completions, and focusing it clears
+    // any badge already accumulated for its workspace.
+    const focusEl = containerRef.current;
+    const onFocusIn = () => {
+      useTerminalsStore.getState().setFocusedWindow(pane.windowId);
+      useWorkspacesStore.getState().clearTerminalAlerts(pane.workspaceId);
+    };
+    const onFocusOut = () => {
+      const st = useTerminalsStore.getState();
+      if (st.focusedWindowId === pane.windowId) st.setFocusedWindow(null);
+    };
+    focusEl?.addEventListener("focusin", onFocusIn);
+    focusEl?.addEventListener("focusout", onFocusOut);
+
     return () => {
       ro.disconnect();
+      focusEl?.removeEventListener("focusin", onFocusIn);
+      focusEl?.removeEventListener("focusout", onFocusOut);
+      const ts = useTerminalsStore.getState();
+      if (ts.focusedWindowId === pane.windowId) ts.setFocusedWindow(null);
       if (flushRef.current != null) {
         cancelAnimationFrame(flushRef.current);
         flushRef.current = null;
@@ -174,12 +218,26 @@ export default function TerminalPane({
     return () => clearTimeout(timer);
   }, [highlighted, onHighlightDone]);
 
+  // Dismiss the header context menu on Escape.
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
   return (
     <div
       className={highlighted ? "terminal-pane-highlight" : undefined}
       style={{ display: "flex", flexDirection: "column", height: "100%" }}
     >
       <div
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
         style={{
           display: "flex",
           alignItems: "center",
@@ -189,6 +247,9 @@ export default function TerminalPane({
           background: "var(--panel)",
         }}
       >
+        {locked && (
+          <LockIcon size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+        )}
         <span
           title={title}
           style={{
@@ -220,14 +281,65 @@ export default function TerminalPane({
           {maximized ? "❐" : "▢"}
         </button>
         <button
-          style={iconBtnStyle}
-          title="Close"
+          style={{
+            ...iconBtnStyle,
+            opacity: locked ? 0.4 : 1,
+            cursor: locked ? "not-allowed" : "pointer",
+          }}
+          title={locked ? "Locked — unlock to close" : "Close"}
           aria-label="Close terminal"
+          disabled={locked}
           onClick={onRemove}
         >
           ×
         </button>
       </div>
+
+      {menu && (
+        <>
+          {/* Full-screen backdrop swallows the next click/right-click so the
+              menu closes when you act anywhere outside it. */}
+          <div
+            onClick={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 1000 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: menu.y,
+              left: menu.x,
+              zIndex: 1001,
+              minWidth: 150,
+              padding: 4,
+              background: "var(--surface-raised)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-md)",
+              boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
+            }}
+          >
+            <button
+              style={menuItemStyle}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--panel)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+              onClick={() => {
+                onToggleLock?.();
+                setMenu(null);
+              }}
+            >
+              {locked ? <LockOpenIcon size={14} /> : <LockIcon size={14} />}
+              <span>{locked ? "Unlock" : "Lock"}</span>
+            </button>
+          </div>
+        </>
+      )}
       <div
         ref={containerRef}
         onMouseDown={() => termRef.current?.focus()}

@@ -200,6 +200,12 @@ export function workspaceClose(workspaceId: string): Promise<void> {
   return invoke("workspace_close", { workspaceId });
 }
 
+// Kick an immediate sync cycle for a workspace's GitHub worker (the backend
+// `notify`s the running worker; it's a no-op for local-only workspaces).
+export function syncNow(workspaceId: string): Promise<void> {
+  return invoke("sync_now", { workspaceId });
+}
+
 // ---- events ----
 export function subscribeTerminalFocus(
   cb: (payload: { workspace_id: string; window_id: string }) => void
@@ -221,6 +227,23 @@ export function subscribeSync(
   handler: (payload: { workspace_id: string; status: string; last_sync?: string }) => void
 ): Promise<() => void> {
   return listen<{ workspace_id: string; status: string; last_sync?: string }>("evt:sync", (ev) => {
+    handler(ev.payload);
+  });
+}
+
+export interface TerminalAlertPayload {
+  workspace_id: string;
+  window_id: string;
+  kind: "completed" | "bell" | "app";
+  detail: string;
+}
+
+// Emitted by the backend completion monitor (term_monitor) when a command or app
+// inside a tmux window finishes / rings the bell / posts a notification.
+export function subscribeTerminalAlert(
+  handler: (payload: TerminalAlertPayload) => void
+): Promise<() => void> {
+  return listen<TerminalAlertPayload>("evt:terminal-alert", (ev) => {
     handler(ev.payload);
   });
 }

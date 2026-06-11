@@ -7,21 +7,33 @@ export interface SyncStatusEntry {
   lastSync?: string;
 }
 
+// Unseen terminal completions for a workspace, shown as a badge on its pill.
+export interface TerminalAlerts {
+  count: number;
+  messages: string[];
+}
+
 interface WorkspacesState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   syncStatus: Record<string, SyncStatusEntry>;
+  terminalAlerts: Record<string, TerminalAlerts>;
   load: () => Promise<void>;
   setActive: (id: string) => void;
   addWorkspace: (path: string) => Promise<Workspace | null>;
   closeWorkspace: (id: string) => Promise<void>;
   updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => void;
+  pushTerminalAlert: (workspaceId: string, message: string) => void;
+  clearTerminalAlerts: (workspaceId: string) => void;
 }
+
+const MAX_ALERT_MESSAGES = 20;
 
 export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
   syncStatus: {},
+  terminalAlerts: {},
 
   load: async () => {
     const workspaces = await workspaceList();
@@ -36,6 +48,8 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
 
   setActive: (id: string) => {
     set({ activeWorkspaceId: id });
+    // Visiting a workspace means you've seen its completions — drop the badge.
+    get().clearTerminalAlerts(id);
   },
 
   addWorkspace: async (path: string) => {
@@ -80,5 +94,27 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
         [workspaceId]: { status: status as SyncStatusEntry["status"], lastSync },
       },
     }));
+  },
+
+  pushTerminalAlert: (workspaceId: string, message: string) => {
+    set((s) => {
+      const cur = s.terminalAlerts[workspaceId] ?? { count: 0, messages: [] };
+      const messages = [message, ...cur.messages].slice(0, MAX_ALERT_MESSAGES);
+      return {
+        terminalAlerts: {
+          ...s.terminalAlerts,
+          [workspaceId]: { count: cur.count + 1, messages },
+        },
+      };
+    });
+  },
+
+  clearTerminalAlerts: (workspaceId: string) => {
+    set((s) => {
+      if (!s.terminalAlerts[workspaceId]) return s;
+      const next = { ...s.terminalAlerts };
+      delete next[workspaceId];
+      return { terminalAlerts: next };
+    });
   },
 }));

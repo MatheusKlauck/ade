@@ -1,10 +1,10 @@
 @keyframes terminal-pane-glow {
   0% {
-    box-shadow: 0 0 8px 3px rgba(52, 152, 219, 0.8);
+    box-shadow: 0 0 8px 3px rgba(240, 47, 194, 0.8);
     border-color: var(--focus-ring);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(52, 152, 219, 0);
+    box-shadow: 0 0 0 0 rgba(240, 47, 194, 0);
     border-color: var(--border);
   }
 }
@@ -16,18 +16,19 @@
 
 /* Theme variables (CONTRACTS §17 / DESIGN.md token layer) */
 :root[data-theme="dark"] {
-  /* Core surfaces + ink (legacy names kept working) */
-  --bg: #1a1a1a;
-  --fg: #ccc;
-  --panel: #1e1e1e;
-  --accent: #4a9eff;
-  --border: #333;
-  --input-bg: #2a2a2a;
-  --input-border: #444;
-  --muted: #999;
+  /* Core surfaces + ink — deep indigo→plum, tinted toward the magenta brand hue
+     (icon.jpg). Dark-mode depth comes from lighter surfaces, not shadow. */
+  --bg: #14122b;
+  --fg: #d6d2e2;
+  --panel: #1b1633;
+  --accent: #f02fc2;
+  --border: #3a2f55;
+  --input-bg: #221c3a;
+  --input-border: #463a66;
+  --muted: #a39cba;
 
   /* Surfaces */
-  --surface-raised: #222;
+  --surface-raised: #241d40;
   --surface-input: var(--input-bg);
 
   /* Text on saturated chips/status (always white). --accent-ink is the text on
@@ -37,18 +38,22 @@
   --accent-ink: #1a1a1a;
 
   /* Source hues — lightened on dark so the 10–11px owner/repo + "local" tags
-     clear WCAG AA (≥4.5:1) on --bg #1a1a1a (was #8250df≈3.4:1 / #6e7781≈3.4:1). */
+     clear WCAG AA (≥4.5:1) on --bg #14122b (≈5.6:1 / ≈5.9:1). */
   --source-github: #a371f7;
   --source-local: #8b949e;
 
   /* Semantic status */
   --status-error: #e74c3c;
   --status-error-deep: #c0392b;
-  --status-info: #2980b9;
+  --status-info: #0e7c8a;
   --status-warning: #f39c12;
+  --status-success: #3fe07a;
+
+  /* Brand secondary — the icon's cyan "data" hue, for sync / in-progress state. */
+  --accent-cyan: #2fdce4;
 
   /* Focus / drop */
-  --focus-ring: #3498db;
+  --focus-ring: #f02fc2;
   --drop-target: color-mix(in oklab, var(--accent) 12%, transparent);
 
   /* Radii */
@@ -83,25 +88,25 @@
 }
 
 :root[data-theme="light"] {
-  /* Core surfaces + ink (legacy names kept working) */
-  --bg: #f5f5f5;
-  --fg: #222;
+  /* Core surfaces + ink — light mode, whispered toward the magenta brand hue. */
+  --bg: #f4f1f7;
+  --fg: #1f1a2b;
   --panel: #ffffff;
-  --accent: #1a73e8;
-  --border: #ddd;
+  --accent: #f02fc2;
+  --border: #ddd6e6;
   --input-bg: #fff;
-  --input-border: #ccc;
-  --muted: #666;
+  --input-border: #cabfd6;
+  --muted: #6a6280;
 
   /* Surfaces */
-  --surface-raised: #ececec;
+  --surface-raised: #ebe6f0;
   --surface-input: var(--input-bg);
 
   /* Text on saturated chips/status (always white). --accent-ink is the text on
      the accent BUTTON specifically: auto-computed at runtime from --accent
      (App.tsx) so it stays legible for any user-chosen accent. */
   --on-accent: #fff;
-  --accent-ink: #ffffff;
+  --accent-ink: #1a1a1a;
 
   /* Source hues — darkened on light so the small owner/repo + "local" tags
      clear WCAG AA (≥4.5:1) on --bg #f5f5f5 (local #6e7781 was ≈4.2:1). */
@@ -111,11 +116,15 @@
   /* Semantic status */
   --status-error: #e74c3c;
   --status-error-deep: #c0392b;
-  --status-info: #2980b9;
+  --status-info: #0e7c8a;
   --status-warning: #f39c12;
+  --status-success: #107a39;
+
+  /* Brand secondary — the icon's cyan "data" hue, deepened for light surfaces. */
+  --accent-cyan: #0c7a86;
 
   /* Focus / drop */
-  --focus-ring: #1a73e8;
+  --focus-ring: #f02fc2;
   --drop-target: color-mix(in oklab, var(--accent) 12%, transparent);
 
   /* Radii */
@@ -227,14 +236,77 @@ textarea:focus-visible {
   }
 }
 
+/* Tab close button — a destructive action (kills the workspace's tmux session),
+   so its hover reads as danger, distinct from the harmless brightness hover. */
+.ade-tab-close {
+  color: var(--muted);
+  transition: color var(--dur-state) var(--ease-out-quart);
+}
+.ade-tab-close:hover {
+  color: var(--status-error);
+}
+
+/* Toast entrance — neutralized by the global reduced-motion rule above. */
+@keyframes ade-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ade-toast {
+  animation: ade-toast-in 220ms var(--ease-out-quart);
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    Window drag regions (titleBarStyle: Overlay)
-   The AppBar exposes isolated drag handles (wordmark + the flexible spacer)
-   carrying data-tauri-drag-region. They contain NO interactive children, so
-   app-region: drag here can't swallow button clicks. Tauri also wires the
-   attribute via JS; this rule adds robustness (incl. Windows touch + dbl-click).
+   The whole AppBar carries data-tauri-drag-region so any empty part of the title
+   bar drags the window (incl. across displays). On macOS (WKWebView) app-region
+   is inert and Tauri drags by matching the EXACT mousedown target, so the nested
+   tabs/buttons keep their clicks. On Chromium webviews (Windows WebView2)
+   app-region: drag DOES cover the element's whole box, so interactive children
+   must opt back out with no-drag or they'd swallow the click.
    ────────────────────────────────────────────────────────────────────────── */
 [data-tauri-drag-region] {
   -webkit-app-region: drag;
   app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] a[href],
+[data-tauri-drag-region] [role="button"] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Board dock resize handle (KanbanDock inline split)
+   The grip is the draggable seam between the terminal area and the board panel.
+   Hover/focus-visible can only live in CSS, not inline styles.
+   ────────────────────────────────────────────────────────────────────────── */
+.ade-resize-grip {
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 120ms ease-out, width 120ms ease-out;
+}
+.ade-resize-handle:hover .ade-resize-grip,
+.ade-resize-handle:focus-visible .ade-resize-grip {
+  background: var(--accent);
+  width: 52px;
+}
+.ade-resize-handle:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-resize-grip {
+    transition: none;
+  }
 }

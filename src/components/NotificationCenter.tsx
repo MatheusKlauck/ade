@@ -29,7 +29,7 @@ function levelColor(level: NotifyLevel): string {
     case "warn":
       return "var(--status-warning)";
     case "info":
-      return "var(--focus-ring)";
+      return "var(--accent-cyan)";
   }
 }
 

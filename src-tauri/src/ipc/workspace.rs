@@ -75,7 +75,7 @@ pub async fn workspace_create(
         // Respawn a sync worker if this workspace is GitHub-linked (it was
         // torn down on close).
         if existing.github_owner.is_some() {
-            let token = crate::ipc::github::keychain_get()
+            let token = crate::ipc::github::keychain_get_for_workspace(&existing.id)
                 .ok()
                 .flatten()
                 .unwrap_or_default();
@@ -177,7 +177,7 @@ pub async fn workspace_create(
 
     // If this workspace is GitHub-linked, spawn a sync worker for it.
     if github_owner.is_some() {
-        let token = crate::ipc::github::keychain_get()
+        let token = crate::ipc::github::keychain_get_for_workspace(&ws_id)
             .ok()
             .flatten()
             .unwrap_or_default();

@@ -4,7 +4,7 @@ import { settingGet, settingSet, githubSetToken } from "../lib/ipc";
 // Default values per CONTRACTS §7 and §17
 export const DEFAULTS: Record<string, string> = {
   theme: "dark",
-  accent: "#4a9eff",
+  accent: "#f02fc2",
   startup_command: "",
   startup_delay_secs: "3",
   sync_interval_secs: "30",

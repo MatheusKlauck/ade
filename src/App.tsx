@@ -5,6 +5,8 @@ import {
   boardGet,
   subscribeBoard,
   subscribeSync,
+  subscribeTerminalAlert,
+  type TerminalAlertPayload,
   terminalOpen,
   terminalWrite,
   uiStateGet,
@@ -14,13 +16,13 @@ import AppBar from "./components/AppBar";
 import Settings from "./components/Settings";
 import TerminalArea from "./components/TerminalArea";
 import KanbanDock from "./components/KanbanDock";
+import Toast, { type ToastData } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
 import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
 import { useSettingsStore } from "./store/settings";
 import Onboarding from "./components/Onboarding";
-import DevNav from "./components/DevNav";
 import { contrastingTextColor } from "./lib/color";
 
 /** Schedule sending the startup command to a newly-opened terminal pane. */
@@ -37,15 +39,41 @@ function scheduleStartupCommand(paneId: string) {
   }, delaySecs * 1000);
 }
 
+/** Best-effort label for the terminal window from its linked card, else null. */
+function titleForWindow(workspaceId: string, windowId: string): string | null {
+  const board = useBoardStore.getState().boards[workspaceId];
+  if (!board) return null;
+  for (const colId of Object.keys(board.cardsByColumn)) {
+    const card = board.cardsByColumn[colId].find(
+      (c) => c.terminal_window_id === windowId
+    );
+    if (card) {
+      return card.github_issue_number != null
+        ? `#${card.github_issue_number} | ${card.title}`
+        : card.title;
+    }
+  }
+  return null;
+}
+
+/** Human-readable text for a terminal completion/bell/app alert. */
+function formatTerminalAlert(p: TerminalAlertPayload): string {
+  const title = titleForWindow(p.workspace_id, p.window_id);
+  const who = title ? `${title}: ` : "";
+  if (p.kind === "completed") {
+    const failed = p.detail && p.detail !== "0";
+    return `${who}comando concluído${failed ? ` (exit ${p.detail})` : ""}`;
+  }
+  if (p.kind === "bell") return `${who}bell`;
+  return `${who}${p.detail || "notificação"}`;
+}
+
 export default function App() {
-  const [toast, setToast] = useState<{
-    level: string;
-    code: string;
-    message: string;
-  } | null>(null);
+  const [toast, setToast] = useState<ToastData | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [showBoard, setShowBoard] = useState(false);
-  const [devScreen, setDevScreen] = useState<string | null>(null);
+
+  // Stable so the Toast's auto-dismiss timer isn't reset on every App re-render.
+  const dismissToast = useCallback(() => setToast(null), []);
 
   // Apply theme at startup using settings store
   const settingsLoad = useSettingsStore((s) => s.load);
@@ -77,6 +105,7 @@ export default function App() {
   const highlightedWindowId = useTerminalsStore((s) => s.highlightedWindowId);
   const focusWindow = useTerminalsStore((s) => s.focusWindow);
   const clearHighlight = useTerminalsStore((s) => s.clearHighlight);
+  const loadLocked = useTerminalsStore((s) => s.loadLocked);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
@@ -106,7 +135,6 @@ export default function App() {
     subscribeNotify((payload) => {
       setToast(payload);
       notifyPush(payload.level as NotifyLevel, payload.code as NotifyCode, payload.message);
-      setTimeout(() => setToast(null), 6000);
     }).then((u) => {
       unsub = u;
     });
@@ -139,6 +167,37 @@ export default function App() {
       unsub.then((u) => u());
     };
   }, [updateSyncStatus]);
+
+  // Subscribe to terminal completion alerts (from the backend monitor). Notify
+  // only for terminals you're NOT watching: skip the focused window while the
+  // app window itself has focus. A short throttle collapses bursts (e.g. a
+  // program ringing the bell repeatedly). Surviving alerts accumulate on the
+  // originating workspace's pill.
+  const alertThrottle = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    const unsub = subscribeTerminalAlert((p) => {
+      const { focusedWindowId } = useTerminalsStore.getState();
+      if (p.window_id === focusedWindowId && document.hasFocus()) return;
+
+      const key = `${p.window_id}:${p.kind}`;
+      const now = Date.now();
+      const last = alertThrottle.current.get(key) ?? 0;
+      if (now - last < 700) return;
+      alertThrottle.current.set(key, now);
+
+      useWorkspacesStore
+        .getState()
+        .pushTerminalAlert(p.workspace_id, formatTerminalAlert(p));
+    });
+    return () => {
+      unsub.then((u) => u());
+    };
+  }, []);
+
+  // When the active workspace changes, load its persisted terminal lock state.
+  useEffect(() => {
+    if (activeWorkspaceId) loadLocked(activeWorkspaceId);
+  }, [activeWorkspaceId, loadLocked]);
 
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {
@@ -227,6 +286,7 @@ export default function App() {
         );
         if (!stored) return;
         const windowIds: string[] = JSON.parse(stored);
+        let failed = 0;
         for (const wid of windowIds) {
           try {
             const result = await terminalOpen(activeWorkspaceId, wid);
@@ -238,8 +298,19 @@ export default function App() {
             };
             addPane(pane);
           } catch {
-            // Window no longer exists, skip it
+            // The tmux window is gone (died/killed since we last saw it). That's
+            // silent data loss for the user, so surface it rather than swallow.
+            failed++;
           }
+        }
+        if (failed > 0) {
+          // Toast (not the history store): there's no CONTRACTS §7 code for
+          // reattach loss, and that enum is exhaustive — so don't invent one.
+          setToast({
+            level: "warn",
+            code: "TERMINALS_NOT_RESTORED",
+            message: `${failed} terminal${failed > 1 ? "s" : ""} couldn't be restored — the tmux window${failed > 1 ? "s are" : " is"} gone.`,
+          });
         }
         // Clear stored IDs after successful reattach (they'll be re-persisted on next switch)
         await uiStateSet(`terminals:${activeWorkspaceId}`, "[]").catch(
@@ -282,20 +353,10 @@ export default function App() {
 
   const handleSettingsSaved = (login: string) => {
     setToast({ level: "info", code: "TOKEN_SAVED", message: `GitHub connected as ${login}` });
-    setTimeout(() => setToast(null), 6000);
   };
 
-  // Dev nav: force-show a screen regardless of normal app state
-  const handleDevNavigate = (screenId: string) => {
-    setDevScreen(screenId);
-    setShowSettings(false);
-    setShowBoard(false);
-    if (screenId === "settings") setShowSettings(true);
-    if (screenId === "board") setShowBoard(true);
-  };
-
-  // Show onboarding when no workspaces exist (unless dev nav overrides)
-  if (workspaces.length === 0 && devScreen !== "workspace") {
+  // Show onboarding when no workspaces exist
+  if (workspaces.length === 0) {
     return (
       <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)", color: "var(--fg)" }}>
         {/* titleBarStyle: Overlay removes the native title bar, so the window
@@ -304,24 +365,8 @@ export default function App() {
           data-tauri-drag-region
           style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
         />
-        {toast && (
-          <div
-            style={{
-              position: "fixed",
-              top: 16,
-              right: 16,
-              padding: "12px 16px",
-              borderRadius: 6,
-              background: toast.level === "error" ? "var(--status-error-deep)" : "var(--status-info)",
-              color: "var(--on-accent)",
-              zIndex: "var(--z-toast)",
-            }}
-          >
-            <strong>{toast.code}</strong>: {toast.message}
-          </div>
-        )}
+        {toast && <Toast toast={toast} onDismiss={dismissToast} />}
         <Onboarding />
-        <DevNav onNavigate={handleDevNavigate} />
       </div>
     );
   }
@@ -342,22 +387,7 @@ export default function App() {
         color: "var(--fg)",
       }}
     >
-      {toast && (
-        <div
-          style={{
-            position: "fixed",
-            top: 16,
-            right: 16,
-            padding: "12px 16px",
-            borderRadius: 6,
-            background: toast.level === "error" ? "var(--status-error-deep)" : "var(--status-info)",
-            color: "var(--on-accent)",
-            zIndex: "var(--z-toast)",
-          }}
-        >
-          <strong>{toast.code}</strong>: {toast.message}
-        </div>
-      )}
+      {toast && <Toast toast={toast} onDismiss={dismissToast} />}
       <AppBar onOpenSettings={() => setShowSettings(true)} />
       <TerminalArea
         panes={activePanes}
@@ -366,14 +396,13 @@ export default function App() {
         highlightedWindowId={highlightedWindowId}
         onHighlightDone={clearHighlight}
       />
-      <KanbanDock workspaceId={activeWorkspaceId} forceOpen={showBoard} onCloseDrawer={() => setShowBoard(false)} />
+      <KanbanDock workspaceId={activeWorkspaceId} />
       {showSettings && (
         <Settings
-          onClose={() => { setShowSettings(false); setDevScreen(null); }}
+          onClose={() => setShowSettings(false)}
           onSaved={handleSettingsSaved}
         />
       )}
-      <DevNav onNavigate={handleDevNavigate} />
     </div>
   );
 }

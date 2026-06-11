@@ -1,18 +1,5 @@
 import { useWorkspacesStore, type SyncStatusEntry } from "../store/workspaces";
 
-function formatTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  return d.toLocaleDateString();
-}
-
 export default function SyncIndicator({ workspaceId }: { workspaceId: string }) {
   const entry = useWorkspacesStore((s) => s.syncStatus[workspaceId]) as
     | SyncStatusEntry
@@ -20,7 +7,7 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
 
   if (!entry) return null;
 
-  const { status, lastSync } = entry;
+  const { status } = entry;
 
   if (status === "syncing") {
     return (
@@ -30,7 +17,7 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
           alignItems: "center",
           gap: 4,
           fontSize: 11,
-          color: "var(--accent, #4a9eff)",
+          color: "var(--accent-cyan)",
         }}
       >
         <span
@@ -38,7 +25,7 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
             display: "inline-block",
             width: 10,
             height: 10,
-            border: "1.5px solid var(--accent, #4a9eff)",
+            border: "1.5px solid var(--accent-cyan)",
             borderTopColor: "transparent",
             borderRadius: "50%",
             animation: "sync-spin 0.6s linear infinite",
@@ -64,16 +51,8 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
     );
   }
 
-  // status === "idle"
-  return (
-    <span
-      style={{
-        fontSize: 11,
-        color: "var(--fg, #999)",
-      }}
-      title={lastSync ? `Last synced: ${new Date(lastSync).toLocaleString()}` : "Synced"}
-    >
-      ✓ Synced{lastSync ? ` ${formatTime(lastSync)}` : ""}
-    </span>
-  );
+  // status === "idle": the "✓ Synced just now" pill was visual noise beside the
+  // tab title. The AppBar's AggregateSyncStatus already reports the all-quiet
+  // state globally, so per-tab we surface only the in-flight / error signal.
+  return null;
 }

@@ -20,7 +20,7 @@ describe("settings store defaults", () => {
     resetStore();
     const state = useSettingsStore.getState();
     expect(state.theme).toBe("dark");
-    expect(state.accent).toBe("#4a9eff");
+    expect(state.accent).toBe("#f02fc2");
     expect(state.startupCommand).toBe("");
     expect(state.startupDelay).toBe("3");
     expect(state.syncInterval).toBe("30");

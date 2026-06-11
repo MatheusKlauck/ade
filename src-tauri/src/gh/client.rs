@@ -2,6 +2,7 @@
 
 use crate::error::AdeError;
 use crate::gh::types::{IssueComment, RemoteIssue};
+use std::time::Duration;
 
 /// HTTP client for the GitHub Issues API.
 ///
@@ -17,10 +18,25 @@ pub struct GitHubClient {
 #[allow(dead_code)]
 impl GitHubClient {
     pub fn new(base_url: String, token: String) -> Self {
+        // Build a client with bounded timeouts and a short idle-pool timeout.
+        // Two reasons this matters on flaky networks (e.g. one that must pin a
+        // single reachable GitHub IP in /etc/hosts):
+        //   * `pool_idle_timeout` shorter than GitHub's server-side keep-alive
+        //     stops us reusing a socket the edge already closed — the classic
+        //     cause of a transient "error sending request" on an up link.
+        //   * `connect_timeout`/`timeout` bound a hung request so one bad cycle
+        //     can't stall the worker for the OS default (~75s+).
+        let http = reqwest::Client::builder()
+            .user_agent("ade")
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             base_url,
             token,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -99,13 +115,13 @@ impl GitHubClient {
     /// Handles rate limiting (403/429) per CONTRACTS §11.
     async fn get(&self, url: &str) -> Result<reqwest::Response, AdeError> {
         let response = self
-            .http
-            .get(url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "ade")
-            .send()
-            .await
-            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+            .send_with_retry(
+                self.http
+                    .get(url)
+                    .header("Authorization", format!("Bearer {}", self.token))
+                    .header("User-Agent", "ade"),
+            )
+            .await?;
 
         let response = self.check_rate_limit(response).await?;
         let status = response.status();
@@ -416,15 +432,15 @@ impl GitHubClient {
         body: &serde_json::Value,
     ) -> Result<reqwest::Response, AdeError> {
         let response = self
-            .http
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "ade")
-            .header("Content-Type", "application/json")
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+            .send_with_retry(
+                self.http
+                    .post(url)
+                    .header("Authorization", format!("Bearer {}", self.token))
+                    .header("User-Agent", "ade")
+                    .header("Content-Type", "application/json")
+                    .body(body.to_string()),
+            )
+            .await?;
 
         self.check_rate_limit(response).await
     }
@@ -437,15 +453,15 @@ impl GitHubClient {
         body: &serde_json::Value,
     ) -> Result<reqwest::Response, AdeError> {
         let response = self
-            .http
-            .patch(url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "ade")
-            .header("Content-Type", "application/json")
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+            .send_with_retry(
+                self.http
+                    .patch(url)
+                    .header("Authorization", format!("Bearer {}", self.token))
+                    .header("User-Agent", "ade")
+                    .header("Content-Type", "application/json")
+                    .body(body.to_string()),
+            )
+            .await?;
 
         self.check_rate_limit(response).await
     }
@@ -454,15 +470,51 @@ impl GitHubClient {
     /// Handles rate limiting (403/429) per CONTRACTS §11.
     async fn delete(&self, url: &str) -> Result<reqwest::Response, AdeError> {
         let response = self
-            .http
-            .delete(url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "ade")
-            .send()
-            .await
-            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+            .send_with_retry(
+                self.http
+                    .delete(url)
+                    .header("Authorization", format!("Bearer {}", self.token))
+                    .header("User-Agent", "ade"),
+            )
+            .await?;
 
         self.check_rate_limit(response).await
+    }
+
+    /// Send a request, retrying a few times on *transient transport* failures
+    /// (connect/timeout/send errors that never produced an HTTP response). A
+    /// single dropped socket or momentary blip — common on networks that must
+    /// pin a GitHub IP — then recovers within the same cycle instead of
+    /// surfacing SYNC_ERROR. HTTP error statuses (4xx/5xx) are NOT retried
+    /// here; they flow through to the caller's status handling.
+    async fn send_with_retry(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, AdeError> {
+        const MAX_ATTEMPTS: u32 = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            // Clone per attempt so `builder` survives for a retry. try_clone()
+            // is None only for non-cloneable streaming bodies, which we never
+            // use (our bodies are owned strings) — fall back to a single send.
+            let Some(req) = builder.try_clone() else {
+                return builder
+                    .send()
+                    .await
+                    .map_err(|e| AdeError::GitHub(format!("request failed: {e}")));
+            };
+            match req.send().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let transient = e.is_connect() || e.is_timeout() || e.is_request();
+                    if attempt < MAX_ATTEMPTS && transient {
+                        tokio::time::sleep(Duration::from_millis(250 * attempt as u64)).await;
+                        continue;
+                    }
+                    return Err(AdeError::GitHub(format!("request failed: {e}")));
+                }
+            }
+        }
+        unreachable!("loop returns on the final attempt")
     }
 
     /// Check rate-limit headers on a response.

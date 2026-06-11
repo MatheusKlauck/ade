@@ -3,13 +3,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
-import { boardGet } from "../lib/ipc";
+import { boardGet, type Workspace } from "../lib/ipc";
 import SyncIndicator from "./SyncIndicator";
-import { CloseIcon, PlusIcon } from "./icons";
+import ConfirmDialog from "./ConfirmDialog";
+import { CheckIcon, CloseIcon, PlusIcon } from "./icons";
 
 export default function Tabs() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
+  const terminalAlerts = useWorkspacesStore((s) => s.terminalAlerts);
   const setActive = useWorkspacesStore((s) => s.setActive);
   const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
   const closeWorkspace = useWorkspacesStore((s) => s.closeWorkspace);
@@ -21,6 +23,10 @@ export default function Tabs() {
 
   const loadedRef = useRef<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  const [pendingClose, setPendingClose] = useState<{
+    workspace: Workspace;
+    paneCount: number;
+  } | null>(null);
 
   const handleTabClick = (workspaceId: string) => {
     setActive(workspaceId);
@@ -34,17 +40,28 @@ export default function Tabs() {
     }
   };
 
-  const handleCloseWorkspace = async (
-    e: MouseEvent<HTMLButtonElement>,
-    workspaceId: string
-  ) => {
-    e.stopPropagation();
+  const doClose = async (workspaceId: string) => {
     // Drop the workspace's terminal panes from the UI; the backend close kills
     // its tmux session, so any pane-close calls during unmount just no-op.
     removePanesForWorkspace(workspaceId);
     await closeWorkspace(workspaceId);
     // Keep the board store's active workspace in sync if we closed the active tab.
     setActiveWorkspace(useWorkspacesStore.getState().activeWorkspaceId);
+  };
+
+  const requestClose = (e: MouseEvent<HTMLButtonElement>, ws: Workspace) => {
+    e.stopPropagation();
+    // Closing kills the tmux session — irreversible only when something is
+    // actually running. Guard that case; an empty workspace closes cheaply and
+    // reopens by re-adding its folder, so don't nag for it.
+    const paneCount = useTerminalsStore
+      .getState()
+      .getPanesForWorkspace(ws.id).length;
+    if (paneCount > 0) {
+      setPendingClose({ workspace: ws, paneCount });
+    } else {
+      doClose(ws.id);
+    }
   };
 
   const handleAddWorkspace = async () => {
@@ -88,9 +105,11 @@ export default function Tabs() {
   if (workspaces.length === 0) return null;
 
   return (
+    <>
     <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
       {workspaces.map((ws) => {
         const active = ws.id === activeWorkspaceId;
+        const alerts = terminalAlerts[ws.id];
         return (
           <div
             key={ws.id}
@@ -150,9 +169,32 @@ export default function Tabs() {
                 {ws.github_owner ? `${ws.github_owner}/${ws.github_repo}` : "local"}
               </span>
               <SyncIndicator workspaceId={ws.id} />
+              {alerts && alerts.count > 0 && (
+                <span
+                  title={alerts.messages.join("\n")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 3,
+                    flexShrink: 0,
+                    height: 16,
+                    padding: "0 5px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    lineHeight: "16px",
+                    borderRadius: "var(--radius-pill)",
+                    background: "var(--accent)",
+                    color: "var(--on-accent)",
+                  }}
+                >
+                  <CheckIcon size={10} />
+                  {alerts.count > 99 ? "99+" : alerts.count}
+                </span>
+              )}
             </button>
             <button
-              onClick={(e) => handleCloseWorkspace(e, ws.id)}
+              className="ade-tab-close"
+              onClick={(e) => requestClose(e, ws)}
               aria-label={`Close ${ws.name}`}
               title="Close workspace"
               style={{
@@ -166,7 +208,6 @@ export default function Tabs() {
                 border: "none",
                 background: "transparent",
                 borderRadius: "var(--radius-sm)",
-                color: "var(--muted)",
                 cursor: "pointer",
               }}
             >
@@ -199,5 +240,23 @@ export default function Tabs() {
         <PlusIcon size={16} />
       </button>
     </div>
+    {pendingClose && (
+      <ConfirmDialog
+        title={`Close ${pendingClose.workspace.name}?`}
+        message={`${pendingClose.paneCount} terminal${
+          pendingClose.paneCount > 1 ? "s" : ""
+        } running here will be closed and the tmux session ended. This can't be undone.`}
+        confirmLabel="Close workspace"
+        cancelLabel="Keep open"
+        destructive
+        onConfirm={() => {
+          const id = pendingClose.workspace.id;
+          setPendingClose(null);
+          doClose(id);
+        }}
+        onCancel={() => setPendingClose(null)}
+      />
+    )}
+    </>
   );
 }

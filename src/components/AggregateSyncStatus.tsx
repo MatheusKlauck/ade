@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
+import { syncNow } from "../lib/ipc";
+import { RefreshIcon } from "./icons";
 
 // Global sync summary across ALL GitHub-backed workspaces, shown in the AppBar so
 // a sync error/run in an inactive workspace is visible without switching tabs.
@@ -11,6 +14,7 @@ export default function AggregateSyncStatus() {
   const syncStatus = useWorkspacesStore((s) => s.syncStatus);
   const setActive = useWorkspacesStore((s) => s.setActive);
   const setActiveWorkspace = useBoardStore((s) => s.setActiveWorkspace);
+  const [hovered, setHovered] = useState(false);
 
   const tracked = workspaces.filter((w) => w.github_owner);
   if (tracked.length === 0) return null;
@@ -66,7 +70,7 @@ export default function AggregateSyncStatus() {
         title="Go to the syncing workspace"
         style={{
           ...baseStyle,
-          color: "var(--accent)",
+          color: "var(--accent-cyan)",
           background: "transparent",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-pill)",
@@ -80,7 +84,7 @@ export default function AggregateSyncStatus() {
             display: "inline-block",
             width: 10,
             height: 10,
-            border: "1.5px solid var(--accent)",
+            border: "1.5px solid var(--accent-cyan)",
             borderTopColor: "transparent",
             borderRadius: "50%",
             animation: "ade-spin 0.6s linear infinite",
@@ -91,10 +95,45 @@ export default function AggregateSyncStatus() {
     );
   }
 
+  // All quiet — but make it a re-sync trigger. Hover reveals the affordance
+  // (pill border + cyan tint + refresh glyph); clicking notifies every tracked
+  // worker, which immediately flips this chip into the "Syncing…" branch above.
+  const resyncAll = () => {
+    for (const w of tracked) syncNow(w.id).catch(() => {});
+  };
   return (
-    <span style={{ ...baseStyle, color: "var(--muted)" }} title="All workspaces synced">
-      <span aria-hidden>✓</span>
+    <button
+      onClick={resyncAll}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title="Re-sync all workspaces"
+      aria-label="Re-sync all workspaces"
+      style={{
+        ...baseStyle,
+        color: hovered ? "var(--accent-cyan)" : "var(--status-success)",
+        background: "transparent",
+        border: `1px solid ${hovered ? "var(--border)" : "transparent"}`,
+        borderRadius: "var(--radius-pill)",
+        padding: "3px 10px",
+        cursor: "pointer",
+        transition:
+          "color var(--dur-state) var(--ease-out-quart), border-color var(--dur-state) var(--ease-out-quart)",
+      }}
+    >
+      {/* Fixed-width leading slot so the ✓ → ⟳ swap never nudges the neighbours. */}
+      <span
+        aria-hidden
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 12,
+          height: 12,
+        }}
+      >
+        {hovered ? <RefreshIcon size={12} /> : "✓"}
+      </span>
       All synced
-    </span>
+    </button>
   );
 }

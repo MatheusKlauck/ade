@@ -10,11 +10,14 @@ import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import Card from "./Card";
 import CardDetail from "./CardDetail";
+import { ChevronIcon } from "./icons";
 
 export const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
-// M6-T3: Cap rendered cards per column at 100; show "show more" for overflow.
-const MAX_CARDS_PER_COLUMN = 100;
+// Paginate cards per column so a long backlog can't make a column outgrow the
+// board panel. One page = PAGE_SIZE cards; the card list also scrolls internally
+// as a safety net if a single page is taller than the panel.
+const PAGE_SIZE = 10;
 
 interface BoardProps {
   workspaceId: string | null;
@@ -32,8 +35,8 @@ export default function Board({ workspaceId }: BoardProps) {
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  // Track which columns have "show more" expanded
-  const [expandedColumns, setExpandedColumns] = useState<Set<string>>(new Set());
+  // Per-column current page (0-indexed); columns paginate at PAGE_SIZE cards.
+  const [pages, setPages] = useState<Record<string, number>>({});
 
   // Subscribe to board events for the active workspace
   useEffect(() => {
@@ -53,9 +56,9 @@ export default function Board({ workspaceId }: BoardProps) {
     }).catch(() => {});
   }, [workspaceId, setBoard]);
 
-  // Clear expanded columns when workspace changes
+  // Reset pagination when the workspace changes.
   useEffect(() => {
-    setExpandedColumns(new Set());
+    setPages({});
   }, [workspaceId]);
 
   // DnD handlers MUST read the *latest* board state, not the render-time
@@ -203,14 +206,16 @@ export default function Board({ workspaceId }: BoardProps) {
   }
 
   return (
-    <div style={{ display: "flex", flex: 1 }}>
+    <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
       <div
         style={{
           display: "flex",
           gap: "var(--space-md)",
           padding: "var(--space-lg)",
           overflowX: "auto",
+          overflowY: "hidden",
           flex: 1,
+          minHeight: 0,
         }}
       >
         {sortedColumns.map((col) => (
@@ -225,18 +230,10 @@ export default function Board({ workspaceId }: BoardProps) {
             setNewTitle={setNewTitle}
             onCreateCard={handleCreateCard}
             onCardDoubleClick={setSelectedCardId}
-            expanded={expandedColumns.has(col.id)}
-            onToggleExpand={() => {
-              setExpandedColumns((prev) => {
-                const next = new Set(prev);
-                if (next.has(col.id)) {
-                  next.delete(col.id);
-                } else {
-                  next.add(col.id);
-                }
-                return next;
-              });
-            }}
+            page={pages[col.id] || 0}
+            onPageChange={(p) =>
+              setPages((prev) => ({ ...prev, [col.id]: p }))
+            }
           />
         ))}
       </div>
@@ -262,8 +259,8 @@ function Column({
   setNewTitle,
   onCreateCard,
   onCardDoubleClick,
-  expanded,
-  onToggleExpand,
+  page,
+  onPageChange,
 }: {
   column: { id: string; name: string };
   cards: import("../lib/ipc").Card[];
@@ -274,8 +271,8 @@ function Column({
   setNewTitle: (s: string) => void;
   onCreateCard: () => void;
   onCardDoubleClick: (cardId: string) => void;
-  expanded: boolean;
-  onToggleExpand: () => void;
+  page: number;
+  onPageChange: (page: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [over, setOver] = useState(false);
@@ -315,22 +312,26 @@ function Column({
     };
   }, [column.id, onDropCard]);
 
-  // Cap rendered cards at MAX_CARDS_PER_COLUMN unless expanded
-  const overflowCount = cards.length > MAX_CARDS_PER_COLUMN ? cards.length - MAX_CARDS_PER_COLUMN : 0;
-  const visibleCards = expanded ? cards : cards.slice(0, MAX_CARDS_PER_COLUMN);
+  // Paginate at PAGE_SIZE. Clamp the page in case the card list shrank (a move
+  // or delete) since it was last set, so we never render an empty page past the
+  // end and the controls stay in range.
+  const pageCount = Math.max(1, Math.ceil(cards.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(page, 0), pageCount - 1);
+  const start = safePage * PAGE_SIZE;
+  const visibleCards = cards.slice(start, start + PAGE_SIZE);
+  const hasPages = cards.length > PAGE_SIZE;
 
-  const moreButtonStyle: CSSProperties = {
-    width: "100%",
-    padding: "var(--space-xs) var(--space-sm)",
-    fontFamily: "var(--font-sans)",
-    fontSize: 12,
-    fontWeight: 500,
-    color: "var(--accent)",
+  const pageBtnStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 24,
+    height: 24,
+    padding: 0,
+    color: "var(--fg)",
     background: "transparent",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-sm)",
-    cursor: "pointer",
-    marginTop: "var(--space-xs)",
   };
 
   return (
@@ -339,6 +340,7 @@ function Column({
       style={{
         minWidth: 260,
         maxWidth: 320,
+        minHeight: 0,
         background: over ? "var(--drop-target)" : "var(--surface-raised)",
         borderRadius: "var(--radius-lg)",
         padding: "var(--space-md)",
@@ -353,6 +355,7 @@ function Column({
           alignItems: "baseline",
           gap: "var(--space-sm)",
           marginBottom: "var(--space-md)",
+          flexShrink: 0,
         }}
       >
         <h3
@@ -376,7 +379,7 @@ function Column({
           {cards.length}
         </span>
       </div>
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {cards.length === 0 && (
           <div
             style={{
@@ -397,19 +400,55 @@ function Column({
             onDoubleClick={() => onCardDoubleClick(card.id)}
           />
         ))}
-        {overflowCount > 0 && !expanded && (
-          <button onClick={onToggleExpand} style={moreButtonStyle}>
-            Show {overflowCount} more card{overflowCount !== 1 ? "s" : ""}
-          </button>
-        )}
-        {expanded && cards.length > MAX_CARDS_PER_COLUMN && (
-          <button onClick={onToggleExpand} style={moreButtonStyle}>
-            Show fewer
-          </button>
-        )}
       </div>
+      {hasPages && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "var(--space-sm)",
+            marginTop: "var(--space-sm)",
+            flexShrink: 0,
+          }}
+        >
+          <button
+            onClick={() => onPageChange(safePage - 1)}
+            disabled={safePage === 0}
+            aria-label="Previous page"
+            style={{
+              ...pageBtnStyle,
+              opacity: safePage === 0 ? 0.4 : 1,
+              cursor: safePage === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            <ChevronIcon size={14} style={{ transform: "rotate(90deg)" }} />
+          </button>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--muted)",
+            }}
+          >
+            {start + 1}–{Math.min(start + PAGE_SIZE, cards.length)} of {cards.length}
+          </span>
+          <button
+            onClick={() => onPageChange(safePage + 1)}
+            disabled={safePage >= pageCount - 1}
+            aria-label="Next page"
+            style={{
+              ...pageBtnStyle,
+              opacity: safePage >= pageCount - 1 ? 0.4 : 1,
+              cursor: safePage >= pageCount - 1 ? "not-allowed" : "pointer",
+            }}
+          >
+            <ChevronIcon size={14} style={{ transform: "rotate(-90deg)" }} />
+          </button>
+        </div>
+      )}
       {showNewCardInput && (
-        <div style={{ marginTop: "var(--space-sm)" }}>
+        <div style={{ marginTop: "var(--space-sm)", flexShrink: 0 }}>
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}

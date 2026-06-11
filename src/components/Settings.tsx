@@ -1,10 +1,31 @@
-import { useState, useEffect, useCallback } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useSettingsStore } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
 
 interface SettingsProps {
   onClose: () => void;
   onSaved: (login: string) => void;
+}
+
+/** Normalize anything thrown across the IPC boundary into a readable string.
+ * Tauri rejects with the serialized `AdeError` (`{ code, message }`), a plain
+ * string, or — for JS-side failures — a real Error. Show the code so the cause
+ * (TOKEN_INVALID vs INTERNAL/keychain vs SYNC_WRITE_FAILED) is obvious. */
+function formatTokenError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) {
+    const obj = e as { code?: string; message?: string };
+    const code = obj.code ? `${obj.code}: ` : "";
+    return `${code}${obj.message ?? "unknown error"}`;
+  }
+  return "Failed to validate token";
 }
 
 export default function Settings({ onClose, onSaved }: SettingsProps) {
@@ -32,6 +53,50 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
   const [showTokenInput, setShowTokenInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  // Modal focus management: pull focus into the dialog on open, return it to
+  // whatever was focused before (the gear button) on close.
+  useEffect(() => {
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    const first = panel?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    (first ?? panel)?.focus();
+    return () => restoreFocusRef.current?.focus?.();
+  }, []);
+
+  // Esc closes; Tab is trapped so keyboard focus can't escape behind the scrim.
+  const handleKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const nodes = panel.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
+      if (nodes.length === 0) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    },
+    [onClose]
+  );
 
   // Sync local state from store on mount
   useEffect(() => {
@@ -98,6 +163,10 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
     }
   }, [localSyncInterval, setSyncInterval]);
 
+  // The token input is shown either on first-time setup (no stored token yet)
+  // or when the user clicks "Replace". The Save button follows the same rule.
+  const tokenInputVisible = !ghTokenDisplay || showTokenInput;
+
   const handleTokenReplace = async () => {
     if (!newToken.trim()) return;
     setSaving(true);
@@ -108,8 +177,11 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
       setShowTokenInput(false);
       onSaved(login);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to validate token";
-      setError(msg);
+      // Surface the real backend error. AdeError crosses the IPC boundary as a
+      // plain object `{ code, message }` (NOT a JS Error), so `e instanceof
+      // Error` is false and we'd otherwise show a useless generic string.
+      console.error("token validation failed:", e);
+      setError(formatTokenError(e));
     } finally {
       setSaving(false);
     }
@@ -132,6 +204,12 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
       onClick={onClose}
     >
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
         style={{
           background: "var(--panel)",
           border: "1px solid var(--border)",
@@ -142,10 +220,12 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
           color: "var(--fg)",
           maxHeight: "85vh",
           overflowY: "auto",
+          outline: "none",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <h3
+          id="settings-title"
           style={{
             margin: 0,
             marginBottom: 4,
@@ -485,7 +565,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
           >
             Close
           </button>
-          {showTokenInput && ghTokenDisplay && (
+          {tokenInputVisible && (
             <button
               onClick={handleTokenReplace}
               disabled={saving || !newToken.trim()}
