@@ -31,7 +31,7 @@
 - [x] M3-T1 workspace_create + remote parsing
 - [x] M3-T2 Tabs + per-workspace board
 - [x] M3-T3 Per-workspace terminals + lazy mount
-- [ ] M3-T4 Onboarding UI
+- [x] M3-T4 Onboarding UI
 
 ## M4 — Auto-launch
 - [ ] M4-T1 Branch logic

@@ -1,16 +1,61 @@
-// M3-T4: Full onboarding UI. Minimal stub for M3-T2 compilation.
+import { useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
+import type { Workspace } from "../lib/ipc";
 
 export default function Onboarding() {
   const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<Workspace | null>(null);
 
   const handleOpen = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({ directory: true, multiple: false });
-    if (selected && typeof selected === "string") {
-      await addWorkspace(selected);
+    setError(null);
+    setLoading(true);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected || typeof selected !== "string") {
+        setLoading(false);
+        return;
+      }
+      const ws = await addWorkspace(selected);
+      if (ws) {
+        setCreated(ws);
+      } else {
+        setError("Failed to create workspace. Please try again.");
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "An unexpected error occurred.";
+      setError(msg);
+    } finally {
+      setLoading(false);
     }
   };
+
+  if (created) {
+    const repoLabel =
+      created.github_owner && created.github_repo
+        ? `${created.github_owner}/${created.github_repo}`
+        : "local only";
+
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          background: "#1a1a1a",
+          color: "#ccc",
+        }}
+      >
+        <h2 style={{ fontSize: 24, marginBottom: 8 }}>{created.name}</h2>
+        <p style={{ fontSize: 14, color: "#888", marginBottom: 24 }}>{repoLabel}</p>
+        <p style={{ fontSize: 13, color: "#666" }}>Opening workspace…</p>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -30,18 +75,41 @@ export default function Onboarding() {
       </p>
       <button
         onClick={handleOpen}
+        disabled={loading}
         style={{
           padding: "10px 24px",
           fontSize: 14,
-          background: "#4a9eff",
-          color: "#fff",
+          background: loading ? "#2a2a2a" : "#4a9eff",
+          color: loading ? "#666" : "#fff",
           border: "none",
           borderRadius: 6,
-          cursor: "pointer",
+          cursor: loading ? "not-allowed" : "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
         }}
       >
-        Open a folder…
+        {loading && (
+          <span
+            style={{
+              display: "inline-block",
+              width: 14,
+              height: 14,
+              border: "2px solid #666",
+              borderTopColor: "#fff",
+              borderRadius: "50%",
+              animation: "spin 0.6s linear infinite",
+            }}
+          />
+        )}
+        {loading ? "Creating workspace…" : "Open a folder…"}
       </button>
+      {error && (
+        <p style={{ fontSize: 13, color: "#ff6b6b", marginTop: 16, maxWidth: 320, textAlign: "center" }}>
+          {error}
+        </p>
+      )}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
 import { boardGet } from "../lib/ipc";
@@ -7,10 +8,12 @@ export default function Tabs() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspacesStore((s) => s.setActive);
+  const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
   const setBoard = useBoardStore((s) => s.setBoard);
   const setActiveWorkspace = useBoardStore((s) => s.setActiveWorkspace);
 
   const loadedRef = useRef<Set<string>>(new Set());
+  const [creating, setCreating] = useState(false);
 
   const handleTabClick = (workspaceId: string) => {
     setActive(workspaceId);
@@ -21,6 +24,18 @@ export default function Tabs() {
         setBoard(workspaceId, res.columns, res.cards);
         loadedRef.current.add(workspaceId);
       });
+    }
+  };
+
+  const handleAddWorkspace = async () => {
+    if (creating) return;
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected) return;
+    setCreating(true);
+    try {
+      await addWorkspace(selected as string);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -85,6 +100,26 @@ export default function Tabs() {
           )}
         </button>
       ))}
+      <button
+        onClick={handleAddWorkspace}
+        disabled={creating}
+        style={{
+          padding: "8px 16px",
+          border: "none",
+          borderBottom: "2px solid transparent",
+          background: "transparent",
+          color: creating ? "#555" : "#999",
+          cursor: creating ? "not-allowed" : "pointer",
+          fontSize: 16,
+          fontWeight: 400,
+          whiteSpace: "nowrap",
+          opacity: creating ? 0.5 : 1,
+          transition: "opacity 0.15s",
+        }}
+        title="Add workspace"
+      >
+        +
+      </button>
     </div>
   );
 }
