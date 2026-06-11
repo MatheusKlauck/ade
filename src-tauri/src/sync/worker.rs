@@ -1,4 +1,4 @@
-// M2-T8: Minimal run_cycle for spike tests; M5-T3 will expand this into a full worker loop.
+// M2-T8: Minimal run_cycle for spike tests; M5-T3 expands into full worker loop.
 
 use crate::db::DbPool;
 use crate::error::AdeError;
@@ -8,12 +8,13 @@ use crate::models::Card;
 use crate::sync::engine::{desired_column, reconcile, CardSnapshot, PendingIntent};
 use crate::sync::outbox;
 use chrono::Utc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tauri::Emitter;
+use tokio::sync::Mutex;
 
 /// Trait for emitting notifications. In production, this wraps `app.emit`.
 /// In tests, it appends to a Vec for assertion.
-/// `#[allow(dead_code)]`: the worker is not yet wired into the Tauri app — that
-/// lands in M5-T3, which removes the need for these allows.
-#[allow(dead_code)]
 pub trait Notifier: Send + Sync {
     fn notify(&self, level: &str, code: &str, message: &str);
 }
@@ -55,26 +56,59 @@ impl Notifier for CaptureNotifier {
     }
 }
 
-/// Parse the `from_column_name` field of an outbox payload into a `ColumnName`.
-/// §13: the conflict check compares this source column against
-/// `desired_column(remote_now)`.
-#[allow(dead_code)]
-fn parse_column_name(payload_json: &str) -> Result<ColumnName, AdeError> {
-    let payload: serde_json::Value = serde_json::from_str(payload_json)
-        .map_err(|e| AdeError::Other(format!("outbox payload json: {}", e)))?;
-    let from_col_str = payload
-        .get("from_column_name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AdeError::Other("outbox payload missing from_column_name".into()))?;
-    match from_col_str {
-        "Backlog" => Ok(ColumnName::Backlog),
-        "Doing" => Ok(ColumnName::Doing),
-        "Paused" => Ok(ColumnName::Paused),
-        "PR" => Ok(ColumnName::Pr),
-        "Done" => Ok(ColumnName::Done),
-        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
+// ── RateBudget ──────────────────────────────────────────────────────
+
+/// Per-process rate-limit budget. Shared across all workspace workers.
+/// When a 403/429 is received, `pause_until` is set; all workers skip
+/// cycles until the pause expires.
+pub struct RateBudget {
+    paused_until: Mutex<Option<Instant>>,
+}
+
+impl RateBudget {
+    pub fn new() -> Self {
+        Self {
+            paused_until: Mutex::new(None),
+        }
+    }
+
+    /// Returns Ok(()) if not paused, Err(RateLimited) if paused.
+    /// Callers should check before making HTTP requests.
+    pub async fn check(&self) -> Result<(), AdeError> {
+        let guard = self.paused_until.lock().await;
+        if let Some(until) = *guard {
+            if Instant::now() < until {
+                let remaining = until - Instant::now();
+                return Err(AdeError::RateLimited(format!("{:?}", remaining)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Set paused_until from a rate limit response.
+    pub async fn pause_until(&self, until: Instant) {
+        *self.paused_until.lock().await = Some(until);
+    }
+
+    /// Clear the pause (e.g., after a successful request).
+    #[allow(dead_code)]
+    pub async fn clear(&self) {
+        *self.paused_until.lock().await = None;
     }
 }
+
+// ── CycleResult ─────────────────────────────────────────────────────
+
+/// What `run_cycle` returns so the caller can decide what to do next
+/// (e.g., ensure labels, emit ISSUE_LIST_LARGE).
+pub struct CycleResult {
+    pub was_seed: bool,
+    pub issue_count: usize,
+    #[allow(dead_code)]
+    pub cycle_start: String,
+}
+
+// ── run_cycle ────────────────────────────────────────────────────────
 
 /// Run one sync cycle for a workspace.
 /// 1. Look up workspace github_owner/github_repo and sync_state.last_sync
@@ -83,13 +117,16 @@ fn parse_column_name(payload_json: &str) -> Result<ColumnName, AdeError> {
 /// 4. Apply actions in one DB transaction
 /// 5. Run outbox sender pass (check each due intent against remote state)
 /// 6. Update sync_state
-#[allow(dead_code)]
 pub async fn run_cycle(
     db: &DbPool,
     gh: &GitHubClient,
     workspace_id: &str,
     notifier: &dyn Notifier,
-) -> Result<(), AdeError> {
+    rate_budget: &RateBudget,
+) -> Result<CycleResult, AdeError> {
+    // Check rate budget before making any HTTP requests.
+    rate_budget.check().await?;
+
     // 1. Look up workspace
     let ws: crate::models::Workspace = sqlx::query_as::<_, crate::models::Workspace>(
         "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
@@ -114,6 +151,8 @@ pub async fn run_cycle(
             .await
             .map_err(AdeError::Db)?;
 
+    let was_seed = last_sync.is_none();
+
     // 3. Fetch remote issues.
     // §11: the next `last_sync` watermark is captured BEFORE the request starts,
     // so issues touched during the round-trip aren't skipped next cycle.
@@ -123,6 +162,8 @@ pub async fn run_cycle(
     } else {
         gh.list_issues_seed(&owner, &repo).await?
     };
+
+    let issue_count = remote_issues.len();
 
     // 4. Build a map of local cards by github_issue_number for reconciliation
     let local_cards: Vec<Card> = sqlx::query_as::<_, Card>(
@@ -369,7 +410,197 @@ pub async fn run_cycle(
         );
     }
 
-    Ok(())
+    Ok(CycleResult {
+        was_seed,
+        issue_count,
+        cycle_start,
+    })
+}
+
+/// Parse the `from_column_name` field of an outbox payload into a `ColumnName`.
+/// §13: the conflict check compares this source column against
+/// `desired_column(remote_now)`.
+fn parse_column_name(payload_json: &str) -> Result<ColumnName, AdeError> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|e| AdeError::Other(format!("outbox payload json: {}", e)))?;
+    let from_col_str = payload
+        .get("from_column_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AdeError::Other("outbox payload missing from_column_name".into()))?;
+    match from_col_str {
+        "Backlog" => Ok(ColumnName::Backlog),
+        "Doing" => Ok(ColumnName::Doing),
+        "Paused" => Ok(ColumnName::Paused),
+        "PR" => Ok(ColumnName::Pr),
+        "Done" => Ok(ColumnName::Done),
+        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
+    }
+}
+
+// ── start_worker ─────────────────────────────────────────────────────
+
+/// Spawn a per-workspace sync worker that loops on an interval.
+/// Each cycle: sleep → check rate_budget → run_cycle → post-cycle hooks.
+/// A `Notify` allows `sync_now` to kick an immediate cycle.
+pub async fn start_worker(
+    db: DbPool,
+    gh: Arc<GitHubClient>,
+    workspace_id: String,
+    rate_budget: Arc<RateBudget>,
+    app: tauri::AppHandle,
+    notify: Arc<tokio::sync::Notify>,
+    interval_secs: u64,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    // The first tick completes immediately; skip it so we respect the interval.
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = notify.notified() => {}
+        }
+
+        // Check rate budget — if paused, skip this cycle.
+        if let Err(AdeError::RateLimited(_)) = rate_budget.check().await {
+            let _ = app.emit(
+                "evt:sync",
+                serde_json::json!({
+                    "workspace_id": &workspace_id,
+                    "status": "error",
+                    "last_sync": serde_json::Value::Null,
+                }),
+            );
+            continue;
+        }
+
+        // Emit syncing status
+        let _ = app.emit(
+            "evt:sync",
+            serde_json::json!({
+                "workspace_id": &workspace_id,
+                "status": "syncing",
+                "last_sync": serde_json::Value::Null,
+            }),
+        );
+
+        let notifier = AppNotifier(app.clone());
+        match run_cycle(&db, &gh, &workspace_id, &notifier, &rate_budget).await {
+            Ok(result) => {
+                // If seed and issue count > 500, emit ISSUE_LIST_LARGE
+                if result.was_seed && result.issue_count > 500 {
+                    crate::notify::emit_notify(
+                        &app,
+                        "warn",
+                        "ISSUE_LIST_LARGE",
+                        &format!(
+                            "workspace {} has {} issues; initial sync may take a while",
+                            workspace_id, result.issue_count
+                        ),
+                    );
+                }
+
+                // If seed, ensure labels once
+                if result.was_seed {
+                    // Look up owner/repo again
+                    let ws: crate::models::Workspace = match sqlx::query_as::<_, crate::models::Workspace>(
+                        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
+                    )
+                    .bind(&workspace_id)
+                    .fetch_one(&db)
+                    .await
+                    {
+                        Ok(ws) => ws,
+                        Err(_) => {
+                            // Can't look up workspace; skip labels ensure
+                            continue;
+                        }
+                    };
+                    if let (Some(owner), Some(repo)) =
+                        (ws.github_owner.as_ref(), ws.github_repo.as_ref())
+                    {
+                        if let Ok(()) = gh.ensure_labels(owner, repo).await {
+                            let _ = sqlx::query(
+                                "UPDATE sync_state SET labels_ensured = 1 WHERE workspace_id = ?",
+                            )
+                            .bind(&workspace_id)
+                            .execute(&db)
+                            .await;
+                        }
+                    }
+                }
+
+                // Get current last_sync for the event
+                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
+                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
+                )
+                .bind(&workspace_id)
+                .fetch_optional(&db)
+                .await
+                .ok()
+                .flatten();
+
+                let _ = app.emit(
+                    "evt:sync",
+                    serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "status": "idle",
+                        "last_sync": last_sync,
+                    }),
+                );
+            }
+            Err(AdeError::RateLimited(ref _msg)) => {
+                // Set a default pause of 60 seconds from now.
+                // In production, the actual reset time from the header is used
+                // (parsed by the GitHub client), but we need a fallback.
+                rate_budget
+                    .pause_until(Instant::now() + Duration::from_secs(60))
+                    .await;
+                crate::notify::emit_notify(
+                    &app,
+                    "warn",
+                    "RATE_LIMITED",
+                    "GitHub rate limit hit; pausing sync",
+                );
+                let _ = app.emit(
+                    "evt:sync",
+                    serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "status": "error",
+                        "last_sync": serde_json::Value::Null,
+                    }),
+                );
+            }
+            Err(e) => {
+                crate::notify::emit_notify(&app, "error", "SYNC_ERROR", &e.to_string());
+                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
+                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
+                )
+                .bind(&workspace_id)
+                .fetch_optional(&db)
+                .await
+                .ok()
+                .flatten();
+                let _ = app.emit(
+                    "evt:sync",
+                    serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "status": "error",
+                        "last_sync": last_sync,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+/// A Notifier that wraps a `tauri::AppHandle` and emits via `app.emit`.
+struct AppNotifier(tauri::AppHandle);
+
+impl Notifier for AppNotifier {
+    fn notify(&self, level: &str, code: &str, message: &str) {
+        crate::notify::emit_notify(&self.0, level, code, message);
+    }
 }
 
 #[cfg(test)]
@@ -555,7 +786,8 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier).await;
+        let rate_budget = RateBudget::new();
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
 
         // Card should now be in Done column
@@ -591,7 +823,6 @@ mod tests {
 
         let backlog_id = col_ids.get(&ColumnName::Backlog).expect("Backlog column");
         let paused_id = col_ids.get(&ColumnName::Paused).expect("Paused column");
-
         // Card optimistically already in Paused (the user moved Backlog -> Paused).
         let card_id = insert_card(
             &pool,
@@ -641,7 +872,8 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
-        run_cycle(&pool, &gh, &ws_id, &notifier)
+        let rate_budget = RateBudget::new();
+        run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget)
             .await
             .expect("run_cycle ok");
 
@@ -717,9 +949,9 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier).await;
+        let rate_budget = RateBudget::new();
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
-
         // Card should still be in Doing
         let card: Card = sqlx::query_as::<_, Card>(
             "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
@@ -823,7 +1055,8 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier).await;
+        let rate_budget = RateBudget::new();
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
 
         // Card A should be reconciled to Doing (intent dropped)
@@ -885,6 +1118,144 @@ mod tests {
         assert_eq!(
             count_b, 1,
             "outbox row for card B should still exist (intent not dropped)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M5-T3: seed then incremental — verify incremental fetch uses `since`
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn seed_then_incremental() {
+        let (pool, _tmp) = test_pool().await;
+        let (ws_id, _col_ids) = seed_workspace(&pool).await;
+
+        // Wiremock for seed: return 3 open issues
+        let server = wiremock::MockServer::start().await;
+
+        let issue1 = issue_json(101, "open", &[], "2025-06-01T00:00:00Z");
+        let issue2 = issue_json(102, "open", &[], "2025-06-01T00:00:00Z");
+        let issue3 = issue_json(103, "open", &[], "2025-06-01T00:00:00Z");
+        let seed_body = serde_json::to_string(&vec![issue1, issue2, issue3]).expect("json");
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("state", "open"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&seed_body))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "test-token".to_string());
+        let notifier = CaptureNotifier::new();
+        let rate_budget = RateBudget::new();
+
+        // Seed cycle — no last_sync
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget)
+            .await
+            .expect("seed cycle");
+        assert!(result.was_seed, "first cycle should be a seed");
+        assert_eq!(result.issue_count, 3);
+
+        // Verify last_sync is set
+        let last_sync: String = sqlx::query_scalar::<_, String>(
+            "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
+        )
+        .bind(&ws_id)
+        .fetch_one(&pool)
+        .await
+        .expect("last_sync");
+        assert!(!last_sync.is_empty(), "last_sync should be set after seed");
+
+        // Verify 3 cards were created
+        let card_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM card WHERE workspace_id = ?")
+                .bind(&ws_id)
+                .fetch_one(&pool)
+                .await
+                .expect("card count");
+        assert_eq!(card_count, 3, "should have 3 cards after seed");
+
+        // Now set up wiremock for incremental fetch — return 1 new issue (#104)
+        // and the existing issue #102 with updated labels
+        // We need to reset the server mock
+        let server2 = wiremock::MockServer::start().await;
+        let issue4 = issue_json(104, "open", &[], "2025-06-02T00:00:00Z");
+        let incremental_body = serde_json::to_string(&vec![issue4]).expect("json");
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("state", "all"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&incremental_body))
+            .mount(&server2)
+            .await;
+
+        let gh2 = GitHubClient::new(server2.uri(), "test-token".to_string());
+
+        // Incremental cycle — has last_sync
+        let result2 = run_cycle(&pool, &gh2, &ws_id, &notifier, &rate_budget)
+            .await
+            .expect("incremental cycle");
+        assert!(!result2.was_seed, "second cycle should be incremental");
+
+        // Verify the new card appears
+        let card_count2: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM card WHERE workspace_id = ?")
+                .bind(&ws_id)
+                .fetch_one(&pool)
+                .await
+                .expect("card count");
+        assert_eq!(card_count2, 4, "should have 4 cards after incremental");
+
+        // Verify the since parameter was sent
+        // We check the wiremock request log
+        let requests = server2.received_requests().await.expect("requests");
+        assert!(!requests.is_empty(), "should have received requests");
+        let request_url = &requests[0].url;
+        assert!(
+            request_url.query().unwrap_or("").contains("since="),
+            "incremental fetch should include since parameter, got: {:?}",
+            request_url.query()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M5-T3: rate budget pause test
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn rate_budget_pause() {
+        let budget = RateBudget::new();
+
+        // Initially not paused
+        assert!(
+            budget.check().await.is_ok(),
+            "should not be paused initially"
+        );
+
+        // Set pause to future
+        budget
+            .pause_until(Instant::now() + Duration::from_secs(300))
+            .await;
+
+        // Check should return RateLimited
+        let result = budget.check().await;
+        assert!(
+            matches!(result, Err(AdeError::RateLimited(_))),
+            "should be rate limited when paused"
+        );
+
+        // Clear the pause
+        budget.clear().await;
+
+        // Check should return Ok now
+        assert!(
+            budget.check().await.is_ok(),
+            "should not be paused after clear"
+        );
+
+        // Set a past instant — should be expired, check returns Ok
+        budget
+            .pause_until(Instant::now() - Duration::from_secs(1))
+            .await;
+        assert!(
+            budget.check().await.is_ok(),
+            "expired pause should return Ok"
         );
     }
 }

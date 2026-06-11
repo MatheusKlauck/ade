@@ -12,12 +12,14 @@ mod sync;
 pub mod tmux;
 
 use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 
 pub struct AppState {
     pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
+    pub workers: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
 async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeError> {
@@ -70,6 +72,65 @@ async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeEr
     Ok(())
 }
 
+/// Spawn sync workers for all workspaces that have github_owner set.
+async fn spawn_sync_workers(
+    pool: db::DbPool,
+    app: tauri::AppHandle,
+    workers: &tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+) {
+    let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
+        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE github_owner IS NOT NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("failed to query workspaces for sync: {}", e);
+            return;
+        }
+    };
+
+    let rate_budget = Arc::new(sync::worker::RateBudget::new());
+
+    // Try to get GitHub token from keychain; if unavailable, workers will
+    // start but skip cycles (the client needs a valid token).
+    let token = match crate::ipc::github::keychain_get() {
+        Ok(Some(t)) => t,
+        _ => String::new(), // Empty token — workers will hit auth errors
+    };
+
+    for ws in workspaces {
+        let gh = Arc::new(crate::gh::client::GitHubClient::new(
+            "https://api.github.com".to_string(),
+            token.clone(),
+        ));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let ws_id = ws.id.clone();
+
+        // Read sync_interval_secs setting (default 30)
+        let interval_secs: u64 = match sqlx::query_scalar::<_, String>(
+            "SELECT value FROM setting WHERE key = 'sync_interval_secs'",
+        )
+        .fetch_optional(&pool)
+        .await
+        {
+            Ok(Some(val)) => val.parse().unwrap_or(30),
+            _ => 30,
+        };
+
+        workers.lock().await.insert(ws_id.clone(), notify.clone());
+
+        let db = pool.clone();
+        let app_clone = app.clone();
+        let rb = rate_budget.clone();
+
+        tokio::spawn(async move {
+            sync::worker::start_worker(db, gh, ws_id, rb, app_clone, notify, interval_secs).await;
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
@@ -81,12 +142,18 @@ pub fn run() {
                 if let Err(e) = seed_dev_workspace(&pool).await {
                     eprintln!("seed dev workspace failed: {}", e);
                 }
-                handle.manage(Arc::new(AppState {
-                    db: pool,
+
+                let state = Arc::new(AppState {
+                    db: pool.clone(),
                     pty: std::sync::Arc::new(std::sync::Mutex::new(
                         std::collections::HashMap::new(),
                     )),
-                }));
+                    workers: tokio::sync::Mutex::new(HashMap::new()),
+                });
+
+                spawn_sync_workers(pool, handle.clone(), &state.workers).await;
+
+                handle.manage(state);
             });
             Ok(())
         })
@@ -109,6 +176,7 @@ pub fn run() {
             ipc::terminal::terminal_resize,
             ipc::terminal::terminal_close,
             ipc::terminal::terminal_kill_window,
+            ipc::sync::sync_now,
         ])
         .run(tauri::generate_context!());
 

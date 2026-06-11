@@ -1,0 +1,1 @@
+ALTER TABLE sync_state ADD COLUMN labels_ensured INTEGER NOT NULL DEFAULT 0;
