@@ -138,6 +138,22 @@ pub async fn workspace_create(
         );
     }
 
+    // If this workspace is GitHub-linked, spawn a sync worker for it.
+    if github_owner.is_some() {
+        let token = crate::ipc::github::keychain_get()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        crate::spawn_worker_for_workspace(
+            ws_id.clone(),
+            token,
+            state.db.clone(),
+            app.clone(),
+            &state.workers,
+        )
+        .await;
+    }
+
     let ws: Workspace = sqlx::query_as::<_, Workspace>(
         "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
     )

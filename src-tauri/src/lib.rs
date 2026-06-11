@@ -16,10 +16,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 
+/// A handle to a running sync worker, allowing both immediate kick
+/// (via `notify`) and clean shutdown (by aborting `join`).
+pub struct WorkerHandle {
+    pub notify: Arc<tokio::sync::Notify>,
+    pub join: tokio::task::JoinHandle<()>,
+}
+
 pub struct AppState {
     pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
-    pub workers: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    pub workers: tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 }
 
 async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeError> {
@@ -72,11 +79,65 @@ async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeEr
     Ok(())
 }
 
+/// Spawn a sync worker for a single workspace.
+///
+/// If a worker already exists for `workspace_id` it is replaced: the old
+/// task is aborted and a new one is started with the given `token`.
+pub async fn spawn_worker_for_workspace(
+    workspace_id: String,
+    token: String,
+    pool: db::DbPool,
+    app: tauri::AppHandle,
+    workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
+) {
+    // Abort existing worker for this workspace, if any.
+    let mut map = workers.lock().await;
+    if let Some(old) = map.remove(&workspace_id) {
+        old.join.abort();
+    }
+    // Release the lock before spawning — the worker doesn't need the map.
+    drop(map);
+
+    let gh = Arc::new(crate::gh::client::GitHubClient::new(
+        "https://api.github.com".to_string(),
+        token,
+    ));
+    let notify = Arc::new(tokio::sync::Notify::new());
+
+    let rate_budget = Arc::new(sync::worker::RateBudget::new());
+
+    // Read sync_interval_secs setting (default 30)
+    let interval_secs: u64 = match sqlx::query_scalar::<_, String>(
+        "SELECT value FROM setting WHERE key = 'sync_interval_secs'",
+    )
+    .fetch_optional(&pool)
+    .await
+    {
+        Ok(Some(val)) => val.parse().unwrap_or(30),
+        _ => 30,
+    };
+
+    let db = pool.clone();
+    let app_clone = app.clone();
+    let rb = rate_budget.clone();
+    let notify_clone = notify.clone();
+    let ws_id = workspace_id.clone();
+
+    let join = tokio::spawn(async move {
+        sync::worker::start_worker(db, gh, ws_id, rb, app_clone, notify_clone, interval_secs).await;
+    });
+
+    workers
+        .lock()
+        .await
+        .insert(workspace_id, WorkerHandle { notify, join });
+}
+
 /// Spawn sync workers for all workspaces that have github_owner set.
 async fn spawn_sync_workers(
     pool: db::DbPool,
     app: tauri::AppHandle,
-    workers: &tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 ) {
     let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
         "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE github_owner IS NOT NULL",
@@ -91,8 +152,6 @@ async fn spawn_sync_workers(
         }
     };
 
-    let rate_budget = Arc::new(sync::worker::RateBudget::new());
-
     // Try to get GitHub token from keychain; if unavailable, workers will
     // start but skip cycles (the client needs a valid token).
     let token = match crate::ipc::github::keychain_get() {
@@ -101,33 +160,14 @@ async fn spawn_sync_workers(
     };
 
     for ws in workspaces {
-        let gh = Arc::new(crate::gh::client::GitHubClient::new(
-            "https://api.github.com".to_string(),
+        spawn_worker_for_workspace(
+            ws.id.clone(),
             token.clone(),
-        ));
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let ws_id = ws.id.clone();
-
-        // Read sync_interval_secs setting (default 30)
-        let interval_secs: u64 = match sqlx::query_scalar::<_, String>(
-            "SELECT value FROM setting WHERE key = 'sync_interval_secs'",
+            pool.clone(),
+            app.clone(),
+            workers,
         )
-        .fetch_optional(&pool)
-        .await
-        {
-            Ok(Some(val)) => val.parse().unwrap_or(30),
-            _ => 30,
-        };
-
-        workers.lock().await.insert(ws_id.clone(), notify.clone());
-
-        let db = pool.clone();
-        let app_clone = app.clone();
-        let rb = rate_budget.clone();
-
-        tokio::spawn(async move {
-            sync::worker::start_worker(db, gh, ws_id, rb, app_clone, notify, interval_secs).await;
-        });
+        .await;
     }
 }
 

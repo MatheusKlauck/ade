@@ -1,5 +1,6 @@
 use keyring_core::Entry;
 use keyring_core::Error as KeyringError;
+use tauri::Manager;
 
 fn map_err(e: KeyringError) -> crate::error::AdeError {
     crate::error::AdeError::Keychain(e.to_string())
@@ -79,6 +80,33 @@ pub async fn github_set_token(
     let login = user["login"].as_str().unwrap_or("").to_string();
 
     keychain_set(&token)?;
+
+    // Restart sync workers for all GitHub-linked workspaces with the new token.
+    // The workers hold an Arc<GitHubClient> baked at spawn time, so we must
+    // replace them so they pick up the fresh token.
+    {
+        let state: tauri::State<'_, std::sync::Arc<crate::AppState>> = app
+            .try_state()
+            .ok_or_else(|| crate::error::AdeError::Other("app state not available".to_string()))?;
+        let workspaces: Vec<(String,)> = sqlx::query_as::<_, (String,)>(
+            "SELECT id FROM workspace WHERE github_owner IS NOT NULL",
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(crate::error::AdeError::Db)?;
+
+        for (ws_id,) in workspaces {
+            crate::spawn_worker_for_workspace(
+                ws_id,
+                token.clone(),
+                state.db.clone(),
+                app.clone(),
+                &state.workers,
+            )
+            .await;
+        }
+    }
+
     Ok(serde_json::json!({ "login": login }))
 }
 

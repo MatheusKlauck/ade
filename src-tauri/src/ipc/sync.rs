@@ -9,8 +9,8 @@ pub async fn sync_now(
     workspace_id: String,
 ) -> Result<(), AdeError> {
     let workers = state.workers.lock().await;
-    if let Some(notify) = workers.get(&workspace_id) {
-        notify.notify_one();
+    if let Some(handle) = workers.get(&workspace_id) {
+        handle.notify.notify_one();
         Ok(())
     } else {
         Err(AdeError::Other(format!(
