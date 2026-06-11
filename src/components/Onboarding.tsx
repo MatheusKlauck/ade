@@ -46,13 +46,13 @@ export default function Onboarding() {
           alignItems: "center",
           justifyContent: "center",
           height: "100vh",
-          background: "#1a1a1a",
-          color: "#ccc",
+          background: "var(--bg)",
+          color: "var(--fg)",
         }}
       >
         <h2 style={{ fontSize: 24, marginBottom: 8 }}>{created.name}</h2>
-        <p style={{ fontSize: 14, color: "#888", marginBottom: 24 }}>{repoLabel}</p>
-        <p style={{ fontSize: 13, color: "#666" }}>Opening workspace…</p>
+        <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 24 }}>{repoLabel}</p>
+        <p style={{ fontSize: 13, color: "var(--muted)" }}>Opening workspace…</p>
       </div>
     );
   }
@@ -65,12 +65,12 @@ export default function Onboarding() {
         alignItems: "center",
         justifyContent: "center",
         height: "100vh",
-        background: "#1a1a1a",
-        color: "#ccc",
+        background: "var(--bg)",
+        color: "var(--fg)",
       }}
     >
       <h2 style={{ fontSize: 24, marginBottom: 16 }}>Welcome to ADE</h2>
-      <p style={{ fontSize: 14, marginBottom: 24, color: "#888" }}>
+      <p style={{ fontSize: 14, marginBottom: 24, color: "var(--muted)" }}>
         Open a folder to create your first workspace.
       </p>
       <button
@@ -79,8 +79,8 @@ export default function Onboarding() {
         style={{
           padding: "10px 24px",
           fontSize: 14,
-          background: loading ? "#2a2a2a" : "#4a9eff",
-          color: loading ? "#666" : "#fff",
+          background: loading ? "var(--input-bg)" : "var(--accent)",
+          color: loading ? "var(--muted)" : "#fff",
           border: "none",
           borderRadius: 6,
           cursor: loading ? "not-allowed" : "pointer",
@@ -105,7 +105,7 @@ export default function Onboarding() {
         {loading ? "Creating workspace…" : "Open a folder…"}
       </button>
       {error && (
-        <p style={{ fontSize: 13, color: "#ff6b6b", marginTop: 16, maxWidth: 320, textAlign: "center" }}>
+        <p style={{ fontSize: 13, color: "#e74c3c", marginTop: 16, maxWidth: 320, textAlign: "center" }}>
           {error}
         </p>
       )}

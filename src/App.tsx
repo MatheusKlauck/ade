@@ -13,9 +13,12 @@ import TerminalPane from "./components/TerminalPane";
 import Board from "./components/Board";
 import Tabs from "./components/Tabs";
 import Settings from "./components/Settings";
+import NotificationCenter from "./components/NotificationCenter";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
+import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
+import { useSettingsStore } from "./store/settings";
 import Onboarding from "./components/Onboarding";
 
 export default function App() {
@@ -25,6 +28,24 @@ export default function App() {
     message: string;
   } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+
+  // Apply theme at startup using settings store
+  const settingsLoad = useSettingsStore((s) => s.load);
+  const settingsTheme = useSettingsStore((s) => s.theme);
+  const settingsAccent = useSettingsStore((s) => s.accent);
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
+
+  useEffect(() => {
+    settingsLoad();
+  }, [settingsLoad]);
+
+  // Apply theme/accent from store whenever they change (and on initial load)
+  useEffect(() => {
+    if (settingsLoaded) {
+      document.documentElement.setAttribute("data-theme", settingsTheme);
+      document.documentElement.style.setProperty("--accent", settingsAccent);
+    }
+  }, [settingsTheme, settingsAccent, settingsLoaded]);
 
   const panes = useTerminalsStore((s) => s.panes);
   const addPane = useTerminalsStore((s) => s.addPane);
@@ -60,10 +81,13 @@ export default function App() {
     [getPanesForWorkspace]
   );
 
+  const notifyPush = useNotificationsStore((s) => s.push);
+
   useEffect(() => {
     let unsub: (() => void) | null = null;
     subscribeNotify((payload) => {
       setToast(payload);
+      notifyPush(payload.level as NotifyLevel, payload.code as NotifyCode, payload.message);
       setTimeout(() => setToast(null), 6000);
     }).then((u) => {
       unsub = u;
@@ -71,7 +95,7 @@ export default function App() {
     return () => {
       if (unsub) unsub();
     };
-  }, []);
+  }, [notifyPush]);
 
   // Load workspaces on mount
   useEffect(() => {
@@ -238,7 +262,7 @@ export default function App() {
   // Show onboarding when no workspaces exist
   if (workspaces.length === 0) {
     return (
-      <div style={{ position: "relative", minHeight: "100vh" }}>
+      <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)", color: "var(--fg)" }}>
         {toast && (
           <div
             style={{
@@ -272,6 +296,8 @@ export default function App() {
         minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
+        background: "var(--bg)",
+        color: "var(--fg)",
       }}
     >
       {toast && (
@@ -297,6 +323,7 @@ export default function App() {
       <div style={{ padding: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={handleNewTerminal}>New terminal</button>
+          <NotificationCenter />
           <button
             onClick={() => setShowSettings(true)}
             title="Settings"
@@ -304,9 +331,9 @@ export default function App() {
               padding: "4px 8px",
               fontSize: 16,
               background: "transparent",
-              border: "1px solid #444",
+              border: "1px solid var(--border)",
               borderRadius: 4,
-              color: "#999",
+              color: "var(--muted)",
               cursor: "pointer",
             }}
           >
@@ -323,7 +350,7 @@ export default function App() {
               style={{
                 width: "48%",
                 height: 300,
-                border: "1px solid #333",
+                border: "1px solid var(--border)",
                 borderRadius: 4,
                 overflow: "hidden",
               }}

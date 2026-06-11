@@ -68,8 +68,8 @@ export default function Tabs() {
         display: "flex",
         alignItems: "center",
         gap: 0,
-        borderBottom: "1px solid #333",
-        background: "#1a1a1a",
+        borderBottom: "1px solid var(--border)",
+        background: "var(--bg)",
         padding: "0 8px",
       }}
     >
@@ -80,9 +80,9 @@ export default function Tabs() {
           style={{
             padding: "8px 16px",
             border: "none",
-            borderBottom: ws.id === activeWorkspaceId ? "2px solid #4a9eff" : "2px solid transparent",
-            background: ws.id === activeWorkspaceId ? "#252525" : "transparent",
-            color: ws.id === activeWorkspaceId ? "#fff" : "#999",
+            borderBottom: ws.id === activeWorkspaceId ? "2px solid var(--accent)" : "2px solid transparent",
+            background: ws.id === activeWorkspaceId ? "var(--panel)" : "transparent",
+            color: ws.id === activeWorkspaceId ? "var(--fg)" : "var(--muted)",
             cursor: "pointer",
             fontSize: 13,
             fontWeight: ws.id === activeWorkspaceId ? 600 : 400,
@@ -112,7 +112,7 @@ export default function Tabs() {
           border: "none",
           borderBottom: "2px solid transparent",
           background: "transparent",
-          color: creating ? "#555" : "#999",
+          color: creating ? "var(--muted)" : "var(--muted)",
           cursor: creating ? "not-allowed" : "pointer",
           fontSize: 16,
           fontWeight: 400,
