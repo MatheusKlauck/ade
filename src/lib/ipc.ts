@@ -208,11 +208,25 @@ export function syncNow(workspaceId: string): Promise<void> {
 
 // ---- events ----
 export function subscribeTerminalFocus(
+  cb: (payload: { workspace_id: string; window_id: string; card_id?: string }) => void
+) {
+  return listen<{ workspace_id: string; window_id: string; card_id?: string }>(
+    "evt:terminal_focus",
+    (ev) => {
+      cb(ev.payload);
+    }
+  );
+}
+
+export function subscribeTerminalClose(
   cb: (payload: { workspace_id: string; window_id: string }) => void
 ) {
-  return listen<{ workspace_id: string; window_id: string }>("evt:terminal_focus", (ev) => {
-    cb(ev.payload);
-  });
+  return listen<{ workspace_id: string; window_id: string }>(
+    "evt:terminal_close",
+    (ev) => {
+      cb(ev.payload);
+    }
+  );
 }
 
 export function subscribeBoard(

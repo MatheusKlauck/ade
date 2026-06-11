@@ -88,6 +88,15 @@ pub fn spawn(
     // correct, always-present type. Set it explicitly so behavior doesn't depend
     // on how the app was launched (dev shell vs. Finder).
     cmd.env("TERM", "xterm-256color");
+    // Propagate locale so UTF-8 input (emojis, accented characters) is accepted.
+    // When launched from Finder/launchd the environment has no LANG, causing tmux
+    // and the shell to treat input as ASCII and drop/garble multi-byte sequences.
+    for var in &["LANG", "LC_CTYPE"] {
+        cmd.env(
+            var,
+            std::env::var(var).unwrap_or_else(|_| "en_US.UTF-8".to_string()),
+        );
+    }
 
     let child = pair
         .slave

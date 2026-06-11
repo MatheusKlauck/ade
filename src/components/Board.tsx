@@ -166,6 +166,15 @@ export default function Board({ workspaceId }: BoardProps) {
     ? allCards.find((c) => c.id === selectedCardId) || null
     : null;
 
+  useEffect(() => {
+    if (!selectedCardId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedCardId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCardId]);
+
   if (!workspaceId) {
     return (
       <div
@@ -237,13 +246,42 @@ export default function Board({ workspaceId }: BoardProps) {
           />
         ))}
       </div>
+
       {selectedCardId && (
-        <CardDetail
-          card={selectedCard}
-          workspace={activeWorkspace}
-          onClose={() => setSelectedCardId(null)}
-          onDeleted={() => setSelectedCardId(null)}
-        />
+        <>
+          <div
+            onClick={() => setSelectedCardId(null)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.5)",
+              zIndex: 200,
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 201,
+              width: 560,
+              maxWidth: "90vw",
+              maxHeight: "85vh",
+              overflowY: "auto",
+              borderRadius: "var(--radius-md)",
+              boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
+            }}
+          >
+            <CardDetail
+              card={selectedCard}
+              workspace={activeWorkspace}
+              onClose={() => setSelectedCardId(null)}
+              onDeleted={() => setSelectedCardId(null)}
+              modal
+            />
+          </div>
+        </>
       )}
     </div>
   );

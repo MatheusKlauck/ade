@@ -298,7 +298,7 @@ pub async fn card_move(
 
     tx.commit().await.map_err(AdeError::Db)?;
 
-    let card: Card = sqlx::query_as::<_, Card>(
+    let mut card: Card = sqlx::query_as::<_, Card>(
         "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
     )
     .bind(&card_id)
@@ -363,6 +363,58 @@ pub async fn card_move(
         Some(r) => r.get::<String, _>("name"),
         None => return Ok(card),
     };
+
+    // Move to Done: close the card's terminal. Mirrors the move-to-Doing launch
+    // below — the backend owns the terminal lifecycle, so this fires for every
+    // move path (drag or programmatic), not just the optimistic UI close in
+    // Board.tsx. We kill the tmux window (so the agent process actually stops,
+    // not just the viewer), drop any open PTY panes, clear the link, and tell
+    // the frontend to remove the pane.
+    if col_name == "Done" {
+        if let Some(window_id) = card.terminal_window_id.clone() {
+            // Drop PTY panes for this window first (kills each viewer process).
+            // Scope the lock so it's released before the awaits below.
+            {
+                if let Ok(mut reg) = state.pty.lock() {
+                    let keys: Vec<String> = reg
+                        .iter()
+                        .filter(|(_, p)| {
+                            p.window_id == window_id && p.workspace_id == card.workspace_id
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for k in keys {
+                        if let Some(pane) = reg.remove(&k) {
+                            let _ = pane.close();
+                        }
+                    }
+                }
+            }
+            // Kill the tmux window itself. Best-effort: it may already be gone.
+            let _ = tmux::kill_window(&window_id);
+
+            // Clear the link so a later move back to Doing spawns a fresh window.
+            sqlx::query("UPDATE card SET terminal_window_id = NULL WHERE id = ?")
+                .bind(&card_id)
+                .execute(&state.db)
+                .await
+                .map_err(AdeError::Db)?;
+            card.terminal_window_id = None;
+
+            // Tell the frontend to drop the pane from its UI.
+            let _ = app.emit(
+                "evt:terminal_close",
+                serde_json::json!({
+                    "workspace_id": card.workspace_id,
+                    "window_id": window_id,
+                }),
+            );
+
+            // Board changed (terminal_window_id cleared).
+            emit_board(&app, &card.workspace_id, &state.db).await?;
+        }
+        return Ok(card);
+    }
 
     if col_name != "Doing" {
         return Ok(card);
@@ -542,12 +594,17 @@ pub async fn card_move(
         .await
         .map_err(AdeError::Db)?;
 
-    // 7. Emit terminal_focus event
+    // 7. Emit terminal_focus event. This is a window freshly created for a card
+    // just moved to Doing, so carry the card id: the frontend injects the task
+    // title + description as the agent's prompt *only* for fresh launches. The
+    // re-focus/reuse path above intentionally omits card_id so an already-running
+    // task is never re-injected.
     let _ = app.emit(
         "evt:terminal_focus",
         serde_json::json!({
             "workspace_id": card.workspace_id,
             "window_id": window_id,
+            "card_id": card_id,
         }),
     );
 

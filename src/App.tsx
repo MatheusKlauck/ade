@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   subscribeNotify,
   subscribeTerminalFocus,
+  subscribeTerminalClose,
   boardGet,
   subscribeBoard,
   subscribeSync,
@@ -9,6 +10,7 @@ import {
   type TerminalAlertPayload,
   terminalOpen,
   terminalWrite,
+  cardDetail,
   uiStateGet,
   uiStateSet,
 } from "./lib/ipc";
@@ -25,18 +27,71 @@ import { useSettingsStore } from "./store/settings";
 import Onboarding from "./components/Onboarding";
 import { contrastingTextColor } from "./lib/color";
 
-/** Schedule sending the startup command to a newly-opened terminal pane. */
-function scheduleStartupCommand(paneId: string) {
+/** Extra settle time (seconds) between the startup command and the task-prompt
+ * injection, to give the program the startup command launches (e.g. an agent
+ * CLI) a moment to be ready to receive input. */
+const TASK_INJECT_SETTLE_SECS = 1;
+
+const paneIsOpen = (paneId: string) =>
+  useTerminalsStore.getState().panes.some((p) => p.paneId === paneId);
+
+/**
+ * Inject the task's title + full description into the pane as a submitted prompt.
+ * Best-effort: a failed lookup or a closed pane simply skips injection.
+ *
+ * The text is wrapped in a bracketed-paste sequence so multi-line descriptions
+ * are inserted as a single block — agent CLIs that honor bracketed paste (Claude
+ * Code, readline, …) won't treat the internal newlines as Enter — and a trailing
+ * CR then submits it, exactly like pasting a prompt and pressing Enter.
+ */
+async function injectTaskPrompt(paneId: string, cardId: string) {
+  let detail;
+  try {
+    detail = await cardDetail(cardId);
+  } catch {
+    return;
+  }
+  if (!paneIsOpen(paneId)) return; // cardDetail may have awaited a network fetch
+
+  const title = (detail.card.title ?? "").trim();
+  const body = (detail.body ?? "").trim();
+  // Strip ESC so a description can't break out of the paste / inject control seqs.
+  const text = (body ? `${title}\n\n${body}` : title).replace(/\x1b/g, "");
+  if (!text) return;
+
+  const PASTE_START = "\x1b[200~";
+  const PASTE_END = "\x1b[201~";
+  terminalWrite(paneId, `${PASTE_START}${text}${PASTE_END}\r`).catch(() => {});
+}
+
+/**
+ * Schedule the startup command for a newly-opened pane and, when `injectCardId`
+ * is given (a card just moved to Doing), the task-prompt injection right after it.
+ */
+function scheduleStartupSequence(paneId: string, injectCardId?: string) {
   const { startupCommand, startupDelay } = useSettingsStore.getState();
-  if (!startupCommand || !startupCommand.trim()) return;
   const delaySecs = Math.max(0, parseInt(startupDelay, 10) || 0);
-  setTimeout(() => {
-    // Guard: pane may have been closed before the delay elapsed
-    const stillOpen = useTerminalsStore.getState().panes.some((p) => p.paneId === paneId);
-    if (!stillOpen) return;
-    const cmd = startupCommand.replace(/\n?$/, "\n");
-    terminalWrite(paneId, cmd).catch(() => {});
-  }, delaySecs * 1000);
+  const hasStartup = !!(startupCommand && startupCommand.trim());
+
+  if (hasStartup) {
+    setTimeout(() => {
+      if (!paneIsOpen(paneId)) return;
+      const cmd = startupCommand.replace(/\n?$/, "\n");
+      terminalWrite(paneId, cmd).catch(() => {});
+    }, delaySecs * 1000);
+  }
+
+  if (injectCardId) {
+    // Inject after the startup command has been sent (+ settle), or after a
+    // short settle when there's no startup command.
+    const injectAt = hasStartup
+      ? delaySecs + TASK_INJECT_SETTLE_SECS
+      : TASK_INJECT_SETTLE_SECS;
+    setTimeout(() => {
+      if (!paneIsOpen(paneId)) return;
+      injectTaskPrompt(paneId, injectCardId);
+    }, injectAt * 1000);
+  }
 }
 
 /** Best-effort label for the terminal window from its linked card, else null. */
@@ -236,7 +291,7 @@ export default function App() {
             channel: result.channel,
           };
           addPane(pane);
-          scheduleStartupCommand(pane.paneId);
+          scheduleStartupSequence(pane.paneId, payload.card_id);
           focusWindow(window_id);
         } catch {
           // Window may no longer exist
@@ -247,6 +302,20 @@ export default function App() {
       unsub.then((u) => u());
     };
   }, [panes, focusWindow, addPane]);
+
+  // Subscribe to terminal close events (a card moved to Done). The backend has
+  // already killed the tmux window; drop the matching pane from the UI.
+  useEffect(() => {
+    const unsub = subscribeTerminalClose(({ window_id }) => {
+      const pane = useTerminalsStore
+        .getState()
+        .panes.find((p) => p.windowId === window_id);
+      if (pane) removePane(pane.paneId);
+    });
+    return () => {
+      unsub.then((u) => u());
+    };
+  }, [removePane]);
 
   // Handle workspace switch: persist old workspace's window IDs,
   // remove old panes from store (triggers unmount + terminalClose),
@@ -341,7 +410,7 @@ export default function App() {
         channel: result.channel,
       };
       addPane(pane);
-      scheduleStartupCommand(pane.paneId);
+      scheduleStartupSequence(pane.paneId);
     } catch (e) {
       console.error(e);
     }

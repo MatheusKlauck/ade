@@ -221,6 +221,9 @@ pub fn new_issue_window(
 /// per freshly created window; the hooks live in the shell process, so they
 /// persist across detach/reattach (tmux windows outlive the app's viewers).
 const SHELL_INTEGRATION: &str = r#"# ade shell integration — emit OSC 133;D;<exit> when an interactive command finishes.
+# Ensure UTF-8 locale so emojis and accented characters are accepted.
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
 if [ -n "${ZSH_VERSION:-}" ]; then
   autoload -Uz add-zsh-hook 2>/dev/null
   __ade_preexec() { __ade_ran=1 }

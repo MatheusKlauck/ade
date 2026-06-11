@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import {
+  cardMove,
   terminalClose,
   terminalResize,
   terminalWrite,
 } from "../lib/ipc";
+import { useBoardStore } from "../store/board";
 import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
@@ -70,6 +73,7 @@ export default function TerminalPane({
 }: TerminalPaneProps) {
   // Position of the header context menu (right-click), or null when closed.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -218,6 +222,44 @@ export default function TerminalPane({
     return () => clearTimeout(timer);
   }, [highlighted, onHighlightDone]);
 
+  // Drop target: accept card drags and inject title + description as shell comments.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    return dropTargetForElements({
+      element: el,
+      canDrop: ({ source }) => typeof source.data.cardTitle === "string",
+      onDragEnter: () => setDragOver(true),
+      onDragLeave: () => setDragOver(false),
+      onDrop: ({ source }) => {
+        setDragOver(false);
+        const title = source.data.cardTitle as string;
+        const body = source.data.cardBodyPreview as string | null;
+        const cardId = source.data.cardId as string;
+        const currentColumnId = source.data.columnId as string;
+
+        // Inject title + description as shell comments (no-op lines).
+        const lines = [`# ${title}`];
+        if (body) {
+          for (const line of body.split("\n")) {
+            if (line.trim()) lines.push(`# ${line.trim()}`);
+          }
+        }
+        terminalWrite(pane.paneId, lines.join("\r") + "\r").catch(() => {});
+
+        // Move card to "Doing" if not already there.
+        const board = useBoardStore.getState().boards[pane.workspaceId];
+        const doingCol = board?.columns.find(
+          (c) => c.name.toLowerCase() === "doing"
+        );
+        if (doingCol && doingCol.id !== currentColumnId) {
+          useBoardStore.getState().optimisticMove(pane.workspaceId, cardId, doingCol.id);
+          cardMove(cardId, doingCol.id).catch(() => {});
+        }
+      },
+    });
+  }, [pane.paneId]);
+
   // Dismiss the header context menu on Escape.
   useEffect(() => {
     if (!menu) return;
@@ -343,7 +385,13 @@ export default function TerminalPane({
       <div
         ref={containerRef}
         onMouseDown={() => termRef.current?.focus()}
-        style={{ flex: 1, minHeight: 0, background: "#000" }}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          background: "#000",
+          outline: dragOver ? "2px solid var(--accent)" : "none",
+          outlineOffset: "-2px",
+        }}
       />
     </div>
   );

@@ -38,7 +38,12 @@ export default function Card({ card, onDropBefore, onDoubleClick }: CardProps) {
 
     const d = draggable({
       element: el,
-      getInitialData: () => ({ cardId: card.id, columnId: card.column_id }),
+      getInitialData: () => ({
+        cardId: card.id,
+        columnId: card.column_id,
+        cardTitle: card.title,
+        cardBodyPreview: card.body_preview,
+      }),
       onDragStart: () => setDragging(true),
       onDrop: () => setDragging(false),
     });

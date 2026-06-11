@@ -8,19 +8,12 @@ interface CardDetailProps {
   workspace: Workspace | null;
   onClose: () => void;
   onDeleted: () => void;
+  modal?: boolean;
 }
 
-// Docked right-side panel (not a modal): sits beside the board so the columns
-// stay visible while reading a card. DESIGN.md: exhaust inline/progressive
-// alternatives before reaching for a modal.
 const panelStyle: CSSProperties = {
-  width: 400,
-  minWidth: 400,
-  flexShrink: 0,
-  alignSelf: "stretch",
   background: "var(--panel)",
   color: "var(--fg)",
-  borderLeft: "1px solid var(--border)",
   padding: "var(--space-lg)",
   display: "flex",
   flexDirection: "column",
@@ -52,7 +45,7 @@ const toastStyle: CSSProperties = {
   zIndex: "var(--z-toast)",
 };
 
-export default function CardDetail({ card, workspace, onClose, onDeleted }: CardDetailProps) {
+export default function CardDetail({ card, workspace, onClose, onDeleted, modal }: CardDetailProps) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [promoting, setPromoting] = useState(false);
@@ -63,6 +56,10 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
 
   const isLinkedWorkspace = !!(workspace?.github_owner && workspace?.github_repo);
   const isGithubCard = card?.source === "github";
+
+  const containerStyle: CSSProperties = modal
+    ? { ...panelStyle, borderRadius: "var(--radius-md)" }
+    : { ...panelStyle, width: 400, minWidth: 400, flexShrink: 0, alignSelf: "stretch", borderLeft: "1px solid var(--border)" };
 
   useEffect(() => {
     if (card) {
@@ -95,7 +92,7 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
 
   if (!card) {
     return (
-      <div style={{ ...panelStyle, alignItems: "center", justifyContent: "center" }}>
+      <div style={{ ...containerStyle, alignItems: "center", justifyContent: "center" }}>
         <div style={{ display: "contents" }}>
           <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--muted)" }}>
             Select a card
@@ -172,7 +169,7 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
   // ---- Linked card (source=github): read-only detail view ----
   if (isGithubCard) {
     return (
-      <div style={panelStyle}>
+      <div style={containerStyle}>
         <div style={{ display: "contents" }}>
           {toast && <div style={toastStyle}>{toast}</div>}
           {/* Header */}
@@ -340,7 +337,7 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
 
   // ---- Local card (in linked or local workspace) ----
   return (
-    <div style={panelStyle}>
+    <div style={containerStyle}>
       <div style={{ display: "contents" }}>
         {toast && <div style={toastStyle}>{toast}</div>}
 
