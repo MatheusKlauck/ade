@@ -40,7 +40,7 @@
       Results: All gates pass (80 Rust tests, 5 ignored; 5 frontend tests).
 
 ## M5 — GitHub bidirectional
-- [ ] M5-T1 Token validation + settings entry
+- [x] M5-T1 Token validation + settings entry
 - [ ] M5-T2 Labels + write ops
 - [ ] M5-T3 Worker + rate budget
 - [ ] M5-T4 Outbox sender + revert (spike 4–5)
