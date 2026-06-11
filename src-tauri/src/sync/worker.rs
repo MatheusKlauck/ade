@@ -123,6 +123,7 @@ pub async fn run_cycle(
     workspace_id: &str,
     notifier: &dyn Notifier,
     rate_budget: &RateBudget,
+    force_full: bool,
 ) -> Result<CycleResult, AdeError> {
     // Check rate budget before making any HTTP requests.
     rate_budget.check().await?;
@@ -156,11 +157,16 @@ pub async fn run_cycle(
     // 3. Fetch remote issues.
     // §11: the next `last_sync` watermark is captured BEFORE the request starts,
     // so issues touched during the round-trip aren't skipped next cycle.
+    //
+    // A user-initiated "Sync" (`force_full`) does an authoritative full fetch
+    // (state=all, no `since`) so it reconciles against the repo's entire issue list
+    // and recovers any issue that fell behind the incremental watermark. The
+    // background interval stays incremental (`since=last_sync`) for efficiency.
     let cycle_start = Utc::now().to_rfc3339();
-    let remote_issues: Vec<RemoteIssue> = if let Some(since) = &last_sync {
-        gh.list_issues_since(&owner, &repo, since).await?
-    } else {
-        gh.list_issues_seed(&owner, &repo).await?
+    let remote_issues: Vec<RemoteIssue> = match (&last_sync, force_full) {
+        (_, true) => gh.list_issues_full(&owner, &repo).await?,
+        (Some(since), false) => gh.list_issues_since(&owner, &repo, since).await?,
+        (None, false) => gh.list_issues_seed(&owner, &repo).await?,
     };
 
     let issue_count = remote_issues.len();
@@ -456,10 +462,12 @@ pub async fn start_worker(
     interval.tick().await;
 
     loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = notify.notified() => {}
-        }
+        // A user-initiated "Sync" arrives via `notify` and triggers a full reconcile;
+        // the periodic `interval` tick stays incremental.
+        let force_full = tokio::select! {
+            _ = interval.tick() => false,
+            _ = notify.notified() => true,
+        };
 
         // Check rate budget — if paused, skip this cycle.
         if let Err(AdeError::RateLimited(_)) = rate_budget.check().await {
@@ -485,7 +493,7 @@ pub async fn start_worker(
         );
 
         let notifier = AppNotifier(app.clone());
-        match run_cycle(&db, &gh, &workspace_id, &notifier, &rate_budget).await {
+        match run_cycle(&db, &gh, &workspace_id, &notifier, &rate_budget, force_full).await {
             Ok(result) => {
                 // If seed and issue count > 500, emit ISSUE_LIST_LARGE
                 if result.was_seed && result.issue_count > 500 {
@@ -838,7 +846,7 @@ mod tests {
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
         let rate_budget = RateBudget::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, false).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
 
         // Card should now be in Done column
@@ -924,7 +932,7 @@ mod tests {
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
         let rate_budget = RateBudget::new();
-        run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget)
+        run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, false)
             .await
             .expect("run_cycle ok");
 
@@ -1001,7 +1009,7 @@ mod tests {
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
         let rate_budget = RateBudget::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, false).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
         // Card should still be in Doing
         let card: Card = sqlx::query_as::<_, Card>(
@@ -1107,7 +1115,7 @@ mod tests {
         let gh = GitHubClient::new(server.uri(), "test-token".to_string());
         let notifier = CaptureNotifier::new();
         let rate_budget = RateBudget::new();
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget).await;
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, false).await;
         assert!(result.is_ok(), "run_cycle failed: {:?}", result.err());
 
         // Card A should be reconciled to Doing (intent dropped)
@@ -1199,7 +1207,7 @@ mod tests {
         let rate_budget = RateBudget::new();
 
         // Seed cycle — no last_sync
-        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget)
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, false)
             .await
             .expect("seed cycle");
         assert!(result.was_seed, "first cycle should be a seed");
@@ -1240,7 +1248,7 @@ mod tests {
         let gh2 = GitHubClient::new(server2.uri(), "test-token".to_string());
 
         // Incremental cycle — has last_sync
-        let result2 = run_cycle(&pool, &gh2, &ws_id, &notifier, &rate_budget)
+        let result2 = run_cycle(&pool, &gh2, &ws_id, &notifier, &rate_budget, false)
             .await
             .expect("incremental cycle");
         assert!(!result2.was_seed, "second cycle should be incremental");
@@ -1263,6 +1271,73 @@ mod tests {
             request_url.query().unwrap_or("").contains("since="),
             "incremental fetch should include since parameter, got: {:?}",
             request_url.query()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // issue #10: a manual "Sync" (force_full) does an authoritative full fetch
+    // (state=all, no `since`) and recovers an issue stranded behind the watermark.
+    // An incremental cycle with the same watermark would never see it because the
+    // issue's updated_at is older than last_sync.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn manual_sync_full_recovers_stranded_issue() {
+        let (pool, _tmp) = test_pool().await;
+        let (ws_id, _col_ids) = seed_workspace(&pool).await;
+
+        // Watermark is AHEAD of the stranded issue's updated_at.
+        sqlx::query("INSERT INTO sync_state (workspace_id, last_sync) VALUES (?, ?)")
+            .bind(&ws_id)
+            .bind("2025-06-10T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("insert sync_state");
+
+        // Stranded open issue: updated_at (2025-06-01) is BEFORE the watermark, so a
+        // real incremental `since=2025-06-10` fetch would never return it.
+        let stranded = issue_json(200, "open", &[], "2025-06-01T00:00:00Z");
+        let body = serde_json::to_string(&vec![stranded]).expect("json");
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("state", "all"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(&body))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "test-token".to_string());
+        let notifier = CaptureNotifier::new();
+        let rate_budget = RateBudget::new();
+
+        // Manual sync: force_full = true.
+        let result = run_cycle(&pool, &gh, &ws_id, &notifier, &rate_budget, true)
+            .await
+            .expect("full cycle");
+        assert!(
+            !result.was_seed,
+            "a workspace with last_sync is not a seed even on a full sync"
+        );
+
+        // The stranded issue was recovered as a card.
+        let card_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM card WHERE workspace_id = ? AND github_issue_number = 200")
+                .bind(&ws_id)
+                .fetch_one(&pool)
+                .await
+                .expect("card count");
+        assert_eq!(card_count, 1, "full sync should recover the stranded issue");
+
+        // The full fetch must NOT carry a `since` watermark.
+        let requests = server.received_requests().await.expect("requests");
+        assert!(!requests.is_empty(), "should have received a request");
+        let query = requests[0].url.query().unwrap_or("");
+        assert!(
+            query.contains("state=all"),
+            "full fetch should request state=all, got: {query}"
+        );
+        assert!(
+            !query.contains("since="),
+            "full fetch must NOT include a since watermark, got: {query}"
         );
     }
 

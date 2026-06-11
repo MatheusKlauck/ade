@@ -111,6 +111,43 @@ impl GitHubClient {
         Ok(all_issues)
     }
 
+    /// Full reconcile fetch: GET /repos/{owner}/{repo}/issues?state=all&per_page=100&page=N
+    /// Like the incremental fetch but with NO `since` watermark, so it returns the
+    /// repo's entire issue list. Used by the user-initiated "Sync" so a manual sync is
+    /// authoritative and recovers any issue that fell behind the incremental watermark.
+    /// Paginate until a short page, filter PRs, map to RemoteIssue.
+    pub async fn list_issues_full(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<RemoteIssue>, AdeError> {
+        let mut all_issues = Vec::new();
+        let mut page: u32 = 1;
+
+        loop {
+            let url = format!(
+                "{}/repos/{}/{}/issues?state=all&per_page=100&page={}",
+                self.base_url, owner, repo, page
+            );
+            let response = self.get(&url).await?;
+            let items: Vec<serde_json::Value> = response
+                .json()
+                .await
+                .map_err(|e| AdeError::GitHub(format!("failed to parse full response: {e}")))?;
+
+            let page_len = items.len();
+            let issues = self.map_issues(items)?;
+            all_issues.extend(issues);
+
+            if page_len < 100 {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all_issues)
+    }
+
     /// Send an authenticated GET request to the given URL.
     /// Handles rate limiting (403/429) per CONTRACTS §11.
     async fn get(&self, url: &str) -> Result<reqwest::Response, AdeError> {
