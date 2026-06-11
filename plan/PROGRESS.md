@@ -44,7 +44,7 @@
 - [x] M5-T2 Labels + write ops
 - [x] M5-T3 Worker + rate budget
 - [x] M5-T4 Outbox sender + revert (spike 4–5)
-- [ ] M5-T5 Promote local card
+- [x] M5-T5 Promote local card
 - [ ] M5-T6 Linked card detail
 - [ ] M5-T7 Live acceptance checklist
       Results:
