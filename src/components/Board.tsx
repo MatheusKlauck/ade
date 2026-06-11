@@ -10,6 +10,9 @@ import CardDetail from "./CardDetail";
 
 const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
+// M6-T3: Cap rendered cards per column at 100; show "show more" for overflow.
+const MAX_CARDS_PER_COLUMN = 100;
+
 interface BoardProps {
   workspaceId: string | null;
 }
@@ -25,6 +28,8 @@ export default function Board({ workspaceId }: BoardProps) {
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  // Track which columns have "show more" expanded
+  const [expandedColumns, setExpandedColumns] = useState<Set<string>>(new Set());
 
   // Subscribe to board events for the active workspace
   useEffect(() => {
@@ -43,6 +48,11 @@ export default function Board({ workspaceId }: BoardProps) {
       setBoard(workspaceId, res.columns, res.cards);
     }).catch(() => {});
   }, [workspaceId, setBoard]);
+
+  // Clear expanded columns when workspace changes
+  useEffect(() => {
+    setExpandedColumns(new Set());
+  }, [workspaceId]);
 
   const handleDropOnColumn = (columnId: string, draggedCardId: string) => {
     if (!workspaceId) return;
@@ -115,6 +125,18 @@ export default function Board({ workspaceId }: BoardProps) {
             setNewTitle={setNewTitle}
             onCreateCard={handleCreateCard}
             onCardDoubleClick={setSelectedCardId}
+            expanded={expandedColumns.has(col.id)}
+            onToggleExpand={() => {
+              setExpandedColumns((prev) => {
+                const next = new Set(prev);
+                if (next.has(col.id)) {
+                  next.delete(col.id);
+                } else {
+                  next.add(col.id);
+                }
+                return next;
+              });
+            }}
           />
         ))}
       </div>
@@ -140,6 +162,8 @@ function Column({
   setNewTitle,
   onCreateCard,
   onCardDoubleClick,
+  expanded,
+  onToggleExpand,
 }: {
   column: { id: string; name: string };
   cards: import("../lib/ipc").Card[];
@@ -150,6 +174,8 @@ function Column({
   setNewTitle: (s: string) => void;
   onCreateCard: () => void;
   onCardDoubleClick: (cardId: string) => void;
+  expanded: boolean;
+  onToggleExpand: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [over, setOver] = useState(false);
@@ -178,6 +204,10 @@ function Column({
     };
   }, [column.id, onDropCard]);
 
+  // Cap rendered cards at MAX_CARDS_PER_COLUMN unless expanded
+  const overflowCount = cards.length > MAX_CARDS_PER_COLUMN ? cards.length - MAX_CARDS_PER_COLUMN : 0;
+  const visibleCards = expanded ? cards : cards.slice(0, MAX_CARDS_PER_COLUMN);
+
   return (
     <div
       ref={ref}
@@ -194,7 +224,7 @@ function Column({
     >
       <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600 }}>{column.name}</h3>
       <div style={{ flex: 1 }}>
-        {cards.map((card) => (
+        {visibleCards.map((card) => (
           <Card
             key={card.id}
             card={card}
@@ -202,6 +232,42 @@ function Column({
             onDoubleClick={() => onCardDoubleClick(card.id)}
           />
         ))}
+        {overflowCount > 0 && !expanded && (
+          <button
+            onClick={onToggleExpand}
+            style={{
+              width: "100%",
+              padding: "6px 8px",
+              fontSize: 12,
+              color: "var(--accent, #4a90d9)",
+              background: "transparent",
+              border: "1px dashed #ccc",
+              borderRadius: 4,
+              cursor: "pointer",
+              marginTop: 4,
+            }}
+          >
+            Show {overflowCount} more card{overflowCount !== 1 ? "s" : ""}
+          </button>
+        )}
+        {expanded && cards.length > MAX_CARDS_PER_COLUMN && (
+          <button
+            onClick={onToggleExpand}
+            style={{
+              width: "100%",
+              padding: "6px 8px",
+              fontSize: 12,
+              color: "var(--accent, #4a90d9)",
+              background: "transparent",
+              border: "1px dashed #ccc",
+              borderRadius: 4,
+              cursor: "pointer",
+              marginTop: 4,
+            }}
+          >
+            Show fewer
+          </button>
+        )}
       </div>
       {showNewCardInput && (
         <div style={{ marginTop: 8 }}>
@@ -216,7 +282,7 @@ function Column({
               width: "100%",
               padding: "6px 8px",
               borderRadius: 4,
-              border: "1px solid #ccc",
+              border: "1px solid var(--border)",
               fontSize: 13,
             }}
           />

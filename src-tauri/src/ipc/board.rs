@@ -847,6 +847,11 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query("CREATE INDEX idx_card_board ON card(workspace_id, column_id, position);")
+            .execute(&pool)
+            .await
+            .unwrap();
+
         (pool, tmp)
     }
 
@@ -1430,6 +1435,50 @@ mod tests {
         assert_eq!(
             card.remote_updated_at,
             Some("2025-06-10T12:01:00Z".to_string())
+        );
+    }
+
+    /// M6-T3: Verify that the board query uses idx_card_board index.
+    /// EXPLAIN QUERY PLAN on the board_get query should reference the index.
+    #[tokio::test]
+    async fn board_query_uses_idx_card_board() {
+        let (pool, _tmp) = test_pool().await;
+        let (ws_id, col_ids) = seed_workspace_and_columns(&pool).await;
+        let backlog = col_ids[0].clone();
+
+        // Insert a card so there's data
+        let now = Utc::now().to_rfc3339();
+        let card_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES (?, ?, ?, 'Test', 1024.0, 'local', ?, ?)",
+        )
+        .bind(&card_id)
+        .bind(&ws_id)
+        .bind(&backlog)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // EXPLAIN QUERY PLAN on the board_get query
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE workspace_id = ? ORDER BY position",
+        )
+        .bind(&ws_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        // Collect the plan text
+        let plan_text: Vec<String> = rows.iter().map(|r| r.get::<String, _>("detail")).collect();
+        let plan_joined = plan_text.join(" | ");
+
+        // The plan should reference idx_card_board (or at minimum not be a full table scan)
+        assert!(
+            plan_joined.contains("idx_card_board"),
+            "EXPLAIN QUERY PLAN did not use idx_card_board. Plan: {:?}",
+            plan_text
         );
     }
 }
