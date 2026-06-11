@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
+import { useTerminalsStore } from "../store/terminals";
 import { boardGet } from "../lib/ipc";
 import SyncIndicator from "./SyncIndicator";
 
@@ -10,8 +11,12 @@ export default function Tabs() {
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspacesStore((s) => s.setActive);
   const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
+  const closeWorkspace = useWorkspacesStore((s) => s.closeWorkspace);
   const setBoard = useBoardStore((s) => s.setBoard);
   const setActiveWorkspace = useBoardStore((s) => s.setActiveWorkspace);
+  const removePanesForWorkspace = useTerminalsStore(
+    (s) => s.removePanesForWorkspace
+  );
 
   const loadedRef = useRef<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
@@ -26,6 +31,19 @@ export default function Tabs() {
         loadedRef.current.add(workspaceId);
       });
     }
+  };
+
+  const handleCloseWorkspace = async (
+    e: MouseEvent<HTMLSpanElement>,
+    workspaceId: string
+  ) => {
+    e.stopPropagation();
+    // Drop the workspace's terminal panes from the UI; the backend close kills
+    // its tmux session, so any pane-close calls during unmount just no-op.
+    removePanesForWorkspace(workspaceId);
+    await closeWorkspace(workspaceId);
+    // Keep the board store's active workspace in sync if we closed the active tab.
+    setActiveWorkspace(useWorkspacesStore.getState().activeWorkspaceId);
   };
 
   const handleAddWorkspace = async () => {
@@ -107,6 +125,23 @@ export default function Tabs() {
           )}
           <span style={{ marginLeft: 6 }}>
             <SyncIndicator workspaceId={ws.id} />
+          </span>
+          <span
+            role="button"
+            aria-label={`Close ${ws.name}`}
+            title="Close workspace"
+            onClick={(e) => handleCloseWorkspace(e, ws.id)}
+            style={{
+              marginLeft: 8,
+              padding: "0 4px",
+              fontSize: 13,
+              lineHeight: 1,
+              color: "var(--muted)",
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+          >
+            ×
           </span>
         </button>
       ))}

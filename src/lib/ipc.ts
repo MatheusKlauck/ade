@@ -186,6 +186,10 @@ export function workspaceCreate(path: string): Promise<Workspace> {
   return invoke<Workspace>("workspace_create", { path });
 }
 
+export function workspaceClose(workspaceId: string): Promise<void> {
+  return invoke("workspace_close", { workspaceId });
+}
+
 // ---- events ----
 export function subscribeTerminalFocus(
   cb: (payload: { workspace_id: string; window_id: string }) => void

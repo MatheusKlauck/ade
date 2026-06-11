@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { workspaceList, workspaceCreate } from "../lib/ipc";
+import { workspaceList, workspaceCreate, workspaceClose } from "../lib/ipc";
 import type { Workspace } from "../lib/ipc";
 
 export interface SyncStatusEntry {
@@ -14,6 +14,7 @@ interface WorkspacesState {
   load: () => Promise<void>;
   setActive: (id: string) => void;
   addWorkspace: (path: string) => Promise<Workspace | null>;
+  closeWorkspace: (id: string) => Promise<void>;
   updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => void;
 }
 
@@ -40,14 +41,36 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   addWorkspace: async (path: string) => {
     try {
       const ws = await workspaceCreate(path);
+      // The backend reuses an existing workspace for the same folder (reopening
+      // a closed one), so guard against pushing a duplicate when it's already
+      // in the list — just focus it.
       set((s) => ({
-        workspaces: [...s.workspaces, ws],
+        workspaces: s.workspaces.some((w) => w.id === ws.id)
+          ? s.workspaces
+          : [...s.workspaces, ws],
         activeWorkspaceId: ws.id,
       }));
       return ws;
     } catch {
       return null;
     }
+  },
+
+  closeWorkspace: async (id: string) => {
+    try {
+      await workspaceClose(id);
+    } catch {
+      // Backend failed to close — leave the workspace in place.
+      return;
+    }
+    set((s) => {
+      const remaining = s.workspaces.filter((w) => w.id !== id);
+      const activeWorkspaceId =
+        s.activeWorkspaceId === id
+          ? remaining[0]?.id ?? null
+          : s.activeWorkspaceId;
+      return { workspaces: remaining, activeWorkspaceId };
+    });
   },
 
   updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => {

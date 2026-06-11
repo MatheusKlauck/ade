@@ -73,8 +73,11 @@ pub fn spawn(
 
     let base = tmux::base_session(slug);
     let argv = tmux::viewer_attach_argv(&base, &viewer, &window_id);
-    let mut cmd = CommandBuilder::new("tmux");
-    for a in &argv {
+    // argv is a full argv per CONTRACTS §8 (argv[0] == "tmux"). The program name
+    // must NOT be re-added as an argument, or tmux runs `tmux tmux new-session …`
+    // and prints "unknown command: tmux".
+    let mut cmd = CommandBuilder::new(&argv[0]);
+    for a in &argv[1..] {
         cmd.arg(a);
     }
     cmd.cwd(&root_path);

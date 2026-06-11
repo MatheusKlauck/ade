@@ -305,6 +305,23 @@ pub fn kill_window(window_id: &str) -> Result<(), AdeError> {
     Ok(())
 }
 
+/// Kill a tmux session by exact name (e.g. a workspace base session).
+pub fn kill_session(session: &str) -> Result<(), AdeError> {
+    let out = Command::new(TMUX_BIN)
+        .arg("kill-session")
+        .arg("-t")
+        .arg(format!("={}", session))
+        .output()
+        .map_err(|e| AdeError::Tmux(e.to_string()))?;
+
+    if !out.status.success() {
+        return Err(AdeError::Tmux(
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Kill a viewer session.
 pub fn kill_viewer(viewer: &str) -> Result<(), AdeError> {
     let out = Command::new(TMUX_BIN)

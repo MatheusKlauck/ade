@@ -1,5 +1,17 @@
 # ADE — Implementer Rules (read this first, every session)
 
+## Design Context
+
+Design and UI decisions are driven by `PRODUCT.md` (project root) and `DESIGN.md` (visual
+system). ADE's register is **product** (design serves the workflow). The aesthetic is
+**terminal-native and dense, dark-first**, and should feel calm, crafted, and trustworthy —
+explicitly *not* generic-SaaS, cluttered-IDE, or flat-Material/Google. Five design
+principles guide every UI change: (1) the tool disappears, (2) state is never a guess,
+(3) dense but calm, (4) native speed and feel, (5) crafted in the details. When designing,
+redesigning, or polishing any surface, read `PRODUCT.md` first. The `/impeccable` skill
+reads both files automatically.
+
+
 You are implementing ADE, a macOS desktop app (Tauri 2 + Rust core + React/TS frontend).
 The product spec is `PLANO-ADE-v2.md`. **You do not need to read it.** Everything you need
 is in `plan/00-CONTRACTS.md` (the single source of truth for types, schema, IPC, commands)

@@ -55,6 +55,43 @@ pub async fn workspace_create(
         )));
     }
 
+    // If a workspace already exists for this exact folder, reuse it instead of
+    // creating a duplicate. A soft-closed one is reopened (closed_at -> NULL),
+    // which restores its preserved board/cards.
+    if let Some(existing) = sqlx::query_as::<_, Workspace>(
+        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE root_path = ?",
+    )
+    .bind(&path)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AdeError::Db)?
+    {
+        sqlx::query("UPDATE workspace SET closed_at = NULL WHERE id = ?")
+            .bind(&existing.id)
+            .execute(&state.db)
+            .await
+            .map_err(AdeError::Db)?;
+
+        // Respawn a sync worker if this workspace is GitHub-linked (it was
+        // torn down on close).
+        if existing.github_owner.is_some() {
+            let token = crate::ipc::github::keychain_get()
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            crate::spawn_worker_for_workspace(
+                existing.id.clone(),
+                token,
+                state.db.clone(),
+                app.clone(),
+                &state.workers,
+            )
+            .await;
+        }
+
+        return Ok(existing);
+    }
+
     let dirname = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
 
     let ws_id = uuid::Uuid::new_v4().to_string();
@@ -170,13 +207,67 @@ pub async fn workspace_list(
     state: State<'_, Arc<crate::AppState>>,
 ) -> Result<Vec<Workspace>, AdeError> {
     let workspaces: Vec<Workspace> = sqlx::query_as::<_, Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace ORDER BY created_at",
+        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE closed_at IS NULL ORDER BY created_at",
     )
     .fetch_all(&state.db)
     .await
     .map_err(AdeError::Db)?;
 
     Ok(workspaces)
+}
+
+/// Soft-close a workspace: hide it from the list while preserving its board and
+/// cards (reopening the same folder restores them). Also stops the sync worker
+/// and tears down its terminals (closes panes + kills the tmux session) so no
+/// processes leak.
+#[tauri::command]
+pub async fn workspace_close(
+    workspace_id: String,
+    state: State<'_, Arc<crate::AppState>>,
+) -> Result<(), AdeError> {
+    // Look up the slug (also confirms the workspace exists).
+    let slug: Option<String> = sqlx::query_scalar("SELECT slug FROM workspace WHERE id = ?")
+        .bind(&workspace_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+    sqlx::query("UPDATE workspace SET closed_at = ? WHERE id = ?")
+        .bind(Utc::now().to_rfc3339())
+        .bind(&workspace_id)
+        .execute(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+    // Stop the sync worker, if one is running for this workspace.
+    {
+        let mut map = state.workers.lock().await;
+        if let Some(handle) = map.remove(&workspace_id) {
+            handle.join.abort();
+        }
+    }
+
+    // Close every open pane for this workspace (kills its viewer sessions).
+    {
+        let mut reg = state.pty.lock().map_err(|e| AdeError::Pty(e.to_string()))?;
+        let keys: Vec<String> = reg
+            .iter()
+            .filter(|(_, p)| p.workspace_id == workspace_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            if let Some(pane) = reg.remove(&k) {
+                let _ = pane.close();
+            }
+        }
+    }
+
+    // Kill the workspace's base tmux session (best-effort — may not exist).
+    if let Some(slug) = slug {
+        let _ = crate::tmux::kill_session(&crate::tmux::base_session(&slug));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

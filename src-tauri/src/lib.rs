@@ -202,6 +202,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc::workspace::workspace_create,
             ipc::workspace::workspace_list,
+            ipc::workspace::workspace_close,
             ipc::board::board_get,
             ipc::board::card_create,
             ipc::board::card_update,
