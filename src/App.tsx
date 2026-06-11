@@ -11,6 +11,7 @@ import {
 import TerminalPane from "./components/TerminalPane";
 import Board from "./components/Board";
 import Tabs from "./components/Tabs";
+import Settings from "./components/Settings";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
@@ -22,6 +23,7 @@ export default function App() {
     code: string;
     message: string;
   } | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const panes = useTerminalsStore((s) => s.panes);
   const addPane = useTerminalsStore((s) => s.addPane);
@@ -216,6 +218,11 @@ export default function App() {
     removePane(paneId);
   };
 
+  const handleSettingsSaved = (login: string) => {
+    setToast({ level: "info", code: "TOKEN_SAVED", message: `GitHub connected as ${login}` });
+    setTimeout(() => setToast(null), 6000);
+  };
+
   // Show onboarding when no workspaces exist
   if (workspaces.length === 0) {
     return (
@@ -276,7 +283,24 @@ export default function App() {
         <Board workspaceId={activeWorkspaceId} />
       </div>
       <div style={{ padding: 8 }}>
-        <button onClick={handleNewTerminal}>New terminal</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={handleNewTerminal}>New terminal</button>
+          <button
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+            style={{
+              padding: "4px 8px",
+              fontSize: 16,
+              background: "transparent",
+              border: "1px solid #444",
+              borderRadius: 4,
+              color: "#999",
+              cursor: "pointer",
+            }}
+          >
+            ⚙
+          </button>
+        </div>
         <div
           style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}
         >
@@ -302,6 +326,12 @@ export default function App() {
           ))}
         </div>
       </div>
+      {showSettings && (
+        <Settings
+          onClose={() => setShowSettings(false)}
+          onSaved={handleSettingsSaved}
+        />
+      )}
     </div>
   );
 }
