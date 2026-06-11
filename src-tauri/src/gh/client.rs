@@ -1,7 +1,7 @@
 // M2-T7: GitHub client with injectable base URL for wiremock testing.
 
 use crate::error::AdeError;
-use crate::gh::types::RemoteIssue;
+use crate::gh::types::{IssueComment, RemoteIssue};
 
 /// HTTP client for the GitHub Issues API.
 ///
@@ -107,33 +107,8 @@ impl GitHubClient {
             .await
             .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
 
+        let response = self.check_rate_limit(response).await?;
         let status = response.status();
-        if status.as_u16() == 403 || status.as_u16() == 429 {
-            // Check for rate limiting headers
-            let headers = response.headers();
-            if let Some(remaining) = headers.get("x-ratelimit-remaining") {
-                if remaining.to_str().unwrap_or("") == "0" {
-                    let until = headers
-                        .get("x-ratelimit-reset")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("0")
-                        .to_string();
-                    return Err(AdeError::RateLimited(until));
-                }
-            }
-            if let Some(retry_after) = headers.get("retry-after") {
-                let until = retry_after.to_str().unwrap_or("0").to_string();
-                return Err(AdeError::RateLimited(until));
-            }
-            // 403/429 without rate-limit headers — still treat as GitHub error
-            let body = response.text().await.unwrap_or_default();
-            return Err(AdeError::GitHub(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                body.chars().take(200).collect::<String>()
-            )));
-        }
-
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(AdeError::GitHub(format!(
@@ -213,6 +188,310 @@ impl GitHubClient {
             is_pull_request,
             body_preview,
         })
+    }
+
+    // ── Write operations ────────────────────────────────────────────
+
+    /// Ensure the three kanban labels exist in the repo.
+    /// POST /repos/{owner}/{repo}/labels for each label.
+    /// HTTP 422 (already exists) → OK.
+    #[allow(dead_code)]
+    pub async fn ensure_labels(&self, owner: &str, repo: &str) -> Result<(), AdeError> {
+        let labels = [
+            ("kanban:doing", "1f883d"),
+            ("kanban:paused", "d4a72c"),
+            ("kanban:pr", "8250df"),
+        ];
+
+        for (name, color) in &labels {
+            let url = format!("{}/repos/{}/{}/labels", self.base_url, owner, repo);
+            let body = serde_json::json!({
+                "name": name,
+                "color": color,
+            });
+            let response = self.post(&url, &body).await?;
+            let status = response.status().as_u16();
+            if status != 201 && status != 422 {
+                let text = response.text().await.unwrap_or_default();
+                return Err(AdeError::GitHub(format!(
+                    "HTTP {}: {}",
+                    status,
+                    text.chars().take(200).collect::<String>()
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add a label to an issue.
+    /// POST /repos/{owner}/{repo}/issues/{issue_number}/labels
+    /// HTTP 404 → OK (label already removed).
+    #[allow(dead_code)]
+    pub async fn add_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> Result<(), AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/labels",
+            self.base_url, owner, repo, issue_number
+        );
+        let body = serde_json::json!({
+            "labels": [label],
+        });
+        let response = self.post(&url, &body).await?;
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Ok(());
+        }
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(AdeError::GitHub(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Remove a label from an issue.
+    /// DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{label}
+    /// HTTP 404 → OK (label already gone).
+    #[allow(dead_code)]
+    pub async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> Result<(), AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/labels/{}",
+            self.base_url, owner, repo, issue_number, label
+        );
+        let response = self.delete(&url).await?;
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Ok(());
+        }
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(AdeError::GitHub(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Open or close an issue.
+    /// PATCH /repos/{owner}/{repo}/issues/{issue_number} with body { "state": state }.
+    #[allow(dead_code)]
+    pub async fn set_issue_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        state: &str,
+    ) -> Result<(), AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            self.base_url, owner, repo, issue_number
+        );
+        let body = serde_json::json!({
+            "state": state,
+        });
+        let response = self.patch(&url, &body).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(AdeError::GitHub(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Create a new issue.
+    /// POST /repos/{owner}/{repo}/issues with body { "title": title, "body": body }.
+    #[allow(dead_code)]
+    pub async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<RemoteIssue, AdeError> {
+        let url = format!("{}/repos/{}/{}/issues", self.base_url, owner, repo);
+        let json_body = serde_json::json!({
+            "title": title,
+            "body": body,
+        });
+        let response = self.post(&url, &json_body).await?;
+        let item: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse create_issue response: {e}")))?;
+        self.map_issue(&item)
+    }
+
+    /// Fetch a single issue by number.
+    /// GET /repos/{owner}/{repo}/issues/{issue_number}
+    #[allow(dead_code)]
+    pub async fn get_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<RemoteIssue, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            self.base_url, owner, repo, issue_number
+        );
+        let response = self.get(&url).await?;
+        let item: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse get_issue response: {e}")))?;
+        self.map_issue(&item)
+    }
+
+    /// Fetch up to 30 comments for an issue.
+    /// GET /repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=30
+    #[allow(dead_code)]
+    pub async fn get_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<Vec<IssueComment>, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments?per_page=30",
+            self.base_url, owner, repo, issue_number
+        );
+        let response = self.get(&url).await?;
+        let items: Vec<serde_json::Value> = response.json().await.map_err(|e| {
+            AdeError::GitHub(format!("failed to parse get_issue_comments response: {e}"))
+        })?;
+        let mut comments = Vec::new();
+        for item in items {
+            let id = item["id"]
+                .as_u64()
+                .ok_or_else(|| AdeError::GitHub("missing comment id".to_string()))?;
+            let user_login = item["user"]["login"].as_str().unwrap_or("").to_string();
+            let body = item["body"].as_str().unwrap_or("").to_string();
+            let created_at = item["created_at"].as_str().unwrap_or("").to_string();
+            let updated_at = item["updated_at"].as_str().unwrap_or("").to_string();
+            comments.push(IssueComment {
+                id,
+                user_login,
+                body,
+                created_at,
+                updated_at,
+            });
+        }
+        Ok(comments)
+    }
+
+    // ── HTTP helpers ────────────────────────────────────────────────
+
+    /// Send an authenticated POST request with a JSON body.
+    /// Handles rate limiting (403/429) per CONTRACTS §11.
+    async fn post(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AdeError> {
+        let response = self
+            .http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "ade")
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+
+        self.check_rate_limit(response).await
+    }
+
+    /// Send an authenticated PATCH request with a JSON body.
+    /// Handles rate limiting (403/429) per CONTRACTS §11.
+    async fn patch(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AdeError> {
+        let response = self
+            .http
+            .patch(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "ade")
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+
+        self.check_rate_limit(response).await
+    }
+
+    /// Send an authenticated DELETE request.
+    /// Handles rate limiting (403/429) per CONTRACTS §11.
+    async fn delete(&self, url: &str) -> Result<reqwest::Response, AdeError> {
+        let response = self
+            .http
+            .delete(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "ade")
+            .send()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("request failed: {e}")))?;
+
+        self.check_rate_limit(response).await
+    }
+
+    /// Check rate-limit headers on a response.
+    /// Returns Ok(response) if not rate-limited, Err otherwise.
+    async fn check_rate_limit(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response, AdeError> {
+        let status = response.status();
+        if status.as_u16() == 403 || status.as_u16() == 429 {
+            let headers = response.headers();
+            if let Some(remaining) = headers.get("x-ratelimit-remaining") {
+                if remaining.to_str().unwrap_or("") == "0" {
+                    let until = headers
+                        .get("x-ratelimit-reset")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("0")
+                        .to_string();
+                    return Err(AdeError::RateLimited(until));
+                }
+            }
+            if let Some(retry_after) = headers.get("retry-after") {
+                let until = retry_after.to_str().unwrap_or("0").to_string();
+                return Err(AdeError::RateLimited(until));
+            }
+            // 403/429 without rate-limit headers — still treat as GitHub error
+            let body = response.text().await.unwrap_or_default();
+            return Err(AdeError::GitHub(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                body.chars().take(200).collect::<String>()
+            )));
+        }
+
+        Ok(response)
     }
 }
 
@@ -418,5 +697,234 @@ mod tests {
                 panic!("expected RateLimited error, got: {:?}", other);
             }
         }
+    }
+
+    // ── M5-T2: write operation tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn ensure_labels_ok() {
+        use wiremock::matchers::{body_json, method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        let label_specs = [
+            ("kanban:doing", "1f883d"),
+            ("kanban:paused", "d4a72c"),
+            ("kanban:pr", "8250df"),
+        ];
+
+        for (name, color) in &label_specs {
+            Mock::given(match_method("POST"))
+                .and(path("/repos/owner/repo/labels"))
+                .and(body_json(serde_json::json!({
+                    "name": name,
+                    "color": color,
+                })))
+                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "id": 1,
+                    "name": name,
+                    "color": color,
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let client = make_client(&server);
+        let result = client.ensure_labels("owner", "repo").await;
+        assert!(result.is_ok(), "ensure_labels should succeed with 201s");
+    }
+
+    #[tokio::test]
+    async fn ensure_labels_422_ok() {
+        use wiremock::matchers::{method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        // 422 means the label already exists — that's OK
+        Mock::given(match_method("POST"))
+            .and(path("/repos/owner/repo/labels"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "message": "Validation Failed",
+                "errors": [{ "code": "already_exists" }],
+            })))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client.ensure_labels("owner", "repo").await;
+        assert!(result.is_ok(), "ensure_labels should treat 422 as OK");
+    }
+
+    #[tokio::test]
+    async fn add_label_ok() {
+        use wiremock::matchers::{body_json, method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        Mock::given(match_method("POST"))
+            .and(path("/repos/owner/repo/issues/42/labels"))
+            .and(body_json(serde_json::json!({
+                "labels": ["kanban:doing"],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client.add_label("owner", "repo", 42, "kanban:doing").await;
+        assert!(result.is_ok(), "add_label should succeed with 200");
+    }
+
+    #[tokio::test]
+    async fn remove_label_ok() {
+        use wiremock::matchers::{method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        Mock::given(match_method("DELETE"))
+            .and(path("/repos/owner/repo/issues/42/labels/kanban:doing"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client
+            .remove_label("owner", "repo", 42, "kanban:doing")
+            .await;
+        assert!(result.is_ok(), "remove_label should succeed with 204");
+    }
+
+    #[tokio::test]
+    async fn remove_label_404_ok() {
+        use wiremock::matchers::{method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        Mock::given(match_method("DELETE"))
+            .and(path("/repos/owner/repo/issues/42/labels/kanban:doing"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client
+            .remove_label("owner", "repo", 42, "kanban:doing")
+            .await;
+        assert!(
+            result.is_ok(),
+            "remove_label should treat 404 as OK (label already gone)"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_issue_state_close() {
+        use wiremock::matchers::{body_json, method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        let issue_resp = issue_json(42, "Test issue", "closed", None);
+
+        Mock::given(match_method("PATCH"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .and(body_json(serde_json::json!({
+                "state": "closed",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&issue_resp))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client.set_issue_state("owner", "repo", 42, "closed").await;
+        assert!(result.is_ok(), "set_issue_state should succeed with 200");
+    }
+
+    #[tokio::test]
+    async fn create_issue_ok() {
+        use wiremock::matchers::{body_json, method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        let issue_resp = issue_json(99, "New issue", "open", None);
+
+        Mock::given(match_method("POST"))
+            .and(path("/repos/owner/repo/issues"))
+            .and(body_json(serde_json::json!({
+                "title": "New issue",
+                "body": serde_json::Value::Null,
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(&issue_resp))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client
+            .create_issue("owner", "repo", "New issue", None)
+            .await;
+        let issue = result.expect("create_issue should succeed");
+        assert_eq!(issue.number, 99);
+        assert_eq!(issue.title, "New issue");
+        assert_eq!(issue.state, "open");
+    }
+
+    #[tokio::test]
+    async fn get_issue_ok() {
+        use wiremock::matchers::{method as match_method, path};
+
+        let server = MockServer::start().await;
+
+        let issue_resp = issue_json(7, "Fetched issue", "open", None);
+
+        Mock::given(match_method("GET"))
+            .and(path("/repos/owner/repo/issues/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&issue_resp))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client.get_issue("owner", "repo", 7).await;
+        let issue = result.expect("get_issue should succeed");
+        assert_eq!(issue.number, 7);
+        assert_eq!(issue.title, "Fetched issue");
+    }
+
+    #[tokio::test]
+    async fn get_issue_comments_ok() {
+        use wiremock::matchers::{method as match_method, path, query_param};
+
+        let server = MockServer::start().await;
+
+        let comments = vec![
+            serde_json::json!({
+                "id": 1,
+                "user": { "login": "alice" },
+                "body": "First comment",
+                "created_at": "2025-06-10T10:00:00Z",
+                "updated_at": "2025-06-10T10:00:00Z",
+            }),
+            serde_json::json!({
+                "id": 2,
+                "user": { "login": "bob" },
+                "body": "Second comment",
+                "created_at": "2025-06-10T11:00:00Z",
+                "updated_at": "2025-06-10T11:00:00Z",
+            }),
+        ];
+
+        Mock::given(match_method("GET"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .and(query_param("per_page", "30"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&comments))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let result = client.get_issue_comments("owner", "repo", 7).await;
+        let comments = result.expect("get_issue_comments should succeed");
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, 1);
+        assert_eq!(comments[0].user_login, "alice");
+        assert_eq!(comments[0].body, "First comment");
+        assert_eq!(comments[1].id, 2);
+        assert_eq!(comments[1].user_login, "bob");
     }
 }

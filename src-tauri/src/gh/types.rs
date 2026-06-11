@@ -34,6 +34,16 @@ pub enum SyncAction {
     Ignore,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct IssueComment {
+    pub id: u64,
+    pub user_login: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum ColumnName {
