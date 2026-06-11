@@ -9,11 +9,10 @@ import {
   uiStateGet,
   uiStateSet,
 } from "./lib/ipc";
-import TerminalPane from "./components/TerminalPane";
-import Board from "./components/Board";
 import Tabs from "./components/Tabs";
 import Settings from "./components/Settings";
-import NotificationCenter from "./components/NotificationCenter";
+import TerminalArea from "./components/TerminalArea";
+import KanbanDock from "./components/KanbanDock";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
@@ -293,7 +292,7 @@ export default function App() {
     <div
       style={{
         position: "relative",
-        minHeight: "100vh",
+        height: "100vh",
         display: "flex",
         flexDirection: "column",
         background: "var(--bg)",
@@ -317,54 +316,15 @@ export default function App() {
         </div>
       )}
       <Tabs />
-      <div style={{ flex: 1, display: "flex" }}>
-        <Board workspaceId={activeWorkspaceId} />
-      </div>
-      <div style={{ padding: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={handleNewTerminal}>New terminal</button>
-          <NotificationCenter />
-          <button
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-            style={{
-              padding: "4px 8px",
-              fontSize: 16,
-              background: "transparent",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--muted)",
-              cursor: "pointer",
-            }}
-          >
-            ⚙
-          </button>
-        </div>
-        <div
-          style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}
-        >
-          {activePanes.map((pane) => (
-            <div
-              key={pane.paneId}
-              id={`terminal-pane-${pane.windowId}`}
-              style={{
-                width: "48%",
-                height: 300,
-                border: "1px solid var(--border)",
-                borderRadius: 4,
-                overflow: "hidden",
-              }}
-            >
-              <TerminalPane
-                pane={pane}
-                onRemove={() => handleRemove(pane.paneId)}
-                highlighted={highlightedWindowId === pane.windowId}
-                onHighlightDone={clearHighlight}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
+      <TerminalArea
+        panes={activePanes}
+        onNewTerminal={handleNewTerminal}
+        onRemovePane={handleRemove}
+        highlightedWindowId={highlightedWindowId}
+        onHighlightDone={clearHighlight}
+        onOpenSettings={() => setShowSettings(true)}
+      />
+      <KanbanDock workspaceId={activeWorkspaceId} />
       {showSettings && (
         <Settings
           onClose={() => setShowSettings(false)}

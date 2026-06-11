@@ -8,7 +8,7 @@ import { useWorkspacesStore } from "../store/workspaces";
 import Card from "./Card";
 import CardDetail from "./CardDetail";
 
-const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
+export const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
 // M6-T3: Cap rendered cards per column at 100; show "show more" for overflow.
 const MAX_CARDS_PER_COLUMN = 100;
