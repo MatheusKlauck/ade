@@ -1,5 +1,12 @@
-import { useState, useEffect } from "react";
-import { subscribeNotify, boardGet, subscribeBoard, terminalOpen } from "./lib/ipc";
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  subscribeNotify,
+  boardGet,
+  subscribeBoard,
+  terminalOpen,
+  uiStateGet,
+  uiStateSet,
+} from "./lib/ipc";
 import TerminalPane from "./components/TerminalPane";
 import Board from "./components/Board";
 import Tabs from "./components/Tabs";
@@ -18,10 +25,32 @@ export default function App() {
   const panes = useTerminalsStore((s) => s.panes);
   const addPane = useTerminalsStore((s) => s.addPane);
   const removePane = useTerminalsStore((s) => s.removePane);
+  const removePanesForWorkspace = useTerminalsStore(
+    (s) => s.removePanesForWorkspace
+  );
+  const getPanesForWorkspace = useTerminalsStore(
+    (s) => s.getPanesForWorkspace
+  );
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const setBoard = useBoardStore((s) => s.setBoard);
+
+  // Track previous workspace to detect tab switches
+  const prevWorkspaceRef = useRef<string | null>(null);
+
+  // Persist window IDs to ui_state for a workspace
+  const persistWindowIds = useCallback(
+    async (workspaceId: string) => {
+      const workspacePanes = getPanesForWorkspace(workspaceId);
+      const windowIds = workspacePanes.map((p) => p.windowId);
+      await uiStateSet(
+        `terminals:${workspaceId}`,
+        JSON.stringify(windowIds)
+      );
+    },
+    [getPanesForWorkspace]
+  );
 
   useEffect(() => {
     let unsub: (() => void) | null = null;
@@ -54,11 +83,82 @@ export default function App() {
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    // Fetch board for active workspace
-    boardGet(activeWorkspaceId).then((res) => {
-      setBoard(activeWorkspaceId, res.columns, res.cards);
-    }).catch(() => {});
+    boardGet(activeWorkspaceId)
+      .then((res) => {
+        setBoard(activeWorkspaceId, res.columns, res.cards);
+      })
+      .catch(() => {});
   }, [activeWorkspaceId, setBoard]);
+
+  // Handle workspace switch: persist old workspace's window IDs,
+  // remove old panes from store (triggers unmount + terminalClose),
+  // then reattach new workspace's terminals.
+  useEffect(() => {
+    const prevId = prevWorkspaceRef.current;
+
+    if (!activeWorkspaceId) {
+      prevWorkspaceRef.current = null;
+      return;
+    }
+
+    // Persist old workspace's window IDs before switching
+    if (prevId && prevId !== activeWorkspaceId) {
+      const oldPanes = getPanesForWorkspace(prevId);
+      const windowIds = oldPanes.map((p) => p.windowId);
+      uiStateSet(`terminals:${prevId}`, JSON.stringify(windowIds)).catch(
+        () => {}
+      );
+      // Remove panes from store — this triggers TerminalPane unmount
+      // which calls terminalClose (kills viewer, tmux window survives)
+      removePanesForWorkspace(prevId);
+    }
+
+    prevWorkspaceRef.current = activeWorkspaceId;
+
+    // Reattach terminals for the new workspace
+    async function reattach() {
+      if (!activeWorkspaceId) return;
+      // Check if we already have panes for this workspace (initial load)
+      const existing = getPanesForWorkspace(activeWorkspaceId);
+      if (existing.length > 0) return;
+
+      try {
+        const stored = await uiStateGet(
+          `terminals:${activeWorkspaceId}`
+        );
+        if (!stored) return;
+        const windowIds: string[] = JSON.parse(stored);
+        for (const wid of windowIds) {
+          try {
+            const result = await terminalOpen(activeWorkspaceId, wid);
+            const pane: OpenTerminal = {
+              paneId: result.paneId,
+              windowId: result.windowId,
+              workspaceId: activeWorkspaceId,
+              channel: result.channel,
+            };
+            addPane(pane);
+          } catch {
+            // Window no longer exists, skip it
+          }
+        }
+        // Clear stored IDs after successful reattach (they'll be re-persisted on next switch)
+        await uiStateSet(`terminals:${activeWorkspaceId}`, "[]").catch(
+          () => {}
+        );
+      } catch {
+        // No stored terminals, that's fine
+      }
+    }
+    reattach();
+  }, [activeWorkspaceId, addPane, getPanesForWorkspace, removePanesForWorkspace]);
+
+  // Persist window IDs when panes change (for current workspace)
+  useEffect(() => {
+    if (activeWorkspaceId) {
+      persistWindowIds(activeWorkspaceId);
+    }
+  }, [panes, activeWorkspaceId, persistWindowIds]);
 
   const handleNewTerminal = async () => {
     if (!activeWorkspaceId) return;
@@ -105,8 +205,20 @@ export default function App() {
     );
   }
 
+  // Only show panes for the active workspace
+  const activePanes = panes.filter(
+    (p) => p.workspaceId === activeWorkspaceId
+  );
+
   return (
-    <div style={{ position: "relative", minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <div
+      style={{
+        position: "relative",
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       {toast && (
         <div
           style={{
@@ -129,26 +241,26 @@ export default function App() {
       </div>
       <div style={{ padding: 8 }}>
         <button onClick={handleNewTerminal}>New terminal</button>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-          {panes
-            .filter((p) => p.workspaceId === activeWorkspaceId)
-            .map((pane) => (
-              <div
-                key={pane.paneId}
-                style={{
-                  width: "48%",
-                  height: 300,
-                  border: "1px solid #333",
-                  borderRadius: 4,
-                  overflow: "hidden",
-                }}
-              >
-                <TerminalPane
-                  pane={pane}
-                  onRemove={() => handleRemove(pane.paneId)}
-                />
-              </div>
-            ))}
+        <div
+          style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}
+        >
+          {activePanes.map((pane) => (
+            <div
+              key={pane.paneId}
+              style={{
+                width: "48%",
+                height: 300,
+                border: "1px solid #333",
+                borderRadius: 4,
+                overflow: "hidden",
+              }}
+            >
+              <TerminalPane
+                pane={pane}
+                onRemove={() => handleRemove(pane.paneId)}
+              />
+            </div>
+          ))}
         </div>
       </div>
     </div>

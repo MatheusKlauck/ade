@@ -101,9 +101,10 @@ export default function TerminalPane({ pane, onRemove }: TerminalPaneProps) {
       }
       term.dispose();
       termRef.current = null;
+      // Close the PTY viewer (kills viewer process, tmux window survives)
       terminalClose(pane.paneId).catch(() => {});
     };
-  }, [pane.paneId]);
+  }, [pane.paneId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
