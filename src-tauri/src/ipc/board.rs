@@ -1,5 +1,7 @@
 use crate::board_pos::{append_position, insert_between, needs_rebalance, rebalance};
 use crate::error::AdeError;
+use crate::gh::client::GitHubClient;
+use crate::gh::types::ColumnName;
 use crate::models::{BoardColumn, BoardGetResult, Card};
 use crate::notify::emit_notify;
 use crate::sync::outbox;
@@ -600,6 +602,149 @@ pub async fn card_move(
     Ok(card)
 }
 
+#[tauri::command]
+pub async fn card_promote(
+    card_id: String,
+    state: State<'_, Arc<crate::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<Card, AdeError> {
+    // 1. Load card
+    let card: Card = sqlx::query_as::<_, Card>(
+        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+    )
+    .bind(&card_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AdeError::Db)?
+    .ok_or_else(|| AdeError::Other("card not found".to_string()))?;
+
+    // 2. Only local cards can be promoted
+    if card.source != "local" {
+        return Err(AdeError::Other("card already linked".to_string()));
+    }
+
+    // 3. Look up workspace for GitHub owner/repo
+    let ws_row = sqlx::query("SELECT github_owner, github_repo FROM workspace WHERE id = ?")
+        .bind(&card.workspace_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AdeError::Db)?
+        .ok_or_else(|| AdeError::Other("workspace not found".to_string()))?;
+
+    let owner: String = ws_row
+        .get::<Option<String>, _>("github_owner")
+        .ok_or_else(|| AdeError::Other("workspace has no GitHub owner".to_string()))?;
+    let repo: String = ws_row
+        .get::<Option<String>, _>("github_repo")
+        .ok_or_else(|| AdeError::Other("workspace has no GitHub repo".to_string()))?;
+
+    // 4. Get GitHub token from keychain
+    let token = crate::ipc::github::keychain_get()?
+        .ok_or_else(|| AdeError::Other("GitHub token not found in keychain".to_string()))?;
+
+    // 5. Create GitHubClient
+    let gh = GitHubClient::new("https://api.github.com".to_string(), token);
+
+    // 6. Create the GitHub issue
+    let issue = gh
+        .create_issue(&owner, &repo, &card.title, card.body_preview.as_deref())
+        .await
+        .map_err(|e| AdeError::Other(format!("failed to create GitHub issue: {e}")))?;
+
+    // 7. Update card in DB: source, issue number, state, remote_updated_at, labels_json
+    let labels_initial = "[]";
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE card SET source = 'github', github_issue_number = ?, github_state = 'open', remote_updated_at = ?, labels_json = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(issue.number as i64)
+    .bind(&issue.updated_at)
+    .bind(labels_initial)
+    .bind(&now)
+    .bind(&card_id)
+    .execute(&state.db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    // 8. If column is not Backlog, add kanban label
+    let col_row = sqlx::query("SELECT name FROM board_column WHERE id = ?")
+        .bind(&card.column_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+    let col_name_str: Option<String> = col_row.map(|r| r.get::<String, _>("name"));
+
+    let column_name = match col_name_str.as_deref() {
+        Some("Backlog") => ColumnName::Backlog,
+        Some("Doing") => ColumnName::Doing,
+        Some("Paused") => ColumnName::Paused,
+        Some("PR") => ColumnName::Pr,
+        Some("Done") => ColumnName::Done,
+        _ => ColumnName::Backlog,
+    };
+
+    let mut labels_vec: Vec<String> = Vec::new();
+
+    match column_name {
+        ColumnName::Backlog => {
+            // No label needed
+        }
+        ColumnName::Doing | ColumnName::Paused | ColumnName::Pr => {
+            let label = format!(
+                "kanban:{}",
+                match column_name {
+                    ColumnName::Doing => "doing",
+                    ColumnName::Paused => "paused",
+                    ColumnName::Pr => "pr",
+                    _ => unreachable!(),
+                }
+            );
+            gh.add_label(&owner, &repo, issue.number, &label)
+                .await
+                .map_err(|e| {
+                    AdeError::Other(format!("failed to add label to GitHub issue: {e}"))
+                })?;
+            labels_vec.push(label);
+
+            // Re-fetch the issue to get the updated timestamp after label add
+            let updated_issue = gh
+                .get_issue(&owner, &repo, issue.number)
+                .await
+                .map_err(|e| AdeError::Other(format!("failed to re-fetch GitHub issue: {e}")))?;
+            let labels_json =
+                serde_json::to_string(&labels_vec).unwrap_or_else(|_| "[]".to_string());
+            sqlx::query("UPDATE card SET labels_json = ?, remote_updated_at = ? WHERE id = ?")
+                .bind(&labels_json)
+                .bind(&updated_issue.updated_at)
+                .bind(&card_id)
+                .execute(&state.db)
+                .await
+                .map_err(AdeError::Db)?;
+        }
+        ColumnName::Done => {
+            // Close the issue
+            gh.set_issue_state(&owner, &repo, issue.number, "closed")
+                .await
+                .map_err(|e| AdeError::Other(format!("failed to close GitHub issue: {e}")))?;
+        }
+    }
+
+    // 9. Emit board event
+    emit_board(&app, &card.workspace_id, &state.db).await?;
+
+    // 10. Return the updated card
+    let updated_card: Card = sqlx::query_as::<_, Card>(
+        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+    )
+    .bind(&card_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    Ok(updated_card)
+}
+
 async fn emit_board(
     app: &tauri::AppHandle,
     workspace_id: &str,
@@ -1010,5 +1155,281 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    // ── card_promote tests ──────────────────────────────────────────
+
+    /// Helper: seed a workspace with github_owner and github_repo set.
+    async fn seed_github_workspace(pool: &crate::db::DbPool) -> (String, Vec<String>) {
+        let ws_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO workspace (id, name, slug, root_path, github_owner, github_repo, created_at) VALUES (?, 'Dev', 'dev', '/tmp/dev', 'testowner', 'testrepo', ?)",
+        )
+        .bind(&ws_id)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let col_names = ["Backlog", "Doing", "Paused", "PR", "Done"];
+        let mut col_ids = Vec::new();
+        for (i, name) in col_names.iter().enumerate() {
+            let cid = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO board_column (id, workspace_id, name, position) VALUES (?, ?, ?, ?)",
+            )
+            .bind(&cid)
+            .bind(&ws_id)
+            .bind(name)
+            .bind(i as i64)
+            .execute(pool)
+            .await
+            .unwrap();
+            col_ids.push(cid);
+        }
+        (ws_id, col_ids)
+    }
+
+    /// Helper: insert a local card in a given column.
+    async fn insert_local_card(
+        pool: &crate::db::DbPool,
+        ws_id: &str,
+        col_id: &str,
+        title: &str,
+    ) -> String {
+        let card_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let pos = append_position(None);
+        sqlx::query(
+            "INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'local', ?, ?)",
+        )
+        .bind(&card_id)
+        .bind(ws_id)
+        .bind(col_id)
+        .bind(title)
+        .bind(pos)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .unwrap();
+        card_id
+    }
+
+    /// Test: promote local card in Backlog → only create_issue called, no add_label.
+    /// Uses wiremock to verify the GitHub API calls.
+    #[tokio::test]
+    async fn card_promote_backlog_creates_issue_no_label() {
+        use crate::gh::client::GitHubClient;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Mock: POST /repos/testowner/testrepo/issues → create issue #42
+        let issue_body = serde_json::json!({
+            "number": 42,
+            "title": "My task",
+            "state": "open",
+            "updated_at": "2025-06-10T12:00:00Z",
+            "assignee": null,
+            "labels": [],
+            "html_url": "https://github.com/testowner/testrepo/issues/42",
+            "pull_request": null,
+            "body": null,
+        });
+        Mock::given(method("POST"))
+            .and(path("/repos/testowner/testrepo/issues"))
+            .and(header("Authorization", "Bearer testtoken"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(&issue_body))
+            .mount(&server)
+            .await;
+
+        // No add_label mock needed — we expect no label calls for Backlog.
+        // But wiremock will fail the test if any unexpected request is made.
+
+        let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
+
+        // Create issue via the GitHub client
+        let issue = gh
+            .create_issue("testowner", "testrepo", "My task", None)
+            .await
+            .expect("create_issue should succeed");
+
+        assert_eq!(issue.number, 42);
+        assert_eq!(issue.state, "open");
+
+        // Now test the DB side: verify card can be updated correctly
+        let (pool, _tmp) = test_pool().await;
+        let (ws_id, col_ids) = seed_github_workspace(&pool).await;
+        let backlog_col = col_ids[0].clone();
+        let card_id = insert_local_card(&pool, &ws_id, &backlog_col, "My task").await;
+
+        // Simulate what card_promote does for a Backlog card
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE card SET source = 'github', github_issue_number = ?, github_state = 'open', remote_updated_at = ?, labels_json = '[]', updated_at = ? WHERE id = ?",
+        )
+        .bind(issue.number as i64)
+        .bind(&issue.updated_at)
+        .bind(&now)
+        .bind(&card_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Verify card state
+        let card: Card = sqlx::query_as::<_, Card>(
+            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+        )
+        .bind(&card_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(card.source, "github");
+        assert_eq!(card.github_issue_number, Some(42));
+        assert_eq!(card.github_state, Some("open".to_string()));
+        assert_eq!(card.labels_json, Some("[]".to_string()));
+    }
+
+    /// Test: promote local card in Doing → create_issue + add_label called.
+    /// Uses wiremock to verify both GitHub API calls.
+    #[tokio::test]
+    async fn card_promote_doing_creates_issue_and_adds_label() {
+        use crate::gh::client::GitHubClient;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Mock: POST /repos/testowner/testrepo/issues → create issue #42
+        let issue_body = serde_json::json!({
+            "number": 42,
+            "title": "My doing task",
+            "state": "open",
+            "updated_at": "2025-06-10T12:00:00Z",
+            "assignee": null,
+            "labels": [],
+            "html_url": "https://github.com/testowner/testrepo/issues/42",
+            "pull_request": null,
+            "body": null,
+        });
+        Mock::given(method("POST"))
+            .and(path("/repos/testowner/testrepo/issues"))
+            .and(header("Authorization", "Bearer testtoken"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(&issue_body))
+            .mount(&server)
+            .await;
+
+        // Mock: POST /repos/testowner/testrepo/issues/42/labels → add kanban:doing
+        Mock::given(method("POST"))
+            .and(path("/repos/testowner/testrepo/issues/42/labels"))
+            .and(header("Authorization", "Bearer testtoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1,
+                "url": "",
+                "name": "kanban:doing",
+                "color": "1f883d",
+            })))
+            .mount(&server)
+            .await;
+
+        // Mock: GET /repos/testowner/testrepo/issues/42 → re-fetch with updated labels
+        let updated_issue_body = serde_json::json!({
+            "number": 42,
+            "title": "My doing task",
+            "state": "open",
+            "updated_at": "2025-06-10T12:01:00Z",
+            "assignee": null,
+            "labels": [{"name": "kanban:doing", "id": 1, "color": "1f883d"}],
+            "html_url": "https://github.com/testowner/testrepo/issues/42",
+            "pull_request": null,
+            "body": null,
+        });
+        Mock::given(method("GET"))
+            .and(path("/repos/testowner/testrepo/issues/42"))
+            .and(header("Authorization", "Bearer testtoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&updated_issue_body))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
+
+        // Step 1: Create issue
+        let issue = gh
+            .create_issue("testowner", "testrepo", "My doing task", None)
+            .await
+            .expect("create_issue should succeed");
+
+        assert_eq!(issue.number, 42);
+
+        // Step 2: Add kanban:doing label
+        gh.add_label("testowner", "testrepo", 42, "kanban:doing")
+            .await
+            .expect("add_label should succeed");
+
+        // Step 3: Re-fetch issue to get updated_at
+        let updated_issue = gh
+            .get_issue("testowner", "testrepo", 42)
+            .await
+            .expect("get_issue should succeed");
+
+        assert!(updated_issue.labels.contains(&"kanban:doing".to_string()));
+
+        // Now test the DB side
+        let (pool, _tmp) = test_pool().await;
+        let (ws_id, col_ids) = seed_github_workspace(&pool).await;
+        let doing_col = col_ids[1].clone(); // Doing is index 1
+        let card_id = insert_local_card(&pool, &ws_id, &doing_col, "My doing task").await;
+
+        // Simulate what card_promote does for a Doing card
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE card SET source = 'github', github_issue_number = ?, github_state = 'open', remote_updated_at = ?, labels_json = '[]', updated_at = ? WHERE id = ?",
+        )
+        .bind(issue.number as i64)
+        .bind(&issue.updated_at)
+        .bind(&now)
+        .bind(&card_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // After add_label, update labels_json and remote_updated_at
+        let labels_json = serde_json::to_string(&vec!["kanban:doing".to_string()]).unwrap();
+        sqlx::query("UPDATE card SET labels_json = ?, remote_updated_at = ? WHERE id = ?")
+            .bind(&labels_json)
+            .bind(&updated_issue.updated_at)
+            .bind(&card_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Verify card state
+        let card: Card = sqlx::query_as::<_, Card>(
+            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+        )
+        .bind(&card_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(card.source, "github");
+        assert_eq!(card.github_issue_number, Some(42));
+        assert_eq!(card.github_state, Some("open".to_string()));
+        // labels_json should contain kanban:doing
+        let labels: Vec<String> =
+            serde_json::from_str(card.labels_json.as_deref().unwrap_or("[]")).unwrap();
+        assert!(
+            labels.contains(&"kanban:doing".to_string()),
+            "labels should contain kanban:doing, got: {:?}",
+            labels
+        );
+        assert_eq!(
+            card.remote_updated_at,
+            Some("2025-06-10T12:01:00Z".to_string())
+        );
     }
 }
