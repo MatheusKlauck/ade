@@ -11,13 +11,14 @@ Added once in M0-T2 with `cargo add` / `npm install`, then **frozen by committin
 `Cargo.lock` and `package-lock.json`**. Never upgraded afterwards.
 
 **Rust (src-tauri/Cargo.toml):**
-`tauri` (v2, features: default), `tauri-plugin-dialog` (v2), `portable-pty`, `tokio`
-(features: full), `sqlx` (features: runtime-tokio, sqlite, migrate, chrono), `octocrab`,
-`reqwest` (features: json), `git2`, `keyring`, `serde` + `serde_json`, `toml`, `thiserror`,
-`chrono` (serde), `uuid` (v4, serde). **dev-deps:** `wiremock`, `tempfile`.
+`tauri` (v2, features: default), `tauri-plugin-dialog` (v2), `tauri-plugin-updater` (v2),
+`portable-pty`, `tokio` (features: full), `sqlx` (features: runtime-tokio, sqlite, migrate, chrono),
+`octocrab`, `reqwest` (features: json), `git2`, `keyring`, `serde` + `serde_json`, `toml`,
+`thiserror`, `chrono` (serde), `uuid` (v4, serde). **dev-deps:** `wiremock`, `tempfile`.
 
 **Frontend (package.json):**
 `react`, `react-dom`, `typescript`, `vite`, `@tauri-apps/api`, `@tauri-apps/plugin-dialog`,
+`@tauri-apps/plugin-updater`,
 `@xterm/xterm`, `@xterm/addon-webgl`, `@xterm/addon-fit`,
 `@atlaskit/pragmatic-drag-and-drop`, `zustand`. **dev:** `vitest`.
 

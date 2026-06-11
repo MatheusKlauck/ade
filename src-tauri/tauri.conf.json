@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ade",
+  "productName": "ADE",
   "version": "0.1.0",
   "identifier": "dev.mk.ade",
   "build": {
@@ -30,6 +30,17 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/mk/ade/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
   }
 }
