@@ -10,6 +10,7 @@ fn entry() -> Result<Entry, crate::error::AdeError> {
     Entry::new("ade", "github_pat").map_err(map_err)
 }
 
+#[allow(dead_code)]
 pub fn keychain_set(token: &str) -> Result<(), crate::error::AdeError> {
     entry()?.set_password(token).map_err(map_err)
 }
@@ -28,6 +29,38 @@ pub fn keychain_delete() -> Result<(), crate::error::AdeError> {
     entry()?.delete_credential().map_err(map_err)
 }
 
+/// Per-workspace keychain entry. Each workspace stores its own GitHub PAT so
+/// different repos/orgs can use different tokens.
+fn entry_for_workspace(workspace_id: &str) -> Result<Entry, crate::error::AdeError> {
+    Entry::new("ade", &format!("github_pat_{workspace_id}")).map_err(map_err)
+}
+
+pub fn keychain_set_for_workspace(
+    workspace_id: &str,
+    token: &str,
+) -> Result<(), crate::error::AdeError> {
+    entry_for_workspace(workspace_id)?
+        .set_password(token)
+        .map_err(map_err)
+}
+
+/// Read a workspace's GitHub token. Falls back to the legacy global entry
+/// (`ade/github_pat`) when no per-workspace token has been set yet, so a token
+/// configured before per-workspace support keeps working until it's replaced.
+pub fn keychain_get_for_workspace(
+    workspace_id: &str,
+) -> Result<Option<String>, crate::error::AdeError> {
+    match entry_for_workspace(workspace_id)?.get_password() {
+        Ok(pw) => Ok(Some(pw)),
+        Err(KeyringError::NoEntry) => match entry()?.get_password() {
+            Ok(pw) => Ok(Some(pw)),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(e) => Err(map_err(e)),
+        },
+        Err(e) => Err(map_err(e)),
+    }
+}
+
 /// Validate a GitHub PAT by calling GET /user.
 /// On success, store in Keychain and return the login name.
 /// On 401, return TokenInvalid (do NOT store).
@@ -35,6 +68,7 @@ pub fn keychain_delete() -> Result<(), crate::error::AdeError> {
 #[tauri::command]
 pub async fn github_set_token(
     app: tauri::AppHandle,
+    workspace_id: String,
     token: String,
 ) -> Result<serde_json::Value, crate::error::AdeError> {
     let client = reqwest::Client::new();
@@ -79,25 +113,26 @@ pub async fn github_set_token(
 
     let login = user["login"].as_str().unwrap_or("").to_string();
 
-    keychain_set(&token)?;
+    keychain_set_for_workspace(&workspace_id, &token)?;
 
-    // Restart sync workers for all GitHub-linked workspaces with the new token.
-    // The workers hold an Arc<GitHubClient> baked at spawn time, so we must
-    // replace them so they pick up the fresh token.
+    // Restart this workspace's sync worker with the new token, if it's a
+    // GitHub-linked workspace. The worker holds an Arc<GitHubClient> baked at
+    // spawn time, so we must replace it to pick up the fresh token.
     {
         let state: tauri::State<'_, std::sync::Arc<crate::AppState>> = app
             .try_state()
             .ok_or_else(|| crate::error::AdeError::Other("app state not available".to_string()))?;
-        let workspaces: Vec<(String,)> = sqlx::query_as::<_, (String,)>(
-            "SELECT id FROM workspace WHERE github_owner IS NOT NULL",
+        let is_github: Option<(String,)> = sqlx::query_as::<_, (String,)>(
+            "SELECT id FROM workspace WHERE id = ? AND github_owner IS NOT NULL",
         )
-        .fetch_all(&state.db)
+        .bind(&workspace_id)
+        .fetch_optional(&state.db)
         .await
         .map_err(crate::error::AdeError::Db)?;
 
-        for (ws_id,) in workspaces {
+        if is_github.is_some() {
             crate::spawn_worker_for_workspace(
-                ws_id,
+                workspace_id.clone(),
                 token.clone(),
                 state.db.clone(),
                 app.clone(),

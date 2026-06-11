@@ -5,6 +5,7 @@ import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { boardGet } from "../lib/ipc";
 import SyncIndicator from "./SyncIndicator";
+import { CloseIcon, PlusIcon } from "./icons";
 
 export default function Tabs() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
@@ -34,7 +35,7 @@ export default function Tabs() {
   };
 
   const handleCloseWorkspace = async (
-    e: MouseEvent<HTMLSpanElement>,
+    e: MouseEvent<HTMLButtonElement>,
     workspaceId: string
   ) => {
     e.stopPropagation();
@@ -87,83 +88,115 @@ export default function Tabs() {
   if (workspaces.length === 0) return null;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 0,
-        borderBottom: "1px solid var(--border)",
-        background: "var(--bg)",
-        padding: "0 8px",
-      }}
-    >
-      {workspaces.map((ws) => (
-        <button
-          key={ws.id}
-          onClick={() => handleTabClick(ws.id)}
-          style={{
-            padding: "8px 16px",
-            border: "none",
-            borderBottom: ws.id === activeWorkspaceId ? "2px solid var(--accent)" : "2px solid transparent",
-            background: ws.id === activeWorkspaceId ? "var(--panel)" : "transparent",
-            color: ws.id === activeWorkspaceId ? "var(--fg)" : "var(--muted)",
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: ws.id === activeWorkspaceId ? 600 : 400,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {ws.name}
-          {ws.github_owner ? (
-            <span style={{ marginLeft: 6, fontSize: 10, color: "#8250df" }}>
-              {ws.github_owner}/{ws.github_repo}
-            </span>
-          ) : (
-            <span style={{ marginLeft: 6, fontSize: 10, color: "#6e7781" }}>
-              local
-            </span>
-          )}
-          <span style={{ marginLeft: 6 }}>
-            <SyncIndicator workspaceId={ws.id} />
-          </span>
-          <span
-            role="button"
-            aria-label={`Close ${ws.name}`}
-            title="Close workspace"
-            onClick={(e) => handleCloseWorkspace(e, ws.id)}
+    <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
+      {workspaces.map((ws) => {
+        const active = ws.id === activeWorkspaceId;
+        return (
+          <div
+            key={ws.id}
             style={{
-              marginLeft: 8,
-              padding: "0 4px",
-              fontSize: 13,
-              lineHeight: 1,
-              color: "var(--muted)",
-              borderRadius: 3,
-              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              height: "100%",
+              maxWidth: 240,
+              paddingLeft: "var(--space-md)",
+              paddingRight: "var(--space-xs)",
+              gap: "var(--space-xs)",
+              borderBottom: active
+                ? "2px solid var(--accent)"
+                : "2px solid transparent",
+              background: active ? "var(--surface-raised)" : "transparent",
             }}
           >
-            ×
-          </span>
-        </button>
-      ))}
+            <button
+              onClick={() => handleTabClick(ws.id)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                minWidth: 0,
+                padding: 0,
+                border: "none",
+                background: "transparent",
+                color: active ? "var(--fg)" : "var(--muted)",
+                fontSize: 13,
+                fontWeight: active ? 600 : 400,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {ws.name}
+              </span>
+              <span
+                style={{
+                  fontSize: 10,
+                  color: ws.github_owner
+                    ? "var(--source-github)"
+                    : "var(--source-local)",
+                  fontFamily: "var(--font-mono)",
+                  flexShrink: 0,
+                  maxWidth: 120,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {ws.github_owner ? `${ws.github_owner}/${ws.github_repo}` : "local"}
+              </span>
+              <SyncIndicator workspaceId={ws.id} />
+            </button>
+            <button
+              onClick={(e) => handleCloseWorkspace(e, ws.id)}
+              aria-label={`Close ${ws.name}`}
+              title="Close workspace"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 18,
+                height: 18,
+                padding: 0,
+                flexShrink: 0,
+                border: "none",
+                background: "transparent",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--muted)",
+                cursor: "pointer",
+              }}
+            >
+              <CloseIcon size={12} />
+            </button>
+          </div>
+        );
+      })}
       <button
         onClick={handleAddWorkspace}
         disabled={creating}
-        style={{
-          padding: "8px 16px",
-          border: "none",
-          borderBottom: "2px solid transparent",
-          background: "transparent",
-          color: creating ? "var(--muted)" : "var(--muted)",
-          cursor: creating ? "not-allowed" : "pointer",
-          fontSize: 16,
-          fontWeight: 400,
-          whiteSpace: "nowrap",
-          opacity: creating ? 0.5 : 1,
-          transition: "opacity 0.15s",
-        }}
+        aria-label="Add workspace"
         title="Add workspace"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          alignSelf: "center",
+          width: 30,
+          height: 28,
+          marginLeft: "var(--space-xs)",
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          color: "var(--muted)",
+          cursor: creating ? "not-allowed" : "pointer",
+          opacity: creating ? 0.5 : 1,
+        }}
       >
-        +
+        <PlusIcon size={16} />
       </button>
     </div>
   );

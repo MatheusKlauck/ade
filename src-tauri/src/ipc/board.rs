@@ -233,25 +233,17 @@ pub async fn card_move(
             None => None,
         };
 
+        // Semantics: `before` is the card immediately BELOW the drop target (upper bound),
+        // `after` is the card immediately ABOVE (lower bound). Positions are ascending top→bottom,
+        // so after_pos < before_pos when both are present.
         match (before_pos, after_pos) {
-            (Some(a), Some(b)) => insert_between(a, b),
-            (Some(a), None) => {
-                let max_pos: Option<f64> = sqlx::query_scalar(
-                    "SELECT MAX(position) FROM card WHERE workspace_id = ? AND column_id = ?",
-                )
-                .bind(&workspace_id)
-                .bind(&to_column_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(AdeError::Db)?;
-                let max = max_pos.unwrap_or(a);
-                if max > a {
-                    append_position(max_pos)
-                } else {
-                    append_position(Some(a))
-                }
-            }
-            (None, Some(b)) => insert_between(0.0, b),
+            // Drop between two cards: midpoint.
+            (Some(before), Some(after)) => insert_between(after, before),
+            // Drop before the FIRST card (nothing below it): place above it, i.e. between 0 and it.
+            (Some(before), None) => insert_between(0.0, before),
+            // Column drop / append after the LAST card (nothing above it): place after it.
+            (None, Some(after)) => append_position(Some(after)),
+            // Empty column or completely unanchored: append after current max.
             (None, None) => {
                 let max_pos: Option<f64> = sqlx::query_scalar(
                     "SELECT MAX(position) FROM card WHERE workspace_id = ? AND column_id = ?",
@@ -378,7 +370,7 @@ pub async fn card_move(
 
     // 2. Look up workspace for this card
     let ws_row = sqlx::query(
-        "SELECT slug, root_path, github_owner, github_repo, startup_command FROM workspace WHERE id = ?",
+        "SELECT slug, root_path, github_owner, github_repo FROM workspace WHERE id = ?",
     )
     .bind(&card.workspace_id)
     .fetch_optional(&state.db)
@@ -393,7 +385,6 @@ pub async fn card_move(
     let root_path: String = ws.get("root_path");
     let github_owner: Option<String> = ws.get("github_owner");
     let github_repo: Option<String> = ws.get("github_repo");
-    let startup_command: Option<String> = ws.get("startup_command");
 
     // 3. If card already has a terminal_window_id and it's alive, just re-focus it
     if let Some(ref wid) = card.terminal_window_id {
@@ -463,17 +454,15 @@ pub async fn card_move(
                 }
             };
 
-            // Auto-branch: check setting (default true)
-            let auto_branch: bool = match sqlx::query_scalar::<_, String>(
-                "SELECT value FROM setting WHERE key = 'auto_branch'",
+            // Auto-branch: check per-workspace setting (default true)
+            let auto_branch: bool = crate::ipc::settings::workspace_setting_value(
+                &state.db,
+                &card.workspace_id,
+                "auto_branch",
             )
-            .fetch_optional(&state.db)
             .await
-            .map_err(AdeError::Db)?
-            {
-                Some(val) => val != "false",
-                None => true,
-            };
+            .map(|val| val != "false")
+            .unwrap_or(true);
 
             if auto_branch {
                 match gitlocal::prepare_branch(&root_path, issue_number as u64) {
@@ -513,23 +502,6 @@ pub async fn card_move(
                 }
             }
 
-            // Run startup command (workspace-specific, or global fallback)
-            let cmd = startup_command.as_deref().filter(|v| !v.is_empty());
-            let global_cmd: Option<String> = if cmd.is_none() {
-                sqlx::query("SELECT value FROM setting WHERE key = 'startup_command_global'")
-                    .fetch_optional(&state.db)
-                    .await
-                    .map_err(AdeError::Db)?
-                    .map(|r: sqlx::sqlite::SqliteRow| r.get::<String, _>("value"))
-                    .filter(|v| !v.is_empty())
-            } else {
-                None
-            };
-            let run_cmd = cmd.or(global_cmd.as_deref());
-            if let Some(cmd) = run_cmd {
-                let _ = tmux::send_keys(&wid, cmd);
-            }
-
             wid
         } else {
             // Local card: use new_app_window (no env vars, no issue window name)
@@ -549,23 +521,6 @@ pub async fn card_move(
                     return Ok(card);
                 }
             };
-
-            // Run startup command (workspace-specific, or global fallback)
-            let cmd_local = startup_command.as_deref().filter(|v| !v.is_empty());
-            let global_cmd_local: Option<String> = if cmd_local.is_none() {
-                sqlx::query("SELECT value FROM setting WHERE key = 'startup_command_global'")
-                    .fetch_optional(&state.db)
-                    .await
-                    .map_err(AdeError::Db)?
-                    .map(|r: sqlx::sqlite::SqliteRow| r.get::<String, _>("value"))
-                    .filter(|v| !v.is_empty())
-            } else {
-                None
-            };
-            let run_cmd_local = cmd_local.or(global_cmd_local.as_deref());
-            if let Some(cmd) = run_cmd_local {
-                let _ = tmux::send_keys(&wid, cmd);
-            }
 
             // Rename the window to the slugified name (new_app_window doesn't accept a name)
             // tmux rename-window is safe to use with the window id
@@ -1479,6 +1434,45 @@ mod tests {
             plan_joined.contains("idx_card_board"),
             "EXPLAIN QUERY PLAN did not use idx_card_board. Plan: {:?}",
             plan_text
+        );
+    }
+
+    // ── position-math regression tests ─────────────────────────────────────────
+    // These tests lock in the fixed card_move position semantics without needing
+    // a full Tauri AppState: they mirror the match arms directly.
+
+    /// "Drop before the first card" path: before=Some(first_pos), after=None.
+    /// Expected: new position is between 0 and first_pos, so it sorts before it.
+    #[test]
+    fn position_drop_before_first_card() {
+        let first_pos = 1024.0_f64;
+        // Mirrors: (Some(before), None) => insert_between(0.0, before)
+        let new_pos = insert_between(0.0, first_pos);
+        assert!(
+            new_pos > 0.0,
+            "new position should be above 0, got {}",
+            new_pos
+        );
+        assert!(
+            new_pos < first_pos,
+            "new position {} should be less than first card position {}",
+            new_pos,
+            first_pos
+        );
+    }
+
+    /// "Column drop / append after last card" path: before=None, after=Some(last_pos).
+    /// Expected: new position is greater than last_pos, so it sorts after it.
+    #[test]
+    fn position_append_after_last_card() {
+        let last_pos = 3072.0_f64;
+        // Mirrors: (None, Some(after)) => append_position(Some(after))
+        let new_pos = append_position(Some(last_pos));
+        assert!(
+            new_pos > last_pos,
+            "new position {} should be greater than last card position {}",
+            new_pos,
+            last_pos
         );
     }
 }

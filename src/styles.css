@@ -1,21 +1,22 @@
 @keyframes terminal-pane-glow {
   0% {
     box-shadow: 0 0 8px 3px rgba(52, 152, 219, 0.8);
-    border-color: #3498db;
+    border-color: var(--focus-ring);
   }
   100% {
     box-shadow: 0 0 0 0 rgba(52, 152, 219, 0);
-    border-color: #333;
+    border-color: var(--border);
   }
 }
 
 .terminal-pane-highlight {
   animation: terminal-pane-glow 1s ease-out forwards;
-  border: 1px solid #3498db;
+  border: 1px solid var(--focus-ring);
 }
 
-/* Theme variables (CONTRACTS §17) */
+/* Theme variables (CONTRACTS §17 / DESIGN.md token layer) */
 :root[data-theme="dark"] {
+  /* Core surfaces + ink (legacy names kept working) */
   --bg: #1a1a1a;
   --fg: #ccc;
   --panel: #1e1e1e;
@@ -24,9 +25,65 @@
   --input-bg: #2a2a2a;
   --input-border: #444;
   --muted: #999;
+
+  /* Surfaces */
+  --surface-raised: #222;
+  --surface-input: var(--input-bg);
+
+  /* Text on saturated chips/status (always white). --accent-ink is the text on
+     the accent BUTTON specifically: auto-computed at runtime from --accent
+     (App.tsx) so it stays legible for any user-chosen accent. */
+  --on-accent: #fff;
+  --accent-ink: #1a1a1a;
+
+  /* Source hues — lightened on dark so the 10–11px owner/repo + "local" tags
+     clear WCAG AA (≥4.5:1) on --bg #1a1a1a (was #8250df≈3.4:1 / #6e7781≈3.4:1). */
+  --source-github: #a371f7;
+  --source-local: #8b949e;
+
+  /* Semantic status */
+  --status-error: #e74c3c;
+  --status-error-deep: #c0392b;
+  --status-info: #2980b9;
+  --status-warning: #f39c12;
+
+  /* Focus / drop */
+  --focus-ring: #3498db;
+  --drop-target: color-mix(in oklab, var(--accent) 12%, transparent);
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 10px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  /* Motion */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --dur-state: 180ms;
+  --dur-instant: 100ms;
+
+  /* Fonts */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Z-index named scale */
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-modal-scrim: 1200;
+  --z-modal: 1300;
+  --z-toast: 1400;
+  --z-tooltip: 1500;
 }
 
 :root[data-theme="light"] {
+  /* Core surfaces + ink (legacy names kept working) */
   --bg: #f5f5f5;
   --fg: #222;
   --panel: #ffffff;
@@ -35,6 +92,61 @@
   --input-bg: #fff;
   --input-border: #ccc;
   --muted: #666;
+
+  /* Surfaces */
+  --surface-raised: #ececec;
+  --surface-input: var(--input-bg);
+
+  /* Text on saturated chips/status (always white). --accent-ink is the text on
+     the accent BUTTON specifically: auto-computed at runtime from --accent
+     (App.tsx) so it stays legible for any user-chosen accent. */
+  --on-accent: #fff;
+  --accent-ink: #ffffff;
+
+  /* Source hues — darkened on light so the small owner/repo + "local" tags
+     clear WCAG AA (≥4.5:1) on --bg #f5f5f5 (local #6e7781 was ≈4.2:1). */
+  --source-github: #6639ba;
+  --source-local: #57606a;
+
+  /* Semantic status */
+  --status-error: #e74c3c;
+  --status-error-deep: #c0392b;
+  --status-info: #2980b9;
+  --status-warning: #f39c12;
+
+  /* Focus / drop */
+  --focus-ring: #1a73e8;
+  --drop-target: color-mix(in oklab, var(--accent) 12%, transparent);
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 10px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  /* Motion */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --dur-state: 180ms;
+  --dur-instant: 100ms;
+
+  /* Fonts */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Z-index named scale */
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-modal-scrim: 1200;
+  --z-modal: 1300;
+  --z-toast: 1400;
+  --z-tooltip: 1500;
 }
 
 /* Base resets */
@@ -46,9 +158,83 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
 }
 
 button, input, textarea, select {
   font-family: inherit;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Interaction states & motion accessibility (DESIGN.md §5 / §6)
+   Global-first: inline React style objects cannot express :hover/:focus-visible/
+   :active/:disabled or prefers-reduced-motion, so these uniform rules cover every
+   component (including the Kanban) regardless of each element's inline styles.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* 1. Reduced motion — neutralizes ALL animation/transition (incl. inline ones,
+   sync-spin, spin, terminal-pane-glow) for users who request it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 2. Visible focus ring — replaces the app-wide inline `outline: none`.
+   Scoped to interactive elements; !important beats any leftover inline outline.
+   :focus-visible keeps the ring off mouse clicks, on keyboard focus. */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+a[href]:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: 2px solid var(--focus-ring) !important;
+  outline-offset: 2px !important;
+}
+
+/* 3. Universal button hover/active — works regardless of each button's inline
+   background (accent buttons and ghost buttons alike). */
+button:not(:disabled) {
+  transition: filter var(--dur-state) var(--ease-out-quart),
+              opacity var(--dur-state) var(--ease-out-quart);
+}
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+button:not(:disabled):active {
+  filter: brightness(0.94);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* 4. Input focus affordance — accent border + soft ring on keyboard focus.
+   Single consistent treatment for all fields (DESIGN.md §5 Inputs gap). */
+input:focus-visible,
+textarea:focus-visible {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 25%, transparent);
+}
+
+/* Shared spinner keyframe (sync status, aggregate status, etc.) */
+@keyframes ade-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Window drag regions (titleBarStyle: Overlay)
+   The AppBar exposes isolated drag handles (wordmark + the flexible spacer)
+   carrying data-tauri-drag-region. They contain NO interactive children, so
+   app-region: drag here can't swallow button clicks. Tauri also wires the
+   attribute via JS; this rule adds robustness (incl. Windows touch + dbl-click).
+   ────────────────────────────────────────────────────────────────────────── */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  app-region: drag;
 }

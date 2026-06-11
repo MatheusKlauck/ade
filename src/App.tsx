@@ -6,10 +6,11 @@ import {
   subscribeBoard,
   subscribeSync,
   terminalOpen,
+  terminalWrite,
   uiStateGet,
   uiStateSet,
 } from "./lib/ipc";
-import Tabs from "./components/Tabs";
+import AppBar from "./components/AppBar";
 import Settings from "./components/Settings";
 import TerminalArea from "./components/TerminalArea";
 import KanbanDock from "./components/KanbanDock";
@@ -19,6 +20,22 @@ import { useBoardStore } from "./store/board";
 import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
 import { useSettingsStore } from "./store/settings";
 import Onboarding from "./components/Onboarding";
+import DevNav from "./components/DevNav";
+import { contrastingTextColor } from "./lib/color";
+
+/** Schedule sending the startup command to a newly-opened terminal pane. */
+function scheduleStartupCommand(paneId: string) {
+  const { startupCommand, startupDelay } = useSettingsStore.getState();
+  if (!startupCommand || !startupCommand.trim()) return;
+  const delaySecs = Math.max(0, parseInt(startupDelay, 10) || 0);
+  setTimeout(() => {
+    // Guard: pane may have been closed before the delay elapsed
+    const stillOpen = useTerminalsStore.getState().panes.some((p) => p.paneId === paneId);
+    if (!stillOpen) return;
+    const cmd = startupCommand.replace(/\n?$/, "\n");
+    terminalWrite(paneId, cmd).catch(() => {});
+  }, delaySecs * 1000);
+}
 
 export default function App() {
   const [toast, setToast] = useState<{
@@ -27,6 +44,8 @@ export default function App() {
     message: string;
   } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showBoard, setShowBoard] = useState(false);
+  const [devScreen, setDevScreen] = useState<string | null>(null);
 
   // Apply theme at startup using settings store
   const settingsLoad = useSettingsStore((s) => s.load);
@@ -34,15 +53,15 @@ export default function App() {
   const settingsAccent = useSettingsStore((s) => s.accent);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
 
-  useEffect(() => {
-    settingsLoad();
-  }, [settingsLoad]);
-
   // Apply theme/accent from store whenever they change (and on initial load)
   useEffect(() => {
     if (settingsLoaded) {
       document.documentElement.setAttribute("data-theme", settingsTheme);
       document.documentElement.style.setProperty("--accent", settingsAccent);
+      document.documentElement.style.setProperty(
+        "--accent-ink",
+        contrastingTextColor(settingsAccent)
+      );
     }
   }, [settingsTheme, settingsAccent, settingsLoaded]);
 
@@ -131,6 +150,12 @@ export default function App() {
       .catch(() => {});
   }, [activeWorkspaceId, setBoard]);
 
+  // Settings are per-workspace: (re)load them whenever the active workspace
+  // changes so theme/accent/startup command/token reflect the current one.
+  useEffect(() => {
+    if (activeWorkspaceId) settingsLoad(activeWorkspaceId);
+  }, [activeWorkspaceId, settingsLoad]);
+
   // Subscribe to terminal focus events
   useEffect(() => {
     const unsub = subscribeTerminalFocus(async (payload) => {
@@ -152,6 +177,7 @@ export default function App() {
             channel: result.channel,
           };
           addPane(pane);
+          scheduleStartupCommand(pane.paneId);
           focusWindow(window_id);
         } catch {
           // Window may no longer exist
@@ -244,6 +270,7 @@ export default function App() {
         channel: result.channel,
       };
       addPane(pane);
+      scheduleStartupCommand(pane.paneId);
     } catch (e) {
       console.error(e);
     }
@@ -258,10 +285,25 @@ export default function App() {
     setTimeout(() => setToast(null), 6000);
   };
 
-  // Show onboarding when no workspaces exist
-  if (workspaces.length === 0) {
+  // Dev nav: force-show a screen regardless of normal app state
+  const handleDevNavigate = (screenId: string) => {
+    setDevScreen(screenId);
+    setShowSettings(false);
+    setShowBoard(false);
+    if (screenId === "settings") setShowSettings(true);
+    if (screenId === "board") setShowBoard(true);
+  };
+
+  // Show onboarding when no workspaces exist (unless dev nav overrides)
+  if (workspaces.length === 0 && devScreen !== "workspace") {
     return (
       <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)", color: "var(--fg)" }}>
+        {/* titleBarStyle: Overlay removes the native title bar, so the window
+            needs a drag handle even on the onboarding screen. */}
+        <div
+          data-tauri-drag-region
+          style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
+        />
         {toast && (
           <div
             style={{
@@ -270,15 +312,16 @@ export default function App() {
               right: 16,
               padding: "12px 16px",
               borderRadius: 6,
-              background: toast.level === "error" ? "#c0392b" : "#2980b9",
-              color: "#fff",
-              zIndex: 9999,
+              background: toast.level === "error" ? "var(--status-error-deep)" : "var(--status-info)",
+              color: "var(--on-accent)",
+              zIndex: "var(--z-toast)",
             }}
           >
             <strong>{toast.code}</strong>: {toast.message}
           </div>
         )}
         <Onboarding />
+        <DevNav onNavigate={handleDevNavigate} />
       </div>
     );
   }
@@ -307,30 +350,30 @@ export default function App() {
             right: 16,
             padding: "12px 16px",
             borderRadius: 6,
-            background: toast.level === "error" ? "#c0392b" : "#2980b9",
-            color: "#fff",
-            zIndex: 9999,
+            background: toast.level === "error" ? "var(--status-error-deep)" : "var(--status-info)",
+            color: "var(--on-accent)",
+            zIndex: "var(--z-toast)",
           }}
         >
           <strong>{toast.code}</strong>: {toast.message}
         </div>
       )}
-      <Tabs />
+      <AppBar onOpenSettings={() => setShowSettings(true)} />
       <TerminalArea
         panes={activePanes}
         onNewTerminal={handleNewTerminal}
         onRemovePane={handleRemove}
         highlightedWindowId={highlightedWindowId}
         onHighlightDone={clearHighlight}
-        onOpenSettings={() => setShowSettings(true)}
       />
-      <KanbanDock workspaceId={activeWorkspaceId} />
+      <KanbanDock workspaceId={activeWorkspaceId} forceOpen={showBoard} onCloseDrawer={() => setShowBoard(false)} />
       {showSettings && (
         <Settings
-          onClose={() => setShowSettings(false)}
+          onClose={() => { setShowSettings(false); setDevScreen(null); }}
           onSaved={handleSettingsSaved}
         />
       )}
+      <DevNav onNavigate={handleDevNavigate} />
     </div>
   );
 }

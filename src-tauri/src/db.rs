@@ -93,6 +93,10 @@ mod tests {
             "missing sync_state"
         );
         assert!(names.contains(&"setting".to_string()), "missing setting");
+        assert!(
+            names.contains(&"workspace_setting".to_string()),
+            "missing workspace_setting"
+        );
         assert!(names.contains(&"ui_state".to_string()), "missing ui_state");
     }
 }

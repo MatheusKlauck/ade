@@ -14,30 +14,45 @@ fn default_setting(key: &str) -> Option<String> {
     }
 }
 
+/// Read a per-workspace setting, falling back to the code default for the key.
+/// Used by backend consumers (sync worker, board, terminal) that need a setting
+/// value without going through the Tauri IPC boundary.
+pub async fn workspace_setting_value(
+    pool: &crate::db::DbPool,
+    workspace_id: &str,
+    key: &str,
+) -> Option<String> {
+    let stored = sqlx::query("SELECT value FROM workspace_setting WHERE workspace_id = ? AND key = ?")
+        .bind(workspace_id)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.get::<String, _>("value"));
+    stored.or_else(|| default_setting(key))
+}
+
 #[tauri::command]
 pub async fn setting_get(
     state: State<'_, Arc<AppState>>,
+    workspace_id: String,
     key: String,
 ) -> Result<Option<String>, AdeError> {
-    let row = sqlx::query("SELECT value FROM setting WHERE key = ?")
-        .bind(&key)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(AdeError::Db)?;
-
-    let value = row.map(|r| r.get::<String, _>("value"));
-    Ok(value.or_else(|| default_setting(&key)))
+    Ok(workspace_setting_value(&state.db, &workspace_id, &key).await)
 }
 
 #[tauri::command]
 pub async fn setting_set(
     state: State<'_, Arc<AppState>>,
+    workspace_id: String,
     key: String,
     value: String,
 ) -> Result<(), AdeError> {
     sqlx::query(
-        "INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        "INSERT INTO workspace_setting (workspace_id, key, value) VALUES (?, ?, ?) ON CONFLICT(workspace_id, key) DO UPDATE SET value=excluded.value",
     )
+    .bind(&workspace_id)
     .bind(&key)
     .bind(&value)
     .execute(&state.db)
@@ -100,6 +115,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            "CREATE TABLE workspace_setting (workspace_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (workspace_id, key));",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("CREATE TABLE ui_state (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);")
             .execute(&pool)
             .await
@@ -110,16 +131,34 @@ mod tests {
     #[tokio::test]
     async fn setting_set_get_roundtrip() {
         let (pool, _tmp) = test_pool().await;
-        sqlx::query("INSERT INTO setting (key, value) VALUES ('x', '1')")
+        sqlx::query("INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('ws1', 'x', '1')")
             .execute(&pool)
             .await
             .unwrap();
 
-        let row = sqlx::query("SELECT value FROM setting WHERE key = 'x'")
-            .fetch_optional(&pool)
+        // Same key in a different workspace is independent.
+        let v = workspace_setting_value(&pool, "ws1", "x").await;
+        assert_eq!(v, Some("1".into()));
+        let other = workspace_setting_value(&pool, "ws2", "x").await;
+        assert_eq!(other, None);
+    }
+
+    #[tokio::test]
+    async fn workspace_setting_falls_back_to_default() {
+        let (pool, _tmp) = test_pool().await;
+        // No stored row → code default for known keys.
+        let v = workspace_setting_value(&pool, "ws1", "sync_interval_secs").await;
+        assert_eq!(v, Some("30".into()));
+        // Unknown key with no default → None.
+        let v2 = workspace_setting_value(&pool, "ws1", "unknown_key").await;
+        assert_eq!(v2, None);
+        // Stored value overrides the default.
+        sqlx::query("INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('ws1', 'sync_interval_secs', '90')")
+            .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(row.map(|r| r.get::<String, _>("value")).unwrap(), "1");
+        let v3 = workspace_setting_value(&pool, "ws1", "sync_interval_secs").await;
+        assert_eq!(v3, Some("90".into()));
     }
 
     #[tokio::test]

@@ -15,17 +15,27 @@ export async function subscribeNotify(
   });
 }
 
-// ---- settings ----
-export function githubSetToken(token: string): Promise<{ login: string }> {
-  return invoke("github_set_token", { token });
+// ---- settings (per-workspace) ----
+export function githubSetToken(
+  workspaceId: string,
+  token: string
+): Promise<{ login: string }> {
+  return invoke("github_set_token", { workspaceId, token });
 }
 
-export function settingGet(key: string): Promise<string | null> {
-  return invoke("setting_get", { key });
+export function settingGet(
+  workspaceId: string,
+  key: string
+): Promise<string | null> {
+  return invoke("setting_get", { workspaceId, key });
 }
 
-export function settingSet(key: string, value: string): Promise<void> {
-  return invoke("setting_set", { key, value });
+export function settingSet(
+  workspaceId: string,
+  key: string,
+  value: string
+): Promise<void> {
+  return invoke("setting_set", { workspaceId, key, value });
 }
 
 export function uiStateGet(key: string): Promise<string | null> {

@@ -25,6 +25,13 @@ export default function Card({ card, onDropBefore, onDoubleClick }: CardProps) {
   const [dragging, setDragging] = useState(false);
   const [over, setOver] = useState(false);
 
+  // The drop-target effect below only re-runs on [card.id, card.column_id],
+  // so its onDrop closure would otherwise capture a stale `onDropBefore`.
+  // Keep the latest handler in a ref so the registered onDrop always calls the
+  // current one without forcing the drop target to tear down / re-register.
+  const onDropBeforeRef = useRef(onDropBefore);
+  onDropBeforeRef.current = onDropBefore;
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -49,8 +56,9 @@ export default function Card({ card, onDropBefore, onDoubleClick }: CardProps) {
         setOver(false);
         const source = args.source;
         const draggedCardId = source.data.cardId as string;
-        if (onDropBefore && draggedCardId !== card.id) {
-          onDropBefore(draggedCardId, card.id);
+        const handler = onDropBeforeRef.current;
+        if (handler && draggedCardId !== card.id) {
+          handler(draggedCardId, card.id);
         }
       },
     });
@@ -61,39 +69,76 @@ export default function Card({ card, onDropBefore, onDoubleClick }: CardProps) {
     };
   }, [card.id, card.column_id]);
 
+  const isGithub = card.source === "github";
+
   return (
     <div
       ref={ref}
       onDoubleClick={onDoubleClick}
       style={{
-        padding: "8px 12px",
-        marginBottom: 8,
-        background: dragging ? "#e8e8e8" : over ? "#d0e8ff" : "#fff",
-        border: "1px solid #ddd",
-        borderRadius: 4,
+        padding: "var(--space-sm) var(--space-md)",
+        marginBottom: "var(--space-sm)",
+        background: dragging
+          ? "var(--surface-input)"
+          : over
+          ? "var(--drop-target)"
+          : "var(--panel)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius-sm)",
         cursor: "grab",
         opacity: dragging ? 0.5 : 1,
-        transition: "background 0.1s",
+        transition: "background var(--dur-instant) var(--ease-out-quart)",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 13, fontWeight: 500, wordBreak: "break-word" }}>{card.title}</span>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: "var(--space-sm)",
+        }}
+      >
         <span
           style={{
+            fontFamily: "var(--font-sans)",
+            fontSize: 13,
+            fontWeight: 500,
+            lineHeight: 1.4,
+            color: "var(--fg)",
+            wordBreak: "break-word",
+            minWidth: 0,
+          }}
+        >
+          {card.title}
+        </span>
+        <span
+          style={{
+            flexShrink: 0,
             fontSize: 10,
+            fontWeight: 500,
+            lineHeight: 1.2,
             padding: "2px 6px",
-            borderRadius: 10,
-            background: card.source === "github" ? "#8250df" : "#6e7781",
-            color: "#fff",
+            borderRadius: "var(--radius-pill)",
+            background: isGithub ? "var(--source-github)" : "var(--source-local)",
+            color: "var(--on-accent)",
+            fontFamily: "var(--font-mono)",
             whiteSpace: "nowrap",
-            marginLeft: 8,
           }}
         >
           {sourceBadge(card)}
         </span>
       </div>
       {card.assignee && (
-        <div style={{ marginTop: 4, fontSize: 11, color: "#666" }}>
+        <div
+          style={{
+            marginTop: "var(--space-xs)",
+            fontSize: 11,
+            fontWeight: 500,
+            letterSpacing: "0.02em",
+            color: "var(--muted)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
           {assigneeInitials(card.assignee)}
         </div>
       )}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSettingsStore } from "../store/settings";
+import { useWorkspacesStore } from "../store/workspaces";
 
 interface SettingsProps {
   onClose: () => void;
@@ -7,18 +8,25 @@ interface SettingsProps {
 }
 
 export default function Settings({ onClose, onSaved }: SettingsProps) {
+  const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
+  const workspaces = useWorkspacesStore((s) => s.workspaces);
+  const activeWorkspaceName =
+    workspaces.find((w) => w.id === activeWorkspaceId)?.name ?? "";
   const theme = useSettingsStore((s) => s.theme);
   const accent = useSettingsStore((s) => s.accent);
   const startupCommand = useSettingsStore((s) => s.startupCommand);
+  const startupDelay = useSettingsStore((s) => s.startupDelay);
   const syncInterval = useSettingsStore((s) => s.syncInterval);
   const ghTokenDisplay = useSettingsStore((s) => s.ghTokenDisplay);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setAccent = useSettingsStore((s) => s.setAccent);
   const setStartupCommand = useSettingsStore((s) => s.setStartupCommand);
+  const setStartupDelay = useSettingsStore((s) => s.setStartupDelay);
   const setSyncInterval = useSettingsStore((s) => s.setSyncInterval);
   const setGhToken = useSettingsStore((s) => s.setGhToken);
 
   const [localStartupCommand, setLocalStartupCommand] = useState(startupCommand);
+  const [localStartupDelay, setLocalStartupDelay] = useState(startupDelay);
   const [localSyncInterval, setLocalSyncInterval] = useState(syncInterval);
   const [newToken, setNewToken] = useState("");
   const [showTokenInput, setShowTokenInput] = useState(false);
@@ -28,8 +36,9 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
   // Sync local state from store on mount
   useEffect(() => {
     setLocalStartupCommand(startupCommand);
+    setLocalStartupDelay(startupDelay);
     setLocalSyncInterval(syncInterval);
-  }, [startupCommand, syncInterval]);
+  }, [startupCommand, startupDelay, syncInterval]);
 
   const handleThemeChange = useCallback(
     async (newTheme: string) => {
@@ -60,6 +69,20 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
       // IPC failure in dev mode is non-fatal
     }
   }, [localStartupCommand, setStartupCommand]);
+
+  const handleStartupDelayBlur = useCallback(async () => {
+    const val = parseInt(localStartupDelay, 10);
+    if (isNaN(val) || val < 0) {
+      setError("Startup delay must be a non-negative integer");
+      return;
+    }
+    setError(null);
+    try {
+      await setStartupDelay(String(val));
+    } catch {
+      // IPC failure in dev mode is non-fatal
+    }
+  }, [localStartupDelay, setStartupDelay]);
 
   const handleSyncIntervalBlur = useCallback(async () => {
     const val = parseInt(localSyncInterval, 10);
@@ -104,7 +127,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        zIndex: 10000,
+        zIndex: "var(--z-modal)",
       }}
       onClick={onClose}
     >
@@ -125,13 +148,25 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
         <h3
           style={{
             margin: 0,
-            marginBottom: 20,
+            marginBottom: 4,
             fontSize: 16,
             color: "var(--fg)",
           }}
         >
           Settings
         </h3>
+        <p
+          style={{
+            margin: 0,
+            marginBottom: 20,
+            fontSize: 12,
+            color: "var(--muted)",
+          }}
+        >
+          {activeWorkspaceName
+            ? `Per-workspace · ${activeWorkspaceName}`
+            : "Per-workspace settings"}
+        </p>
 
         {/* Theme */}
         <div style={{ marginBottom: 20 }}>
@@ -153,7 +188,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                 fontSize: 13,
                 background:
                   theme === "dark" ? "var(--accent)" : "var(--input-bg)",
-                color: theme === "dark" ? "#fff" : "var(--fg)",
+                color: theme === "dark" ? "var(--accent-ink)" : "var(--fg)",
                 border:
                   theme === "dark"
                     ? "1px solid var(--accent)"
@@ -171,7 +206,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                 fontSize: 13,
                 background:
                   theme === "light" ? "var(--accent)" : "var(--input-bg)",
-                color: theme === "light" ? "#fff" : "var(--fg)",
+                color: theme === "light" ? "var(--accent-ink)" : "var(--fg)",
                 border:
                   theme === "light"
                     ? "1px solid var(--accent)"
@@ -243,10 +278,43 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
               border: "1px solid var(--input-border)",
               borderRadius: 4,
               color: "var(--fg)",
-              outline: "none",
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleStartupCommandBlur();
+            }}
+          />
+        </div>
+
+        {/* Startup delay */}
+        <div style={{ marginBottom: 20 }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: 13,
+              color: "var(--muted)",
+              marginBottom: 8,
+            }}
+          >
+            Startup Command Delay (seconds)
+          </label>
+          <input
+            type="number"
+            min={0}
+            value={localStartupDelay}
+            onChange={(e) => setLocalStartupDelay(e.target.value)}
+            onBlur={handleStartupDelayBlur}
+            style={{
+              width: 120,
+              padding: "8px 12px",
+              fontSize: 13,
+              background: "var(--input-bg)",
+              border: "1px solid var(--input-border)",
+              borderRadius: 4,
+              color: "var(--fg)",
+              boxSizing: "border-box",
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleStartupDelayBlur();
             }}
           />
         </div>
@@ -277,7 +345,6 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
               border: "1px solid var(--input-border)",
               borderRadius: 4,
               color: "var(--fg)",
-              outline: "none",
               boxSizing: "border-box",
             }}
             onKeyDown={(e) => {
@@ -310,7 +377,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                 style={{
                   fontSize: 13,
                   color: "var(--fg)",
-                  fontFamily: "monospace",
+                  fontFamily: "var(--font-mono)",
                   padding: "8px 12px",
                   background: "var(--input-bg)",
                   border: "1px solid var(--input-border)",
@@ -351,7 +418,6 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                   border: "1px solid var(--input-border)",
                   borderRadius: 4,
                   color: "var(--fg)",
-                  outline: "none",
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleTokenReplace();
@@ -375,7 +441,6 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                   border: "1px solid var(--input-border)",
                   borderRadius: 4,
                   color: "var(--fg)",
-                  outline: "none",
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleTokenReplace();
@@ -389,7 +454,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
           <p
             style={{
               fontSize: 12,
-              color: "#ff6b6b",
+              color: "var(--status-error)",
               marginTop: 8,
               marginBottom: 0,
             }}
@@ -431,7 +496,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                   saving || !newToken.trim()
                     ? "var(--input-bg)"
                     : "var(--accent)",
-                color: saving || !newToken.trim() ? "#666" : "#fff",
+                color: saving || !newToken.trim() ? "var(--muted)" : "var(--accent-ink)",
                 border: "none",
                 borderRadius: 4,
                 cursor:

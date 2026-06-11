@@ -106,16 +106,12 @@ pub async fn spawn_worker_for_workspace(
 
     let rate_budget = Arc::new(sync::worker::RateBudget::new());
 
-    // Read sync_interval_secs setting (default 30)
-    let interval_secs: u64 = match sqlx::query_scalar::<_, String>(
-        "SELECT value FROM setting WHERE key = 'sync_interval_secs'",
-    )
-    .fetch_optional(&pool)
-    .await
-    {
-        Ok(Some(val)) => val.parse().unwrap_or(30),
-        _ => 30,
-    };
+    // Read this workspace's sync_interval_secs setting (default 30)
+    let interval_secs: u64 =
+        crate::ipc::settings::workspace_setting_value(&pool, &workspace_id, "sync_interval_secs")
+            .await
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
 
     let db = pool.clone();
     let app_clone = app.clone();
@@ -152,17 +148,17 @@ async fn spawn_sync_workers(
         }
     };
 
-    // Try to get GitHub token from keychain; if unavailable, workers will
-    // start but skip cycles (the client needs a valid token).
-    let token = match crate::ipc::github::keychain_get() {
-        Ok(Some(t)) => t,
-        _ => String::new(), // Empty token — workers will hit auth errors
-    };
-
     for ws in workspaces {
+        // Each workspace uses its own token (falling back to the legacy global
+        // entry). If unavailable, the worker starts but skips cycles until a
+        // valid token is set.
+        let token = match crate::ipc::github::keychain_get_for_workspace(&ws.id) {
+            Ok(Some(t)) => t,
+            _ => String::new(),
+        };
         spawn_worker_for_workspace(
             ws.id.clone(),
-            token.clone(),
+            token,
             pool.clone(),
             app.clone(),
             workers,

@@ -4,9 +4,11 @@ import { useSettingsStore, DEFAULTS } from "./settings";
 // Reset the store between tests
 function resetStore() {
   useSettingsStore.setState({
+    workspaceId: null,
     theme: DEFAULTS.theme,
     accent: DEFAULTS.accent,
     startupCommand: DEFAULTS.startup_command,
+    startupDelay: DEFAULTS.startup_delay_secs,
     syncInterval: DEFAULTS.sync_interval_secs,
     ghTokenDisplay: "",
     loaded: false,
@@ -20,6 +22,7 @@ describe("settings store defaults", () => {
     expect(state.theme).toBe("dark");
     expect(state.accent).toBe("#4a9eff");
     expect(state.startupCommand).toBe("");
+    expect(state.startupDelay).toBe("3");
     expect(state.syncInterval).toBe("30");
     expect(state.ghTokenDisplay).toBe("");
     expect(state.loaded).toBe(false);
@@ -73,5 +76,44 @@ describe("settings store defaults", () => {
     }
     // The store should have been updated before IPC
     expect(useSettingsStore.getState().syncInterval).toBe("10");
+  });
+
+  it("startupDelay default is 3", () => {
+    resetStore();
+    expect(useSettingsStore.getState().startupDelay).toBe("3");
+  });
+
+  it("setStartupDelay rejects negative values", async () => {
+    resetStore();
+    await expect(
+      useSettingsStore.getState().setStartupDelay("-1")
+    ).rejects.toThrow("Startup delay must be a non-negative integer");
+  });
+
+  it("setStartupDelay rejects NaN", async () => {
+    resetStore();
+    await expect(
+      useSettingsStore.getState().setStartupDelay("abc")
+    ).rejects.toThrow("Startup delay must be a non-negative integer");
+  });
+
+  it("setStartupDelay accepts zero", async () => {
+    resetStore();
+    try {
+      await useSettingsStore.getState().setStartupDelay("0");
+    } catch {
+      // IPC will fail in vitest, that's expected
+    }
+    expect(useSettingsStore.getState().startupDelay).toBe("0");
+  });
+
+  it("setStartupDelay accepts positive integer", async () => {
+    resetStore();
+    try {
+      await useSettingsStore.getState().setStartupDelay("5");
+    } catch {
+      // IPC will fail in vitest, that's expected
+    }
+    expect(useSettingsStore.getState().startupDelay).toBe("5");
   });
 });

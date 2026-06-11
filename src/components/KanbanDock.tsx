@@ -4,13 +4,22 @@ import Board, { COLUMN_ORDER } from "./Board";
 
 interface KanbanDockProps {
   workspaceId: string | null;
+  forceOpen?: boolean;
+  onCloseDrawer?: () => void;
 }
 
 // Slim bottom strip: per-column card counts + "Doing" card chips.
 // Clicking it opens a drawer with the full Board over the terminal area.
-export default function KanbanDock({ workspaceId }: KanbanDockProps) {
+export default function KanbanDock({ workspaceId, forceOpen, onCloseDrawer }: KanbanDockProps) {
   const boards = useBoardStore((s) => s.boards);
   const [open, setOpen] = useState(false);
+
+  // External control (DevNav)
+  const effectiveOpen = forceOpen ?? open;
+  const handleClose = () => {
+    setOpen(false);
+    onCloseDrawer?.();
+  };
 
   const board = workspaceId ? boards[workspaceId] : undefined;
   const columns = [...(board?.columns || [])].sort(
@@ -22,13 +31,13 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
   const doingCards = doing ? cardsByColumn[doing.id] || [] : [];
 
   useEffect(() => {
-    if (!open) return;
+    if (!effectiveOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") handleClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [effectiveOpen]);
 
   return (
     <>
@@ -40,8 +49,8 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          padding: "0 12px",
+          gap: "var(--space-md)",
+          padding: "0 var(--space-md)",
           borderTop: "1px solid var(--border)",
           background: "var(--panel)",
           cursor: "pointer",
@@ -52,13 +61,16 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
           <span
             key={col.id}
             style={{
+              fontFamily: "var(--font-sans)",
               fontSize: 11,
               color: "var(--muted)",
               whiteSpace: "nowrap",
             }}
           >
             {col.name}{" "}
-            <strong style={{ color: "var(--fg)" }}>
+            <strong
+              style={{ color: "var(--fg)", fontFamily: "var(--font-mono)", fontWeight: 600 }}
+            >
               {(cardsByColumn[col.id] || []).length}
             </strong>
           </span>
@@ -67,7 +79,7 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
           style={{
             width: 1,
             alignSelf: "stretch",
-            margin: "12px 0",
+            margin: "var(--space-md) 0",
             background: "var(--border)",
           }}
         />
@@ -76,12 +88,14 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
             flex: 1,
             display: "flex",
             alignItems: "center",
-            gap: 6,
+            gap: "var(--space-sm)",
             overflowX: "auto",
           }}
         >
           {doingCards.length === 0 ? (
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+            <span
+              style={{ fontFamily: "var(--font-sans)", fontSize: 11, color: "var(--muted)" }}
+            >
               Nothing in Doing
             </span>
           ) : (
@@ -89,9 +103,11 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
               <span
                 key={c.id}
                 style={{
+                  fontFamily: "var(--font-sans)",
                   fontSize: 11,
+                  color: "var(--fg)",
                   padding: "3px 10px",
-                  borderRadius: 10,
+                  borderRadius: "var(--radius-pill)",
                   border: "1px solid var(--border)",
                   background: "var(--bg)",
                   whiteSpace: "nowrap",
@@ -107,6 +123,7 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
         </div>
         <span
           style={{
+            fontFamily: "var(--font-sans)",
             fontSize: 11,
             color: "var(--accent)",
             whiteSpace: "nowrap",
@@ -115,53 +132,73 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
           Board ▴
         </span>
       </div>
-      {open && (
-        <div
-          style={{
-            position: "fixed",
-            left: 0,
-            right: 0,
-            bottom: 0,
-            height: "60vh",
-            zIndex: 1500,
-            background: "var(--bg)",
-            borderTop: "1px solid var(--border)",
-            boxShadow: "0 -8px 24px rgba(0, 0, 0, 0.35)",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
+      {effectiveOpen && (
+        <>
+          <div
+            onClick={handleClose}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: "var(--z-modal-scrim)",
+              background: "rgba(0, 0, 0, 0.6)",
+            }}
+          />
           <div
             style={{
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: "60vh",
+              zIndex: "var(--z-modal)",
+              background: "var(--bg)",
+              borderTop: "1px solid var(--border)",
               display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "6px 12px",
-              borderBottom: "1px solid var(--border)",
+              flexDirection: "column",
             }}
           >
-            <span style={{ fontSize: 12, fontWeight: 600 }}>Board</span>
-            <button
-              onClick={() => setOpen(false)}
+            <div
               style={{
-                padding: "4px 10px",
-                background: "transparent",
-                border: "1px solid var(--border)",
-                borderRadius: 4,
-                color: "var(--muted)",
-                cursor: "pointer",
-                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "var(--space-sm) var(--space-md)",
+                borderBottom: "1px solid var(--border)",
               }}
             >
-              ✕ Close
-            </button>
+              <span
+                style={{
+                  fontFamily: "var(--font-sans)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--fg)",
+                }}
+              >
+                Board
+              </span>
+              <button
+                onClick={handleClose}
+                style={{
+                  padding: "var(--space-xs) 10px",
+                  background: "transparent",
+                  border: "1px solid var(--input-border)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-sans)",
+                  fontSize: 12,
+                }}
+              >
+                ✕ Close
+              </button>
+            </div>
+            <div
+              style={{ flex: 1, minHeight: 0, display: "flex", overflow: "auto" }}
+            >
+              <Board workspaceId={workspaceId} />
+            </div>
           </div>
-          <div
-            style={{ flex: 1, minHeight: 0, display: "flex", overflow: "auto" }}
-          >
-            <Board workspaceId={workspaceId} />
-          </div>
-        </div>
+        </>
       )}
     </>
   );

@@ -124,3 +124,85 @@ describe("board store (per-workspace)", () => {
     expect(state.boards["ws-2"]?.cardsByColumn["col-3"]?.[0]?.title).toBe("Task B");
   });
 });
+
+// These tests pin down the card-to-card reorder math that the stale-closure DnD
+// bug was silently no-op'ing. Board.handleDropBeforeCard computes beforeCardId +
+// afterCardId from the live list, then calls optimisticMove(...); we assert the
+// resulting card order so a regression in either side is caught.
+describe("board store optimisticMove (reorder)", () => {
+  // Three cards in a single column, ascending position.
+  function mk(id: string, columnId: string, position: number): Card {
+    return { ...cardA, id, column_id: columnId, position };
+  }
+
+  it("reorders a card before another within the same column", () => {
+    resetStore();
+    const { setBoard, optimisticMove } = useBoardStore.getState();
+    const c1 = mk("c1", "col-1", 1024);
+    const c2 = mk("c2", "col-1", 2048);
+    const c3 = mk("c3", "col-1", 3072);
+    setBoard("ws-1", [col1, col2], [c1, c2, c3]);
+
+    // Drop c3 BEFORE c2 → afterCardId is the card preceding c2 (c1).
+    optimisticMove("ws-1", "c3", "col-1", "c2", "c1");
+
+    const order = useBoardStore
+      .getState()
+      .boards["ws-1"]?.cardsByColumn["col-1"]?.map((c) => c.id);
+    expect(order).toEqual(["c1", "c3", "c2"]);
+  });
+
+  it("reorders to the front of the column when dropping before the first card", () => {
+    resetStore();
+    const { setBoard, optimisticMove } = useBoardStore.getState();
+    const c1 = mk("c1", "col-1", 1024);
+    const c2 = mk("c2", "col-1", 2048);
+    setBoard("ws-1", [col1, col2], [c1, c2]);
+
+    // Drop c2 BEFORE c1; c1 is first so there is no afterCardId.
+    optimisticMove("ws-1", "c2", "col-1", "c1", undefined);
+
+    const order = useBoardStore
+      .getState()
+      .boards["ws-1"]?.cardsByColumn["col-1"]?.map((c) => c.id);
+    expect(order).toEqual(["c2", "c1"]);
+  });
+
+  it("moves a card before a card in another column (cross-column reorder)", () => {
+    resetStore();
+    const { setBoard, optimisticMove } = useBoardStore.getState();
+    const a = mk("a", "col-1", 1024); // Backlog
+    const d1 = mk("d1", "col-2", 1024); // Doing
+    const d2 = mk("d2", "col-2", 2048); // Doing
+    setBoard("ws-1", [col1, col2], [a, d1, d2]);
+
+    // Drop a BEFORE d2 in the Doing column; afterCardId = d1.
+    optimisticMove("ws-1", "a", "col-2", "d2", "d1");
+
+    const state = useBoardStore.getState();
+    expect(state.boards["ws-1"]?.cardsByColumn["col-1"]?.map((c) => c.id)).toEqual([]);
+    expect(
+      state.boards["ws-1"]?.cardsByColumn["col-2"]?.map((c) => c.id)
+    ).toEqual(["d1", "a", "d2"]);
+    // moved card's column_id is updated
+    expect(
+      state.boards["ws-1"]?.cardsByColumn["col-2"]?.find((c) => c.id === "a")
+        ?.column_id
+    ).toBe("col-2");
+  });
+
+  it("appends to the end of a column when dropping with no before/after", () => {
+    resetStore();
+    const { setBoard, optimisticMove } = useBoardStore.getState();
+    const a = mk("a", "col-1", 1024);
+    const d1 = mk("d1", "col-2", 1024);
+    setBoard("ws-1", [col1, col2], [a, d1]);
+
+    // Column drop: append a after the last card (d1).
+    optimisticMove("ws-1", "a", "col-2", undefined, "d1");
+
+    expect(
+      useBoardStore.getState().boards["ws-1"]?.cardsByColumn["col-2"]?.map((c) => c.id)
+    ).toEqual(["d1", "a"]);
+  });
+});

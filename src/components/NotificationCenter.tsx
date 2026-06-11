@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useNotificationsStore } from "../store/notifications";
 import type { NotifyLevel } from "../store/notifications";
+import { BellIcon } from "./icons";
 
 function relativeTime(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000);
@@ -24,11 +25,11 @@ function levelIcon(level: NotifyLevel): string {
 function levelColor(level: NotifyLevel): string {
   switch (level) {
     case "error":
-      return "#e74c3c";
+      return "var(--status-error)";
     case "warn":
-      return "#f39c12";
+      return "var(--status-warning)";
     case "info":
-      return "#3498db";
+      return "var(--focus-ring)";
   }
 }
 
@@ -65,26 +66,32 @@ export default function NotificationCenter() {
       <button
         onClick={handleToggle}
         title="Notifications"
+        aria-label="Notifications"
         style={{
           position: "relative",
-          padding: "4px 8px",
-          fontSize: 16,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          padding: 0,
+          flexShrink: 0,
           background: "transparent",
           border: "1px solid var(--border)",
-          borderRadius: 4,
-          color: "var(--fg)",
+          borderRadius: "var(--radius-sm)",
+          color: "var(--muted)",
           cursor: "pointer",
         }}
       >
-        🔔
+        <BellIcon />
         {unread > 0 && (
           <span
             style={{
               position: "absolute",
               top: -4,
               right: -4,
-              background: "#e74c3c",
-              color: "#fff",
+              background: "var(--status-error)",
+              color: "var(--on-accent)",
               fontSize: 10,
               fontWeight: 600,
               lineHeight: "16px",
@@ -114,7 +121,7 @@ export default function NotificationCenter() {
             boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
             display: "flex",
             flexDirection: "column",
-            zIndex: 10001,
+            zIndex: "var(--z-dropdown)",
             color: "var(--fg)",
           }}
         >

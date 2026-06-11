@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import type { CSSProperties } from "react";
 import type { Card as CardType, Workspace, CardDetail as CardDetailType, IssueComment } from "../lib/ipc";
 import { cardUpdate, cardDelete, cardDetail as fetchCardDetail, cardPromote } from "../lib/ipc";
 
@@ -8,6 +9,48 @@ interface CardDetailProps {
   onClose: () => void;
   onDeleted: () => void;
 }
+
+// Docked right-side panel (not a modal): sits beside the board so the columns
+// stay visible while reading a card. DESIGN.md: exhaust inline/progressive
+// alternatives before reaching for a modal.
+const panelStyle: CSSProperties = {
+  width: 400,
+  minWidth: 400,
+  flexShrink: 0,
+  alignSelf: "stretch",
+  background: "var(--panel)",
+  color: "var(--fg)",
+  borderLeft: "1px solid var(--border)",
+  padding: "var(--space-lg)",
+  display: "flex",
+  flexDirection: "column",
+  overflowY: "auto",
+  position: "relative",
+};
+
+const closeButtonStyle: CSSProperties = {
+  background: "none",
+  border: "none",
+  color: "var(--fg)",
+  opacity: 0.6,
+  fontSize: 18,
+  cursor: "pointer",
+  padding: "0 0 0 var(--space-sm)",
+  lineHeight: 1,
+};
+
+const toastStyle: CSSProperties = {
+  position: "absolute",
+  top: "var(--space-sm)",
+  right: "var(--space-sm)",
+  padding: "var(--space-sm) 10px",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--status-error-deep)",
+  color: "var(--on-accent)",
+  fontFamily: "var(--font-sans)",
+  fontSize: 12,
+  zIndex: "var(--z-toast)",
+};
 
 export default function CardDetail({ card, workspace, onClose, onDeleted }: CardDetailProps) {
   const [title, setTitle] = useState("");
@@ -52,18 +95,12 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
 
   if (!card) {
     return (
-      <div
-        style={{
-          width: 320,
-          minWidth: 320,
-          padding: 16,
-          background: "var(--panel)",
-          color: "var(--fg)",
-          borderLeft: "1px solid var(--border, #333)",
-          fontSize: 14,
-        }}
-      >
-        Select a card
+      <div style={{ ...panelStyle, alignItems: "center", justifyContent: "center" }}>
+        <div style={{ display: "contents" }}>
+          <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--muted)" }}>
+            Select a card
+          </div>
+        </div>
       </div>
     );
   }
@@ -135,182 +172,167 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
   // ---- Linked card (source=github): read-only detail view ----
   if (isGithubCard) {
     return (
-      <div
-        style={{
-          width: 360,
-          minWidth: 360,
-          padding: 16,
-          background: "var(--panel)",
-          color: "var(--fg)",
-          borderLeft: "1px solid var(--border, #333)",
-          display: "flex",
-          flexDirection: "column",
-          overflowY: "auto",
-          position: "relative",
-        }}
-      >
-        {toast && (
-          <div
-            style={{
-              position: "absolute",
-              top: 8,
-              right: 8,
-              padding: "6px 10px",
-              borderRadius: 4,
-              background: "#c0392b",
-              color: "#fff",
-              fontSize: 12,
-              zIndex: 10,
-            }}
-          >
-            {toast}
-          </div>
-        )}
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ flex: 1, fontSize: 15, fontWeight: 600, paddingRight: 8 }}>
-            {card.title}
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--fg)",
-              opacity: 0.5,
-              fontSize: 18,
-              cursor: "pointer",
-              padding: "0 0 0 8px",
-              lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Source badge */}
-        <div style={{ marginBottom: 12 }}>
-          <span
-            style={{
-              fontSize: 10,
-              padding: "2px 8px",
-              borderRadius: 10,
-              background: "#8250df",
-              color: "#fff",
-            }}
-          >
-            #{card.github_issue_number}
-          </span>
-        </div>
-
-        {/* Labels */}
-        {parseLabels(card.labels_json).length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 12 }}>
-            {parseLabels(card.labels_json).map((label, i) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 11,
-                  padding: "2px 8px",
-                  borderRadius: 10,
-                  background: "var(--accent)",
-                  color: "#fff",
-                }}
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Assignee */}
-        {card.assignee && (
-          <div style={{ fontSize: 12, color: "var(--fg)", opacity: 0.7, marginBottom: 12 }}>
-            Assignee: {card.assignee}
-          </div>
-        )}
-
-        {detailLoading && (
-          <div style={{ fontSize: 13, color: "var(--fg)", opacity: 0.5, marginBottom: 8 }}>
-            Loading details…
-          </div>
-        )}
-
-        {/* Body */}
-        {detail && detail.body && (
-          <div
-            style={{
-              padding: 12,
-              background: "var(--bg)",
-              borderRadius: 4,
-              fontSize: 13,
-              whiteSpace: "pre-wrap",
-              marginBottom: 12,
-              flex: "0 1 auto",
-            }}
-          >
-            {detail.body}
-          </div>
-        )}
-
-        {/* Comments */}
-        {detail && detail.comments.length > 0 && (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, opacity: 0.7 }}>
-              Comments
-            </div>
-            {detail.comments.map((c: IssueComment) => (
-              <div
-                key={c.id}
-                style={{
-                  padding: "8px 10px",
-                  background: "var(--bg)",
-                  borderRadius: 4,
-                  marginBottom: 4,
-                  fontSize: 12,
-                }}
-              >
-                <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                  {c.user}{" "}
-                  <span style={{ fontWeight: 400, opacity: 0.5, fontSize: 11 }}>
-                    {formatDate(c.created_at)}
-                  </span>
-                </div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{c.body}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Open on GitHub */}
-        {githubUrl && (
-          <div style={{ marginTop: 4, fontSize: 12 }}>
-            <span style={{ opacity: 0.7 }}>GitHub: </span>
-            <span
+      <div style={panelStyle}>
+        <div style={{ display: "contents" }}>
+          {toast && <div style={toastStyle}>{toast}</div>}
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "var(--space-md)" }}>
+            <div
               style={{
-                userSelect: "all",
-                cursor: "text",
-                wordBreak: "break-all",
-                color: "var(--accent)",
+                flex: 1,
+                fontFamily: "var(--font-sans)",
+                fontSize: 16,
+                fontWeight: 600,
+                lineHeight: 1.3,
+                paddingRight: "var(--space-sm)",
               }}
             >
-              {githubUrl}
+              {card.title}
+            </div>
+            <button onClick={onClose} style={closeButtonStyle}>
+              ✕
+            </button>
+          </div>
+
+          {/* Source badge */}
+          <div style={{ marginBottom: "var(--space-md)" }}>
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 500,
+                padding: "2px 8px",
+                borderRadius: "var(--radius-pill)",
+                background: "var(--source-github)",
+                color: "var(--on-accent)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              #{card.github_issue_number}
             </span>
           </div>
-        )}
 
-        {/* Meta info */}
-        <div
-          style={{
-            marginTop: "auto",
-            paddingTop: 12,
-            borderTop: "1px solid var(--border, #333)",
-            fontSize: 11,
-            opacity: 0.5,
-          }}
-        >
-          <div style={{ marginBottom: 4 }}>Created: {formatDate(card.created_at)}</div>
-          <div>Updated: {formatDate(card.updated_at)}</div>
+          {/* Labels */}
+          {parseLabels(card.labels_json).length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-xs)", marginBottom: "var(--space-md)" }}>
+              {parseLabels(card.labels_json).map((label, i) => (
+                <span
+                  key={i}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: "var(--radius-pill)",
+                    border: "1px solid var(--border)",
+                    background: "var(--surface-input)",
+                    color: "var(--fg)",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Assignee */}
+          {card.assignee && (
+            <div style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--muted)", marginBottom: "var(--space-md)" }}>
+              Assignee: <span style={{ fontFamily: "var(--font-mono)" }}>{card.assignee}</span>
+            </div>
+          )}
+
+          {detailLoading && (
+            <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
+              Loading details…
+            </div>
+          )}
+
+          {/* Body */}
+          {detail && detail.body && (
+            <div
+              style={{
+                padding: "var(--space-md)",
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                fontFamily: "var(--font-sans)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                marginBottom: "var(--space-md)",
+                flex: "0 1 auto",
+              }}
+            >
+              {detail.body}
+            </div>
+          )}
+
+          {/* Comments */}
+          {detail && detail.comments.length > 0 && (
+            <div style={{ marginBottom: "var(--space-md)" }}>
+              <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
+                Comments
+              </div>
+              {detail.comments.map((c: IssueComment) => (
+                <div
+                  key={c.id}
+                  style={{
+                    padding: "var(--space-sm) 10px",
+                    background: "var(--bg)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    marginBottom: "var(--space-xs)",
+                    fontFamily: "var(--font-sans)",
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ marginBottom: 2 }}>
+                    <span style={{ fontWeight: 600 }}>{c.user}</span>{" "}
+                    <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                      {formatDate(c.created_at)}
+                    </span>
+                  </div>
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{c.body}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Open on GitHub */}
+          {githubUrl && (
+            <div style={{ marginTop: "var(--space-xs)", fontFamily: "var(--font-sans)", fontSize: 12 }}>
+              <span style={{ color: "var(--muted)" }}>GitHub: </span>
+              <span
+                style={{
+                  userSelect: "all",
+                  cursor: "text",
+                  wordBreak: "break-all",
+                  color: "var(--accent)",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {githubUrl}
+              </span>
+            </div>
+          )}
+
+          {/* Meta info */}
+          <div
+            style={{
+              marginTop: "auto",
+              paddingTop: "var(--space-md)",
+              borderTop: "1px solid var(--border)",
+              fontFamily: "var(--font-sans)",
+              fontSize: 11,
+              color: "var(--muted)",
+            }}
+          >
+            <div style={{ marginBottom: "var(--space-xs)" }}>
+              Created: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.created_at)}</span>
+            </div>
+            <div>
+              Updated: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.updated_at)}</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -318,157 +340,128 @@ export default function CardDetail({ card, workspace, onClose, onDeleted }: Card
 
   // ---- Local card (in linked or local workspace) ----
   return (
-    <div
-      style={{
-        width: 320,
-        minWidth: 320,
-        padding: 16,
-        background: "var(--panel)",
-        color: "var(--fg)",
-        borderLeft: "1px solid var(--border, #333)",
-        display: "flex",
-        flexDirection: "column",
-        overflowY: "auto",
-        position: "relative",
-      }}
-    >
-      {toast && (
-        <div
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            padding: "6px 10px",
-            borderRadius: 4,
-            background: "#c0392b",
-            color: "#fff",
-            fontSize: 12,
-            zIndex: 10,
-          }}
-        >
-          {toast}
-        </div>
-      )}
+    <div style={panelStyle}>
+      <div style={{ display: "contents" }}>
+        {toast && <div style={toastStyle}>{toast}</div>}
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <input
-          value={title}
-          onChange={(e) => handleTitleChange(e.target.value)}
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-md)" }}>
+          <input
+            value={title}
+            onChange={(e) => handleTitleChange(e.target.value)}
+            style={{
+              flex: 1,
+              background: "var(--input-bg)",
+              border: "1px solid var(--input-border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--fg)",
+              padding: "var(--space-sm) var(--space-md)",
+              fontFamily: "var(--font-sans)",
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          />
+          <button onClick={onClose} style={closeButtonStyle}>
+            ✕
+          </button>
+        </div>
+
+        {/* Source badge */}
+        <div style={{ marginBottom: "var(--space-md)" }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "2px 8px",
+              borderRadius: "var(--radius-pill)",
+              background: "var(--source-local)",
+              color: "var(--on-accent)",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            local
+          </span>
+        </div>
+
+        {/* Body textarea */}
+        <textarea
+          value={body}
+          onChange={(e) => handleBodyChange(e.target.value)}
+          onBlur={handleBodyBlur}
+          placeholder="Add a description…"
           style={{
             flex: 1,
-            background: "var(--bg)",
-            border: "1px solid var(--border, #444)",
-            borderRadius: 4,
+            background: "var(--input-bg)",
+            border: "1px solid var(--input-border)",
+            borderRadius: "var(--radius-sm)",
             color: "var(--fg)",
-            padding: "6px 8px",
-            fontSize: 14,
-            fontWeight: 600,
+            padding: "var(--space-sm)",
+            fontFamily: "var(--font-sans)",
+            fontSize: 13,
+            lineHeight: 1.5,
+            resize: "vertical",
+            minHeight: 100,
           }}
         />
-        <button
-          onClick={onClose}
+
+        {/* Promote button for cards in linked workspaces */}
+        {isLinkedWorkspace && (
+          <button
+            onClick={handlePromote}
+            disabled={promoting}
+            style={{
+              marginTop: "var(--space-md)",
+              padding: "var(--space-sm) var(--space-md)",
+              background: "var(--source-github)",
+              border: "none",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--on-accent)",
+              fontFamily: "var(--font-sans)",
+              fontSize: 13,
+              cursor: promoting ? "wait" : "pointer",
+            }}
+          >
+            {promoting ? "Creating issue…" : "Create GitHub issue"}
+          </button>
+        )}
+
+        {/* Meta info */}
+        <div
           style={{
-            background: "none",
-            border: "none",
-            color: "var(--fg)",
-            opacity: 0.5,
-            fontSize: 18,
-            cursor: "pointer",
-            padding: "0 0 0 8px",
-            lineHeight: 1,
+            marginTop: "var(--space-lg)",
+            paddingTop: "var(--space-md)",
+            borderTop: "1px solid var(--border)",
+            fontFamily: "var(--font-sans)",
+            fontSize: 11,
+            color: "var(--muted)",
           }}
         >
-          ✕
-        </button>
-      </div>
+          <div style={{ marginBottom: "var(--space-xs)" }}>
+            Created: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.created_at)}</span>
+          </div>
+          <div style={{ marginBottom: "var(--space-sm)" }}>
+            Updated: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.updated_at)}</span>
+          </div>
+        </div>
 
-      {/* Source badge */}
-      <div style={{ marginBottom: 12 }}>
-        <span
-          style={{
-            fontSize: 10,
-            padding: "2px 8px",
-            borderRadius: 10,
-            background: "#6e7781",
-            color: "#fff",
-          }}
-        >
-          local
-        </span>
-      </div>
-
-      {/* Body textarea */}
-      <textarea
-        value={body}
-        onChange={(e) => handleBodyChange(e.target.value)}
-        onBlur={handleBodyBlur}
-        placeholder="Add a description..."
-        style={{
-          flex: 1,
-          background: "var(--bg)",
-          border: "1px solid var(--border, #444)",
-          borderRadius: 4,
-          color: "var(--fg)",
-          padding: "8px",
-          fontSize: 13,
-          resize: "vertical",
-          minHeight: 100,
-          fontFamily: "inherit",
-        }}
-      />
-
-      {/* Promote button for cards in linked workspaces */}
-      {isLinkedWorkspace && (
+        {/* Delete button */}
         <button
-          onClick={handlePromote}
-          disabled={promoting}
+          onClick={handleDelete}
           style={{
-            marginTop: 12,
-            padding: "8px 12px",
-            background: promoting ? "var(--accent, #888)" : "#8250df",
+            marginTop: "var(--space-sm)",
+            padding: "var(--space-sm) var(--space-md)",
+            background: "var(--status-error-deep)",
             border: "none",
-            borderRadius: 4,
-            color: "#fff",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--on-accent)",
+            fontFamily: "var(--font-sans)",
             fontSize: 13,
-            cursor: promoting ? "wait" : "pointer",
-            opacity: promoting ? 0.7 : 1,
+            cursor: "pointer",
           }}
         >
-          {promoting ? "Creating issue…" : "Create GitHub issue"}
+          Delete card
         </button>
-      )}
-
-      {/* Meta info */}
-      <div
-        style={{
-          marginTop: 16,
-          paddingTop: 12,
-          borderTop: "1px solid var(--border, #333)",
-          fontSize: 11,
-          opacity: 0.5,
-        }}
-      >
-        <div style={{ marginBottom: 4 }}>Created: {formatDate(card.created_at)}</div>
-        <div style={{ marginBottom: 8 }}>Updated: {formatDate(card.updated_at)}</div>
       </div>
-
-      {/* Delete button */}
-      <button
-        onClick={handleDelete}
-        style={{
-          marginTop: 8,
-          padding: "8px 12px",
-          background: "#c0392b",
-          border: "none",
-          borderRadius: 4,
-          color: "#fff",
-          fontSize: 13,
-          cursor: "pointer",
-        }}
-      >
-        Delete card
-      </button>
     </div>
   );
 }
