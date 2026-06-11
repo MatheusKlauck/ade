@@ -134,8 +134,25 @@ export function cardDelete(cardId: string): Promise<void> {
   return invoke("card_delete", { cardId });
 }
 
-export function cardDetail(cardId: string): Promise<Card> {
-  return invoke("card_detail", { cardId });
+export interface IssueComment {
+  id: number;
+  user: string;
+  body: string;
+  created_at: string;
+}
+
+export interface CardDetail {
+  card: Card;
+  body: string | null;
+  comments: IssueComment[];
+}
+
+export function cardDetail(cardId: string): Promise<CardDetail> {
+  return invoke<CardDetail>("card_detail", { cardId });
+}
+
+export function cardPromote(cardId: string): Promise<Card> {
+  return invoke<Card>("card_promote", { cardId });
 }
 
 export function cardMove(
@@ -181,5 +198,13 @@ export function subscribeBoard(
 ) {
   return listen<{ workspace_id: string; columns: BoardColumn[]; cards: Card[] }>("evt:board", (ev) => {
     cb(ev.payload);
+  });
+}
+
+export function subscribeSync(
+  handler: (payload: { workspace_id: string; status: string; last_sync?: string }) => void
+): Promise<() => void> {
+  return listen<{ workspace_id: string; status: string; last_sync?: string }>("evt:sync", (ev) => {
+    handler(ev.payload);
   });
 }

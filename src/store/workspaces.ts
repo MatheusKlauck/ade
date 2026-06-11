@@ -2,17 +2,25 @@ import { create } from "zustand";
 import { workspaceList, workspaceCreate } from "../lib/ipc";
 import type { Workspace } from "../lib/ipc";
 
+export interface SyncStatusEntry {
+  status: "idle" | "syncing" | "error";
+  lastSync?: string;
+}
+
 interface WorkspacesState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
+  syncStatus: Record<string, SyncStatusEntry>;
   load: () => Promise<void>;
   setActive: (id: string) => void;
   addWorkspace: (path: string) => Promise<Workspace | null>;
+  updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => void;
 }
 
 export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
+  syncStatus: {},
 
   load: async () => {
     const workspaces = await workspaceList();
@@ -40,5 +48,14 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
     } catch {
       return null;
     }
+  },
+
+  updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => {
+    set((s) => ({
+      syncStatus: {
+        ...s.syncStatus,
+        [workspaceId]: { status: status as SyncStatusEntry["status"], lastSync },
+      },
+    }));
   },
 }));

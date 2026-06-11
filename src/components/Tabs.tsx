@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
 import { boardGet } from "../lib/ipc";
+import SyncIndicator from "./SyncIndicator";
 
 export default function Tabs() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
@@ -98,6 +99,9 @@ export default function Tabs() {
               local
             </span>
           )}
+          <span style={{ marginLeft: 6 }}>
+            <SyncIndicator workspaceId={ws.id} />
+          </span>
         </button>
       ))}
       <button

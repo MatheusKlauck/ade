@@ -4,6 +4,7 @@ import {
   subscribeTerminalFocus,
   boardGet,
   subscribeBoard,
+  subscribeSync,
   terminalOpen,
   uiStateGet,
   uiStateSet,
@@ -40,6 +41,7 @@ export default function App() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
+  const updateSyncStatus = useWorkspacesStore((s) => s.updateSyncStatus);
   const setBoard = useBoardStore((s) => s.setBoard);
 
   // Track previous workspace to detect tab switches
@@ -85,6 +87,16 @@ export default function App() {
       unsub.then((u) => u());
     };
   }, [setBoard]);
+
+  // Subscribe to sync events
+  useEffect(() => {
+    const unsub = subscribeSync((payload) => {
+      updateSyncStatus(payload.workspace_id, payload.status, payload.last_sync);
+    });
+    return () => {
+      unsub.then((u) => u());
+    };
+  }, [updateSyncStatus]);
 
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {

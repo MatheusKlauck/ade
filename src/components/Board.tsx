@@ -4,6 +4,7 @@ import {
 } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { boardGet, cardCreate, cardMove, subscribeBoard } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
+import { useWorkspacesStore } from "../store/workspaces";
 import Card from "./Card";
 import CardDetail from "./CardDetail";
 
@@ -85,6 +86,11 @@ export default function Board({ workspaceId }: BoardProps) {
     (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
   );
 
+  const workspaces = useWorkspacesStore((s) => s.workspaces);
+  const activeWorkspace = workspaceId
+    ? workspaces.find((w) => w.id === workspaceId) ?? null
+    : null;
+
   const allCards = Object.values(cardsByColumn).flat();
   const selectedCard = selectedCardId
     ? allCards.find((c) => c.id === selectedCardId) || null
@@ -115,6 +121,7 @@ export default function Board({ workspaceId }: BoardProps) {
       {selectedCardId && (
         <CardDetail
           card={selectedCard}
+          workspace={activeWorkspace}
           onClose={() => setSelectedCardId(null)}
           onDeleted={() => setSelectedCardId(null)}
         />
