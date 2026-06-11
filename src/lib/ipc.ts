@@ -147,6 +147,26 @@ export function cardMove(
   return invoke("card_move", { cardId, toColumnId, beforeCardId, afterCardId });
 }
 
+// ---- workspace ----
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  root_path: string;
+  github_owner: string | null;
+  github_repo: string | null;
+  startup_command: string | null;
+  created_at: string;
+}
+
+export function workspaceList(): Promise<Workspace[]> {
+  return invoke<Workspace[]>("workspace_list");
+}
+
+export function workspaceCreate(path: string): Promise<Workspace> {
+  return invoke<Workspace>("workspace_create", { path });
+}
+
 // ---- events ----
 export function subscribeBoard(
   cb: (payload: { workspace_id: string; columns: BoardColumn[]; cards: Card[] }) => void

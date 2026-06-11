@@ -29,7 +29,7 @@
 
 ## M3 — Multi-workspace
 - [x] M3-T1 workspace_create + remote parsing
-- [ ] M3-T2 Tabs + per-workspace board
+- [x] M3-T2 Tabs + per-workspace board
 - [ ] M3-T3 Per-workspace terminals + lazy mount
 - [ ] M3-T4 Onboarding UI
 

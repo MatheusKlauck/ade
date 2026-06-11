@@ -9,34 +9,45 @@ import CardDetail from "./CardDetail";
 
 const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
-export default function Board() {
-  const columns = useBoardStore((s) => s.columns);
-  const cardsByColumn = useBoardStore((s) => s.cardsByColumn);
+interface BoardProps {
+  workspaceId: string | null;
+}
+
+export default function Board({ workspaceId }: BoardProps) {
+  const boards = useBoardStore((s) => s.boards);
   const setBoard = useBoardStore((s) => s.setBoard);
   const optimisticMove = useBoardStore((s) => s.optimisticMove);
+
+  const board = workspaceId ? boards[workspaceId] : undefined;
+  const columns = board?.columns || [];
+  const cardsByColumn = board?.cardsByColumn || {};
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 
-  useEffect(() => {
-    boardGet("dev").then((res) => {
-      setBoard(res.columns, res.cards);
-    });
-  }, [setBoard]);
-
+  // Subscribe to board events for the active workspace
   useEffect(() => {
     const unsub = subscribeBoard((payload) => {
-      setBoard(payload.columns, payload.cards);
+      setBoard(payload.workspace_id, payload.columns, payload.cards);
     });
     return () => {
       unsub.then((u) => u());
     };
   }, [setBoard]);
 
+  // Fetch board data when workspace changes
+  useEffect(() => {
+    if (!workspaceId) return;
+    boardGet(workspaceId).then((res) => {
+      setBoard(workspaceId, res.columns, res.cards);
+    }).catch(() => {});
+  }, [workspaceId, setBoard]);
+
   const handleDropOnColumn = (columnId: string, draggedCardId: string) => {
+    if (!workspaceId) return;
     const currentCards = cardsByColumn[columnId] || [];
     const lastCard = currentCards[currentCards.length - 1];
-    optimisticMove(draggedCardId, columnId, undefined, lastCard?.id);
+    optimisticMove(workspaceId, draggedCardId, columnId, undefined, lastCard?.id);
     cardMove(draggedCardId, columnId, undefined, lastCard?.id).catch(() => {});
   };
 
@@ -44,6 +55,7 @@ export default function Board() {
     draggedCardId: string,
     beforeCardId: string
   ) => {
+    if (!workspaceId) return;
     let targetColumnId = "";
     for (const colId of Object.keys(cardsByColumn)) {
       if (cardsByColumn[colId].some((c) => c.id === beforeCardId)) {
@@ -55,17 +67,17 @@ export default function Board() {
     const list = cardsByColumn[targetColumnId];
     const idx = list.findIndex((c) => c.id === beforeCardId);
     const afterCardId = idx > 0 ? list[idx - 1].id : undefined;
-    optimisticMove(draggedCardId, targetColumnId, beforeCardId, afterCardId);
+    optimisticMove(workspaceId, draggedCardId, targetColumnId, beforeCardId, afterCardId);
     cardMove(draggedCardId, targetColumnId, beforeCardId, afterCardId).catch(() => {});
   };
 
   const handleCreateCard = () => {
-    if (!newTitle.trim()) return;
+    if (!workspaceId || !newTitle.trim()) return;
     const backlog = columns.find((c) => c.name === "Backlog");
     if (!backlog) return;
-    cardCreate("dev", backlog.id, newTitle.trim()).then(() => {
+    cardCreate(workspaceId, backlog.id, newTitle.trim()).then(() => {
       setNewTitle("");
-      boardGet("dev").then((res) => setBoard(res.columns, res.cards));
+      boardGet(workspaceId).then((res) => setBoard(workspaceId, res.columns, res.cards));
     });
   };
 
@@ -73,11 +85,14 @@ export default function Board() {
     (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
   );
 
+  const allCards = Object.values(cardsByColumn).flat();
   const selectedCard = selectedCardId
-    ? Object.values(cardsByColumn)
-        .flat()
-        .find((c) => c.id === selectedCardId) || null
+    ? allCards.find((c) => c.id === selectedCardId) || null
     : null;
+
+  if (!workspaceId) {
+    return <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>Select a workspace</div>;
+  }
 
   return (
     <div style={{ display: "flex", flex: 1 }}>
