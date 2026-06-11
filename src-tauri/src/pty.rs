@@ -81,6 +81,13 @@ pub fn spawn(
         cmd.arg(a);
     }
     cmd.cwd(&root_path);
+    // The bundled .app is launched by launchd/Finder with a minimal environment
+    // that has no TERM, so the tmux client inside the PTY can't resolve a terminfo
+    // entry and dies with "open terminal failed: terminal does not support clear".
+    // The PTY is rendered by xterm.js on the frontend, so xterm-256color is the
+    // correct, always-present type. Set it explicitly so behavior doesn't depend
+    // on how the app was launched (dev shell vs. Finder).
+    cmd.env("TERM", "xterm-256color");
 
     let child = pair
         .slave
