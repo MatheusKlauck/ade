@@ -89,3 +89,8 @@ de serializar `RemoteIssue`, pois `gh::client::map_issue` descarta labels-string
 round-trip.
 **Where:** `src-tauri/src/sync/worker.rs` (run_cycle + helper `parse_column_name` + fixture
 `issue_json`).
+
+## 2026-06-11 — M4-T2
+**What:** card_move trigger uses direct DB queries for workspace/column lookup; sync moves use a separate internal function that cannot reach this trigger (by design, per §16). The trigger fires only when the target column name is "Doing". For linked cards (source=github with issue number), it uses `new_issue_window` with env vars and runs `prepare_branch`. For local cards, it uses `new_app_window` with a renamed window. Re-focus of existing terminal_window_id is handled by checking `tmux::window_alive` first. After trigger, `terminal_window_id` is persisted on the card and `evt:terminal_focus` is emitted.
+**Why:** Per CONTRACTS §16, the auto-launch trigger must only fire on user drag (not sync moves). The card_move IPC handler is the only entry point for user drags.
+**Where:** `src-tauri/src/ipc/board.rs` (card_move), `src-tauri/src/gitlocal.rs` (prepare_branch).

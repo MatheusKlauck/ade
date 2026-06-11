@@ -12,9 +12,11 @@ import type { OpenTerminal } from "../store/terminals";
 interface TerminalPaneProps {
   pane: OpenTerminal;
   onRemove: () => void;
+  highlighted?: boolean;
+  onHighlightDone?: () => void;
 }
 
-export default function TerminalPane({ pane, onRemove }: TerminalPaneProps) {
+export default function TerminalPane({ pane, onRemove, highlighted, onHighlightDone }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -106,8 +108,23 @@ export default function TerminalPane({ pane, onRemove }: TerminalPaneProps) {
     };
   }, [pane.paneId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Highlight effect: scroll into view and add brief glow
+  useEffect(() => {
+    if (!highlighted) return;
+    // Scroll the pane into view
+    containerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Clear highlight after 1 second
+    const timer = setTimeout(() => {
+      onHighlightDone?.();
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [highlighted, onHighlightDone]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div
+      className={highlighted ? "terminal-pane-highlight" : undefined}
+      style={{ display: "flex", flexDirection: "column", height: "100%" }}
+    >
       <div style={{ display: "flex", justifyContent: "flex-end", padding: 4 }}>
         <button onClick={onRemove}>Close</button>
       </div>

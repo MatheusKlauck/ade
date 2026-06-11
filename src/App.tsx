@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   subscribeNotify,
+  subscribeTerminalFocus,
   boardGet,
   subscribeBoard,
   terminalOpen,
@@ -31,6 +32,9 @@ export default function App() {
   const getPanesForWorkspace = useTerminalsStore(
     (s) => s.getPanesForWorkspace
   );
+  const highlightedWindowId = useTerminalsStore((s) => s.highlightedWindowId);
+  const focusWindow = useTerminalsStore((s) => s.focusWindow);
+  const clearHighlight = useTerminalsStore((s) => s.clearHighlight);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
@@ -89,6 +93,38 @@ export default function App() {
       })
       .catch(() => {});
   }, [activeWorkspaceId, setBoard]);
+
+  // Subscribe to terminal focus events
+  useEffect(() => {
+    const unsub = subscribeTerminalFocus(async (payload) => {
+      const { workspace_id, window_id } = payload;
+
+      // Check if a pane for this window_id already exists
+      const existing = panes.find((p) => p.windowId === window_id);
+      if (existing) {
+        // Pane exists — highlight it briefly
+        focusWindow(window_id);
+      } else {
+        // No pane — reattach/create a new one
+        try {
+          const result = await terminalOpen(workspace_id, window_id);
+          const pane: OpenTerminal = {
+            paneId: result.paneId,
+            windowId: result.windowId,
+            workspaceId: workspace_id,
+            channel: result.channel,
+          };
+          addPane(pane);
+          focusWindow(window_id);
+        } catch {
+          // Window may no longer exist
+        }
+      }
+    });
+    return () => {
+      unsub.then((u) => u());
+    };
+  }, [panes, focusWindow, addPane]);
 
   // Handle workspace switch: persist old workspace's window IDs,
   // remove old panes from store (triggers unmount + terminalClose),
@@ -247,6 +283,7 @@ export default function App() {
           {activePanes.map((pane) => (
             <div
               key={pane.paneId}
+              id={`terminal-pane-${pane.windowId}`}
               style={{
                 width: "48%",
                 height: 300,
@@ -258,6 +295,8 @@ export default function App() {
               <TerminalPane
                 pane={pane}
                 onRemove={() => handleRemove(pane.paneId)}
+                highlighted={highlightedWindowId === pane.windowId}
+                onHighlightDone={clearHighlight}
               />
             </div>
           ))}

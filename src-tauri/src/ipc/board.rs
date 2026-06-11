@@ -8,6 +8,9 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tauri::State;
 
+use crate::gitlocal;
+use crate::tmux;
+
 #[tauri::command]
 pub async fn board_get(
     workspace_id: String,
@@ -310,8 +313,247 @@ pub async fn card_move(
 
     emit_board(&app, &workspace_id, &state.db).await?;
 
-    // M4: feature-6 trigger here (auto-launch terminal on move to Doing)
+    // M4-T2: §16 trigger — auto-launch terminal on move to Doing (user drag only)
     let _ = from_column_id;
+
+    // 1. Check if target column is "Doing"
+    let col_row = sqlx::query("SELECT name FROM board_column WHERE id = ?")
+        .bind(&to_column_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+    let col_name: String = match col_row {
+        Some(r) => r.get::<String, _>("name"),
+        None => return Ok(card),
+    };
+
+    if col_name != "Doing" {
+        return Ok(card);
+    }
+
+    // 2. Look up workspace for this card
+    let ws_row = sqlx::query(
+        "SELECT slug, root_path, github_owner, github_repo, startup_command FROM workspace WHERE id = ?",
+    )
+    .bind(&card.workspace_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    let ws = match ws_row {
+        Some(r) => r,
+        None => return Ok(card),
+    };
+    let slug: String = ws.get("slug");
+    let root_path: String = ws.get("root_path");
+    let github_owner: Option<String> = ws.get("github_owner");
+    let github_repo: Option<String> = ws.get("github_repo");
+    let startup_command: Option<String> = ws.get("startup_command");
+
+    // 3. If card already has a terminal_window_id and it's alive, just re-focus it
+    if let Some(ref wid) = card.terminal_window_id {
+        if tmux::window_alive(&slug, wid).unwrap_or(false) {
+            let _ = app.emit(
+                "evt:terminal_focus",
+                serde_json::json!({
+                    "workspace_id": card.workspace_id,
+                    "window_id": wid,
+                }),
+            );
+            return Ok(card);
+        }
+    }
+
+    // 4. Ensure base tmux session exists before creating windows
+    if let Err(e) = tmux::ensure_base_session(&slug, &root_path) {
+        emit_notify(
+            &app,
+            "warn",
+            "TMUX_SESSION_FAILED",
+            &format!("failed to create tmux session: {}", e),
+        );
+        return Ok(card);
+    }
+
+    // 5. Branch: GitHub-linked card vs local card
+    let window_id: String =
+        if let Some(issue_number) = card.github_issue_number.filter(|_| card.source == "github") {
+            // GitHub-linked card
+            let fallback = format!("issue-{}", issue_number);
+            let winname = format!(
+                "{}-{}",
+                issue_number,
+                gitlocal::slugify(&card.title, &fallback)
+            );
+
+            // Construct html_url
+            let html_url = match (&github_owner, &github_repo) {
+                (Some(owner), Some(repo)) => {
+                    format!(
+                        "https://github.com/{}/{}/issues/{}",
+                        owner, repo, issue_number
+                    )
+                }
+                _ => format!("https://github.com/issues/{}", issue_number),
+            };
+
+            // Create issue window with env vars
+            let wid = match tmux::new_issue_window(
+                &slug,
+                &root_path,
+                &winname,
+                issue_number as u64,
+                &card.title,
+                &html_url,
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    emit_notify(
+                        &app,
+                        "warn",
+                        "TMUX_WINDOW_FAILED",
+                        &format!("failed to create tmux issue window: {}", e),
+                    );
+                    return Ok(card);
+                }
+            };
+
+            // Auto-branch: check setting (default true)
+            let auto_branch: bool = match sqlx::query_scalar::<_, String>(
+                "SELECT value FROM setting WHERE key = 'auto_branch'",
+            )
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AdeError::Db)?
+            {
+                Some(val) => val != "false",
+                None => true,
+            };
+
+            if auto_branch {
+                match gitlocal::prepare_branch(&root_path, issue_number as u64) {
+                    Ok(gitlocal::BranchOutcome::ReusedExisting) => {
+                        emit_notify(
+                            &app,
+                            "info",
+                            "BRANCH_EXISTS_REUSED",
+                            &format!(
+                                "branch issue-{} already exists, checking it out",
+                                issue_number
+                            ),
+                        );
+                    }
+                    Ok(gitlocal::BranchOutcome::SkippedDirty) => {
+                        emit_notify(
+                            &app,
+                            "warn",
+                            "BRANCH_DIRTY_WORKTREE",
+                            &format!(
+                                "worktree has uncommitted changes; branch issue-{} not created",
+                                issue_number
+                            ),
+                        );
+                    }
+                    Ok(gitlocal::BranchOutcome::Created) => {
+                        // No notification on success
+                    }
+                    Err(e) => {
+                        emit_notify(
+                            &app,
+                            "warn",
+                            "BRANCH_FAILED",
+                            &format!("failed to prepare branch issue-{}: {}", issue_number, e),
+                        );
+                    }
+                }
+            }
+
+            // Run startup command (workspace-specific, or global fallback)
+            let cmd = startup_command.as_deref().filter(|v| !v.is_empty());
+            let global_cmd: Option<String> = if cmd.is_none() {
+                sqlx::query("SELECT value FROM setting WHERE key = 'startup_command_global'")
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(AdeError::Db)?
+                    .map(|r: sqlx::sqlite::SqliteRow| r.get::<String, _>("value"))
+                    .filter(|v| !v.is_empty())
+            } else {
+                None
+            };
+            let run_cmd = cmd.or(global_cmd.as_deref());
+            if let Some(cmd) = run_cmd {
+                let _ = tmux::send_keys(&wid, cmd);
+            }
+
+            wid
+        } else {
+            // Local card: use new_app_window (no env vars, no issue window name)
+            let id8 = &card.id[..card.id.len().min(8)];
+            let fallback = format!("card-{}", id8);
+            let winname = gitlocal::slugify(&card.title, &fallback);
+
+            let wid = match tmux::new_app_window(&slug, &root_path) {
+                Ok(w) => w,
+                Err(e) => {
+                    emit_notify(
+                        &app,
+                        "warn",
+                        "TMUX_WINDOW_FAILED",
+                        &format!("failed to create tmux app window: {}", e),
+                    );
+                    return Ok(card);
+                }
+            };
+
+            // Run startup command (workspace-specific, or global fallback)
+            let cmd_local = startup_command.as_deref().filter(|v| !v.is_empty());
+            let global_cmd_local: Option<String> = if cmd_local.is_none() {
+                sqlx::query("SELECT value FROM setting WHERE key = 'startup_command_global'")
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(AdeError::Db)?
+                    .map(|r: sqlx::sqlite::SqliteRow| r.get::<String, _>("value"))
+                    .filter(|v| !v.is_empty())
+            } else {
+                None
+            };
+            let run_cmd_local = cmd_local.or(global_cmd_local.as_deref());
+            if let Some(cmd) = run_cmd_local {
+                let _ = tmux::send_keys(&wid, cmd);
+            }
+
+            // Rename the window to the slugified name (new_app_window doesn't accept a name)
+            // tmux rename-window is safe to use with the window id
+            let _ = std::process::Command::new("tmux")
+                .arg("rename-window")
+                .arg("-t")
+                .arg(&wid)
+                .arg(&winname)
+                .output();
+
+            wid
+        };
+
+    // 6. Store terminal_window_id on the card
+    sqlx::query("UPDATE card SET terminal_window_id = ? WHERE id = ?")
+        .bind(&window_id)
+        .bind(&card_id)
+        .execute(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+    // 7. Emit terminal_focus event
+    let _ = app.emit(
+        "evt:terminal_focus",
+        serde_json::json!({
+            "workspace_id": card.workspace_id,
+            "window_id": window_id,
+        }),
+    );
+
+    // 8. Re-emit board (terminal_window_id changed)
+    emit_board(&app, &card.workspace_id, &state.db).await?;
 
     Ok(card)
 }

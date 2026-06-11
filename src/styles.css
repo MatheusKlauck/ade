@@ -1,0 +1,15 @@
+@keyframes terminal-pane-glow {
+  0% {
+    box-shadow: 0 0 8px 3px rgba(52, 152, 219, 0.8);
+    border-color: #3498db;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 152, 219, 0);
+    border-color: #333;
+  }
+}
+
+.terminal-pane-highlight {
+  animation: terminal-pane-glow 1s ease-out forwards;
+  border: 1px solid #3498db;
+}

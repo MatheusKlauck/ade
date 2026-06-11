@@ -34,10 +34,10 @@
 - [x] M3-T4 Onboarding UI
 
 ## M4 — Auto-launch
-- [ ] M4-T1 Branch logic
-- [ ] M4-T2 Trigger in card_move (+ injection test)
-- [ ] M4-T3 Focus + variants checklist (a/b/c/d)
-      Results:
+- [x] M4-T1 Branch logic
+- [x] M4-T2 Trigger in card_move (+ injection test)
+- [x] M4-T3 Focus + variants checklist (a/b/c/d)
+      Results: All gates pass (80 Rust tests, 5 ignored; 5 frontend tests).
 
 ## M5 — GitHub bidirectional
 - [ ] M5-T1 Token validation + settings entry

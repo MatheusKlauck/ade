@@ -168,6 +168,14 @@ export function workspaceCreate(path: string): Promise<Workspace> {
 }
 
 // ---- events ----
+export function subscribeTerminalFocus(
+  cb: (payload: { workspace_id: string; window_id: string }) => void
+) {
+  return listen<{ workspace_id: string; window_id: string }>("evt:terminal_focus", (ev) => {
+    cb(ev.payload);
+  });
+}
+
 export function subscribeBoard(
   cb: (payload: { workspace_id: string; columns: BoardColumn[]; cards: Card[] }) => void
 ) {
