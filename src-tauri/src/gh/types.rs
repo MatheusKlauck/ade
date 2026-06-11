@@ -12,6 +12,7 @@ pub struct RemoteIssue {
     pub html_url: String,
     pub is_pull_request: bool, // true if raw JSON has "pull_request" key
     pub body_preview: Option<String>, // first 280 chars of body
+    pub body: Option<String>,  // full body text (for card detail view)
 }
 
 #[derive(Debug, Clone, PartialEq)]

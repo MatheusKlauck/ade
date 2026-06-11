@@ -168,7 +168,12 @@ impl GitHubClient {
 
         let is_pull_request = item.get("pull_request").is_some();
 
-        let body_preview = item.get("body").and_then(|b| b.as_str()).map(|body| {
+        let raw_body = item
+            .get("body")
+            .and_then(|b| b.as_str())
+            .map(|s| s.to_string());
+
+        let body_preview = raw_body.as_ref().map(|body| {
             let chars: Vec<char> = body.chars().collect();
             if chars.len() <= 280 {
                 chars.into_iter().collect()
@@ -187,6 +192,7 @@ impl GitHubClient {
             html_url,
             is_pull_request,
             body_preview,
+            body: raw_body,
         })
     }
 

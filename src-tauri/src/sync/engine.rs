@@ -104,6 +104,7 @@ mod tests {
             html_url: format!("https://github.com/owner/repo/issues/{}", number),
             is_pull_request: false,
             body_preview: None,
+            body: None,
         }
     }
 
