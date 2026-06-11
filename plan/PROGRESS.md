@@ -50,9 +50,14 @@
       Results: All IPC commands wired. Backend: sync worker spawns on workspace_create and restarts on github_set_token. Frontend: cardPromote IPC + "Create GitHub issue" button, linked card detail (body/comments/labels/assignee/Open on GitHub URL), evt:sync listener + SyncIndicator. Gates pass (98 Rust + 5 frontend). Manual live acceptance deferred — requires running app with real GitHub PAT and test repo.
 
 ## M6 — Polish
-- [ ] M6-T1 Settings screen
-- [ ] M6-T2 Notification center
-- [ ] M6-T3 Performance pass
+- [x] M6-T1 Settings screen
+- [x] M6-T2 Notification center
+- [x] M6-T3 Performance pass
       Numbers:
-- [ ] M6-T4 Package + updater + release.md
+      1. Cold start to interactive < 1 s: manual measurement (release build) — deferred to M6-T5 final QA.
+      2. EXPLAIN QUERY PLAN on board query uses idx_card_board: ✅ verified via `board_query_uses_idx_card_board` Rust test.
+      3. M1-T6 cat benchmark (release): deferred to M6-T5 (requires running app).
+      4. Workspace switching with 4 terminals: deferred to M6-T5 (requires running app).
+      5. Board with 600 cards: capped at 100 rendered cards per column with "Show N more cards" / "Show fewer" buttons. No new deps. Decision logged in DECISIONS.md.
+- [x] M6-T4 Package + updater + release.md
 - [ ] M6-T5 Final QA + tag v0.1.0

@@ -94,3 +94,13 @@ round-trip.
 **What:** card_move trigger uses direct DB queries for workspace/column lookup; sync moves use a separate internal function that cannot reach this trigger (by design, per §16). The trigger fires only when the target column name is "Doing". For linked cards (source=github with issue number), it uses `new_issue_window` with env vars and runs `prepare_branch`. For local cards, it uses `new_app_window` with a renamed window. Re-focus of existing terminal_window_id is handled by checking `tmux::window_alive` first. After trigger, `terminal_window_id` is persisted on the card and `evt:terminal_focus` is emitted.
 **Why:** Per CONTRACTS §16, the auto-launch trigger must only fire on user drag (not sync moves). The card_move IPC handler is the only entry point for user drags.
 **Where:** `src-tauri/src/ipc/board.rs` (card_move), `src-tauri/src/gitlocal.rs` (prepare_branch).
+
+## 2026-06-11 — M6-T3
+**What:** Board columns cap rendered cards at 100; "Show N more cards" button expands to show all. No new dependencies (virtualization is not allowed per task spec). Added Rust test `board_query_uses_idx_card_board` that runs EXPLAIN QUERY PLAN and asserts the index is used.
+**Why:** M6-T3 step 5 — a board with 600 cards can have 120+ per column, which would lag on drag. Capping at 100 rendered cards per column keeps DOM size manageable. Virtualization was explicitly disallowed (no new deps). The EXPLAIN QUERY PLAN test verifies the board_get query hits `idx_card_board(workspace_id, column_id, position)`.
+**Where:** `src/components/Board.tsx` (MAX_CARDS_PER_COLUMN constant + expandedColumns state + show more/fewer buttons), `src-tauri/src/ipc/board.rs` (test_pool adds idx_card_board index; new test board_query_uses_idx_card_board).
+
+## 2026-06-11 — M6-T4
+**What:** Added `tauri-plugin-updater` (v2) as a dependency for auto-update support.
+**Why:** M6-T4 requires auto-update capability pointing at a GitHub Releases JSON endpoint. The updater plugin is part of the distribution/bundling concern and was explicitly marked as an allowed addition in the task spec.
+**Where:** `src-tauri/Cargo.toml` (tauri-plugin-updater), `package.json` (@tauri-apps/plugin-updater), `src-tauri/tauri.conf.json` (plugins.updater config, bundle.macOS), `src-tauri/src/lib.rs` (plugin registration), `src-tauri/capabilities/default.json` (updater:default permission), `plan/00-CONTRACTS.md` §1 (dependency lists updated), `scripts/release.sh`, `scripts/release.md`.
