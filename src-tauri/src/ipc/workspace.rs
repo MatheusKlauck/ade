@@ -19,16 +19,10 @@ const COLUMN_NAMES: [&str; 5] = ["Backlog", "Doing", "Paused", "PR", "Done"];
 /// When an `origin` remote exists but is not a GitHub URL, `*remote_not_github` is
 /// set to `true` so the caller can emit `REMOTE_NOT_GITHUB`.
 fn detect_github(path: &Path, remote_not_github: &mut bool) -> Option<(String, String)> {
-    // discover() walks up parent directories; constrain it to `path` by checking the
-    // discovered repo's working directory is within (or equal to) `path`.
-    let repo = git2::Repository::discover(path).ok()?;
-    let workdir = repo.workdir()?;
-    let canon_workdir = workdir.canonicalize().ok()?;
-    let canon_path = path.canonicalize().ok()?;
-    if !canon_workdir.starts_with(&canon_path) {
-        // Repo found, but it lives in a parent directory — not "strictly inside path".
-        return None;
-    }
+    // Map the workspace folder to the git repo it owns — the folder itself or,
+    // when it's just a container, a repo one level down (e.g. `test/` → `test/zkDash`).
+    let repo_path = crate::gitlocal::find_repo_path(path.to_str()?)?;
+    let repo = git2::Repository::open(&repo_path).ok()?;
 
     let remote = repo.find_remote("origin").ok()?;
     let url = remote.url().ok()?;
@@ -72,15 +66,44 @@ pub async fn workspace_create(
             .await
             .map_err(AdeError::Db)?;
 
-        // Respawn a sync worker if this workspace is GitHub-linked (it was
-        // torn down on close).
-        if existing.github_owner.is_some() {
-            let token = crate::ipc::github::keychain_get_for_workspace(&existing.id)
+        // If we never found a GitHub repo for this folder before (e.g. the repo
+        // lives in a subdirectory, which detection didn't look into previously),
+        // try again now so re-adding the workspace picks it up — no need to
+        // remove and recreate it.
+        if existing.github_owner.is_none() {
+            let mut remote_not_github = false;
+            if let Some((owner, repo)) = detect_github(dir, &mut remote_not_github) {
+                sqlx::query(
+                    "UPDATE workspace SET github_owner = ?, github_repo = ? WHERE id = ?",
+                )
+                .bind(&owner)
+                .bind(&repo)
+                .bind(&existing.id)
+                .execute(&state.db)
+                .await
+                .map_err(AdeError::Db)?;
+            }
+        }
+
+        // Re-fetch so the returned workspace and the worker decision reflect any
+        // freshly-detected owner/repo.
+        let refreshed: Workspace = sqlx::query_as::<_, Workspace>(
+            "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
+        )
+        .bind(&existing.id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+
+        // (Re)spawn a sync worker if this workspace is GitHub-linked (it was
+        // torn down on close, or just became linked above).
+        if refreshed.github_owner.is_some() {
+            let token = crate::ipc::github::keychain_get_for_workspace(&refreshed.id)
                 .ok()
                 .flatten()
                 .unwrap_or_default();
             crate::spawn_worker_for_workspace(
-                existing.id.clone(),
+                refreshed.id.clone(),
                 token,
                 state.db.clone(),
                 app.clone(),
@@ -89,7 +112,7 @@ pub async fn workspace_create(
             .await;
         }
 
-        return Ok(existing);
+        return Ok(refreshed);
     }
 
     let dirname = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();

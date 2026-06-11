@@ -2,6 +2,7 @@
 
 use crate::error::AdeError;
 use git2::{BranchType, Status, StatusOptions};
+use std::path::{Path, PathBuf};
 
 /// §9.1 — Lowercase ASCII; every run of chars outside `[a-z0-9]` becomes a single
 /// `-`; trim leading/trailing `-`; truncate to 40 chars (then trim `-` again); if
@@ -62,6 +63,58 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
     }
 
     Some((owner.to_string(), repo.to_string()))
+}
+
+/// The git repository working directory at or strictly inside `path`. Returns
+/// `None` when no repo is found, or when the discovered repo lives in a *parent*
+/// directory (the workspace folder must contain its own repo).
+fn repo_workdir_within(path: &Path) -> Option<PathBuf> {
+    // discover() walks up parent directories; constrain it by checking the
+    // discovered repo's working directory is within (or equal to) `path`.
+    let repo = git2::Repository::discover(path).ok()?;
+    let workdir = repo.workdir()?;
+    let canon_workdir = workdir.canonicalize().ok()?;
+    let canon_path = path.canonicalize().ok()?;
+    if !canon_workdir.starts_with(&canon_path) {
+        return None;
+    }
+    Some(canon_workdir)
+}
+
+/// Map a workspace folder to the git repository it owns and return that repo's
+/// working-directory path. Resolution order:
+///   1. `root` itself is a git repo (or contains one at its top level).
+///   2. `root` is just a container — scan its immediate subdirectories and pick
+///      the first (alphabetically) that is a git repo, e.g. `test/` → `test/zkDash`.
+///
+/// Returns `None` if no repo is found at or one level below `root`. Hidden
+/// directories (dot-prefixed) are skipped.
+pub fn find_repo_path(root: &str) -> Option<String> {
+    let root_path = Path::new(root);
+
+    if let Some(wd) = repo_workdir_within(root_path) {
+        return Some(wd.to_string_lossy().into_owned());
+    }
+
+    // Container folder: look one level down. Sort for a deterministic pick when
+    // several subdirectories are repos.
+    let mut subdirs: Vec<PathBuf> = std::fs::read_dir(root_path)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !n.starts_with('.'))
+                    .unwrap_or(false)
+        })
+        .collect();
+    subdirs.sort();
+
+    subdirs
+        .iter()
+        .find_map(|sub| repo_workdir_within(sub).map(|wd| wd.to_string_lossy().into_owned()))
 }
 
 /// Outcome of `prepare_branch`: whether a new branch was created, an existing
@@ -267,5 +320,39 @@ mod tests {
                 .is_err(),
             "branch should not exist when working tree is dirty"
         );
+    }
+
+    // ---- find_repo_path tests ----
+
+    fn canon(p: &Path) -> String {
+        p.canonicalize().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn find_repo_path_at_root() {
+        let (repo, dir) = init_test_repo();
+        let _ = repo;
+        let found = find_repo_path(dir.path().to_str().unwrap()).expect("repo at root");
+        assert_eq!(found, canon(dir.path()));
+    }
+
+    #[test]
+    fn find_repo_path_in_subdir() {
+        // Container folder with no repo, but a repo one level down (e.g. zkDash).
+        let container = tempfile::tempdir().expect("container");
+        let sub = container.path().join("zkDash");
+        std::fs::create_dir(&sub).expect("mkdir sub");
+        git2::Repository::init(&sub).expect("git init sub");
+
+        let found =
+            find_repo_path(container.path().to_str().unwrap()).expect("repo in subdir");
+        assert_eq!(found, canon(&sub));
+    }
+
+    #[test]
+    fn find_repo_path_none_when_no_repo() {
+        let empty = tempfile::tempdir().expect("empty");
+        std::fs::create_dir(empty.path().join("plain")).expect("mkdir plain");
+        assert_eq!(find_repo_path(empty.path().to_str().unwrap()), None);
     }
 }

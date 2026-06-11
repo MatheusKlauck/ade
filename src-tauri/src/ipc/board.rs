@@ -517,7 +517,12 @@ pub async fn card_move(
             .unwrap_or(true);
 
             if auto_branch {
-                match gitlocal::prepare_branch(&root_path, issue_number as u64) {
+                // The repo may live in a subdirectory of the workspace folder
+                // (e.g. `test/` → `test/zkDash`); create the branch there, not
+                // at the container root.
+                let repo_path = gitlocal::find_repo_path(&root_path)
+                    .unwrap_or_else(|| root_path.clone());
+                match gitlocal::prepare_branch(&repo_path, issue_number as u64) {
                     Ok(gitlocal::BranchOutcome::ReusedExisting) => {
                         emit_notify(
                             &app,
