@@ -171,6 +171,33 @@ async fn spawn_sync_workers(
     }
 }
 
+/// Ensure common tool locations are on `PATH`.
+///
+/// macOS GUI launches (Finder, IDE-started `tauri dev`, and the release `.app`
+/// bundle) inherit a minimal `PATH` — `/usr/bin:/bin:/usr/sbin:/sbin` — that
+/// excludes Homebrew (`/opt/homebrew/bin`) and `/usr/local/bin`. Without them
+/// `tmux` can't be found and every session/window spawn fails with ENOENT
+/// ("No such file or directory"). Append the usual locations (idempotently) so
+/// the app — and the shells it starts — can find their tools. Called once at
+/// setup, before anything shells out.
+fn ensure_path_env() {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
+    let mut changed = false;
+    for extra in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
+        let p = std::path::PathBuf::from(extra);
+        if p.is_dir() && !dirs.iter().any(|d| d == &p) {
+            dirs.push(p);
+            changed = true;
+        }
+    }
+    if changed {
+        if let Ok(joined) = std::env::join_paths(&dirs) {
+            std::env::set_var("PATH", joined);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
@@ -178,6 +205,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // GUI launches inherit a minimal PATH (no Homebrew/local bin), which
+            // makes every tmux spawn fail with ENOENT. Fix it before anything,
+            // including the sync workers below, shells out.
+            ensure_path_env();
             // Register the OS-native credential store (macOS Keychain / Windows
             // Credential Manager / Linux Secret Service) as keyring-core's
             // default. keyring-core's Entry::new() has NO store until one is set
