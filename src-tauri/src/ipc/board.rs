@@ -2,6 +2,7 @@ use crate::board_pos::{append_position, insert_between, needs_rebalance, rebalan
 use crate::error::AdeError;
 use crate::models::{BoardColumn, BoardGetResult, Card};
 use crate::notify::emit_notify;
+use crate::sync::outbox;
 use chrono::Utc;
 use sqlx::Row;
 use std::sync::Arc;
@@ -312,6 +313,47 @@ pub async fn card_move(
     .map_err(AdeError::Db)?;
 
     emit_board(&app, &workspace_id, &state.db).await?;
+
+    // M5-T4: §13.1 — enqueue outbox intent for linked cards on user drag
+    if card.source == "github" && card.github_issue_number.is_some() {
+        if let Some(ref remote_updated_at) = card.remote_updated_at {
+            // Resolve column names from IDs
+            let from_col_row = sqlx::query("SELECT name FROM board_column WHERE id = ?")
+                .bind(&from_column_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(AdeError::Db)?;
+            let to_col_row = sqlx::query("SELECT name FROM board_column WHERE id = ?")
+                .bind(&to_column_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(AdeError::Db)?;
+
+            if let (Some(from_r), Some(to_r)) = (from_col_row, to_col_row) {
+                let from_name: String = from_r.get::<String, _>("name");
+                let to_name: String = to_r.get::<String, _>("name");
+                // Only enqueue if the move is a real column change (not same column reorder)
+                if from_name != to_name {
+                    if let Err(e) = outbox::enqueue(
+                        &state.db,
+                        &card_id,
+                        &from_name,
+                        &to_name,
+                        remote_updated_at,
+                    )
+                    .await
+                    {
+                        emit_notify(
+                            &app,
+                            "error",
+                            "DB_ERROR",
+                            &format!("failed to enqueue outbox intent: {}", e),
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // M4-T2: §16 trigger — auto-launch terminal on move to Doing (user drag only)
     let _ = from_column_id;

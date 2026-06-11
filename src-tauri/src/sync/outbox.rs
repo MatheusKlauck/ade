@@ -1,5 +1,9 @@
 use crate::db::DbPool;
 use crate::error::AdeError;
+use crate::gh::client::GitHubClient;
+use crate::gh::types::ColumnName;
+use crate::models::Card;
+use crate::sync::worker::{Notifier, RateBudget};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -142,6 +146,352 @@ pub async fn resolve(db: &DbPool, card_id: &str) -> Result<(), AdeError> {
         .map_err(AdeError::Db)?;
 
     Ok(())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+/// Compute the desired column from a card's cached `github_state` and `labels_json`.
+/// Mirrors `engine::desired_column` but works on DB fields instead of `RemoteIssue`.
+/// Closed → Done; has kanban:doing → Doing; kanban:paused → Paused;
+/// kanban:pr → Pr; else → Backlog.
+#[allow(dead_code)]
+pub fn desired_column_from_labels_state(
+    github_state: Option<&str>,
+    labels_json: Option<&str>,
+) -> ColumnName {
+    if github_state == Some("closed") {
+        return ColumnName::Done;
+    }
+    if let Some(lj) = labels_json {
+        if let Ok(labels) = serde_json::from_str::<Vec<String>>(lj) {
+            for label in &labels {
+                match label.as_str() {
+                    "kanban:doing" => return ColumnName::Doing,
+                    "kanban:paused" => return ColumnName::Paused,
+                    "kanban:pr" => return ColumnName::Pr,
+                    _ => {}
+                }
+            }
+        }
+    }
+    ColumnName::Backlog
+}
+
+/// Return the kanban label name for a non-Done, non-Backlog column.
+/// Doing → "kanban:doing", Paused → "kanban:paused", Pr → "kanban:pr".
+/// Done and Backlog have no label.
+fn kanban_label_for_column(col: &ColumnName) -> Option<&'static str> {
+    match col {
+        ColumnName::Doing => Some("kanban:doing"),
+        ColumnName::Paused => Some("kanban:paused"),
+        ColumnName::Pr => Some("kanban:pr"),
+        ColumnName::Done | ColumnName::Backlog => None,
+    }
+}
+
+/// All kanban label names (used for "remove all kanban labels").
+const KANBAN_LABELS: &[&str] = &["kanban:doing", "kanban:paused", "kanban:pr"];
+
+// ── send_outbox ──────────────────────────────────────────────────────
+
+/// Process all due outbox intents by making real GitHub API calls.
+/// Per CONTRACTS §13: conflict-check, map to API calls, success → resolve,
+/// failure → increment attempts (after 4th → drop & revert).
+#[allow(dead_code)]
+pub async fn send_outbox(
+    db: &DbPool,
+    gh: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    workspace_id: &str,
+    notifier: &dyn Notifier,
+    rate_budget: &RateBudget,
+) -> Result<(), AdeError> {
+    let now = Utc::now().to_rfc3339();
+    let due_rows = due(db, &now).await?;
+
+    // Load column id ↔ name mappings for this workspace.
+    let columns: Vec<crate::models::BoardColumn> = sqlx::query_as::<_, crate::models::BoardColumn>(
+        "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    let mut col_id_by_name: std::collections::HashMap<ColumnName, String> =
+        std::collections::HashMap::new();
+    for col in &columns {
+        let cname = match col.name.as_str() {
+            "Backlog" => ColumnName::Backlog,
+            "Doing" => ColumnName::Doing,
+            "Paused" => ColumnName::Paused,
+            "PR" => ColumnName::Pr,
+            "Done" => ColumnName::Done,
+            _ => continue,
+        };
+        col_id_by_name.insert(cname, col.id.clone());
+    }
+
+    for row in due_rows {
+        // Load the card from DB.
+        let card: Option<Card> = sqlx::query_as::<_, Card>(
+            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+        )
+        .bind(&row.card_id)
+        .fetch_optional(db)
+        .await
+        .map_err(AdeError::Db)?;
+
+        let card = match card {
+            Some(c) => c,
+            None => {
+                // Card was deleted; drop the outbox row.
+                let _ = resolve(db, &row.card_id).await;
+                continue;
+            }
+        };
+
+        let issue_number = match card.github_issue_number {
+            Some(n) => n,
+            None => {
+                // Not a linked card; shouldn't happen, but skip safely.
+                continue;
+            }
+        };
+
+        // Parse payload.
+        let payload: serde_json::Value = match serde_json::from_str(&row.payload_json) {
+            Ok(v) => v,
+            Err(e) => {
+                let err_msg = format!("invalid outbox payload: {}", e);
+                record_failure(db, &row.card_id, &err_msg, &now).await?;
+                continue;
+            }
+        };
+        let from_col_str = match payload.get("from_column_name").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                let err_msg = "outbox payload missing from_column_name".to_string();
+                record_failure(db, &row.card_id, &err_msg, &now).await?;
+                continue;
+            }
+        };
+        let to_col_str = match payload.get("to_column_name").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                let err_msg = "outbox payload missing to_column_name".to_string();
+                record_failure(db, &row.card_id, &err_msg, &now).await?;
+                continue;
+            }
+        };
+        let from_column = match parse_column_name_enum(from_col_str) {
+            Ok(c) => c,
+            Err(e) => {
+                record_failure(db, &row.card_id, &e.to_string(), &now).await?;
+                continue;
+            }
+        };
+        let to_column = match parse_column_name_enum(to_col_str) {
+            Ok(c) => c,
+            Err(e) => {
+                record_failure(db, &row.card_id, &e.to_string(), &now).await?;
+                continue;
+            }
+        };
+
+        // Step 1 — Conflict check: re-check the card's cached state against from_column.
+        let desired = desired_column_from_labels_state(
+            card.github_state.as_deref(),
+            card.labels_json.as_deref(),
+        );
+        if desired != from_column {
+            // Genuine column conflict: drop intent, revert card to desired column, notify.
+            resolve(db, &row.card_id).await?;
+
+            // Move card back to the desired column.
+            if let Some(col_id) = col_id_by_name.get(&desired) {
+                sqlx::query("UPDATE card SET column_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(col_id)
+                    .bind(&now)
+                    .bind(&row.card_id)
+                    .execute(db)
+                    .await
+                    .map_err(AdeError::Db)?;
+            }
+
+            notifier.notify(
+                "warn",
+                "INTENT_DROPPED",
+                &format!(
+                    "issue #{} was moved on GitHub; your move was discarded",
+                    issue_number
+                ),
+            );
+            continue;
+        }
+
+        // Step 2 — Map intent to API calls (§13.2).
+        // Check rate budget before making API calls.
+        rate_budget.check().await?;
+
+        let result = execute_outbox_intent(
+            gh,
+            owner,
+            repo,
+            issue_number as u64,
+            &from_column,
+            &to_column,
+            rate_budget,
+        )
+        .await;
+
+        match result {
+            Ok(outbox_result) => {
+                // Step 3 — Success: delete outbox row, update cached card fields.
+                resolve(db, &row.card_id).await?;
+                let labels_json = serde_json::to_string(&outbox_result.labels)
+                    .map_err(|e| AdeError::Other(format!("labels json: {}", e)))?;
+                sqlx::query(
+                    "UPDATE card SET remote_updated_at = ?, github_state = ?, labels_json = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(&outbox_result.updated_at)
+                .bind(&outbox_result.state)
+                .bind(&labels_json)
+                .bind(&now)
+                .bind(&row.card_id)
+                .execute(db)
+                .await
+                .map_err(AdeError::Db)?;
+            }
+            Err(AdeError::RateLimited(_)) => {
+                // Propagate rate limit upward — the worker loop handles pausing.
+                return Err(AdeError::RateLimited(
+                    "rate limited during outbox send".to_string(),
+                ));
+            }
+            Err(e) => {
+                // Step 4 — Failure: increment attempts.
+                let new_attempts = row.attempts + 1;
+                if new_attempts >= 4 {
+                    // Drop the outbox row, revert card to remote state, notify.
+                    resolve(db, &row.card_id).await?;
+
+                    // Compute desired_column from cached labels/state.
+                    let revert_col = desired_column_from_labels_state(
+                        card.github_state.as_deref(),
+                        card.labels_json.as_deref(),
+                    );
+                    if let Some(col_id) = col_id_by_name.get(&revert_col) {
+                        sqlx::query("UPDATE card SET column_id = ?, updated_at = ? WHERE id = ?")
+                            .bind(col_id)
+                            .bind(&now)
+                            .bind(&row.card_id)
+                            .execute(db)
+                            .await
+                            .map_err(AdeError::Db)?;
+                    }
+
+                    notifier.notify(
+                        "error",
+                        "SYNC_WRITE_FAILED",
+                        &format!(
+                            "outbox write for issue #{} failed after 4 attempts: {}",
+                            issue_number, e
+                        ),
+                    );
+                } else {
+                    // Record failure and continue.
+                    record_failure(db, &row.card_id, &e.to_string(), &now).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse a column name string into a `ColumnName` enum variant.
+fn parse_column_name_enum(name: &str) -> Result<ColumnName, AdeError> {
+    match name {
+        "Backlog" => Ok(ColumnName::Backlog),
+        "Doing" => Ok(ColumnName::Doing),
+        "Paused" => Ok(ColumnName::Paused),
+        "PR" => Ok(ColumnName::Pr),
+        "Done" => Ok(ColumnName::Done),
+        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
+    }
+}
+
+/// Result of successfully executing an outbox intent: the updated issue's
+/// `updated_at`, `state`, and `labels` from the re-fetch.
+struct OutboxResult {
+    updated_at: String,
+    state: String,
+    labels: Vec<String>,
+}
+
+/// Execute the GitHub API calls for a single outbox intent.
+/// Returns the issue's updated fields from the re-fetch on success.
+async fn execute_outbox_intent(
+    gh: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    issue_number: u64,
+    from_column: &ColumnName,
+    to_column: &ColumnName,
+    rate_budget: &RateBudget,
+) -> Result<OutboxResult, AdeError> {
+    match (from_column, to_column) {
+        // Target column is Done: remove all kanban labels + close the issue.
+        (_, ColumnName::Done) => {
+            rate_budget.check().await?;
+            for &label in KANBAN_LABELS {
+                gh.remove_label(owner, repo, issue_number, label).await?;
+            }
+            rate_budget.check().await?;
+            gh.set_issue_state(owner, repo, issue_number, "closed")
+                .await?;
+        }
+        // Source column is Done (target is non-Done): reopen + add target kanban label.
+        (ColumnName::Done, _) => {
+            rate_budget.check().await?;
+            gh.set_issue_state(owner, repo, issue_number, "open")
+                .await?;
+            if let Some(label) = kanban_label_for_column(to_column) {
+                rate_budget.check().await?;
+                gh.add_label(owner, repo, issue_number, label).await?;
+            }
+        }
+        // Target column is Backlog: remove all kanban labels only (no close).
+        (_, ColumnName::Backlog) => {
+            for &label in KANBAN_LABELS {
+                rate_budget.check().await?;
+                gh.remove_label(owner, repo, issue_number, label).await?;
+            }
+        }
+        // Otherwise (both non-Done, non-Backlog): remove source label + add target label.
+        (_, _) => {
+            if let Some(from_label) = kanban_label_for_column(from_column) {
+                rate_budget.check().await?;
+                gh.remove_label(owner, repo, issue_number, from_label)
+                    .await?;
+            }
+            if let Some(to_label) = kanban_label_for_column(to_column) {
+                rate_budget.check().await?;
+                gh.add_label(owner, repo, issue_number, to_label).await?;
+            }
+        }
+    }
+
+    // Re-fetch the issue to get updated_at, state, and labels.
+    rate_budget.check().await?;
+    let issue = gh.get_issue(owner, repo, issue_number).await?;
+    Ok(OutboxResult {
+        updated_at: issue.updated_at,
+        state: issue.state,
+        labels: issue.labels,
+    })
 }
 
 #[cfg(test)]
@@ -433,6 +783,319 @@ mod tests {
             due_rows.len(),
             1,
             "attempts=3 with 11m elapsed is due (10m delay)"
+        );
+    }
+
+    // ── M5-T4: send_outbox integration tests ──────────────────────────
+
+    /// Helper: create a test pool with board_column table for send_outbox tests.
+    async fn test_pool_with_columns() -> (DbPool, tempfile::TempDir) {
+        let (pool, tmp) = test_pool().await;
+
+        sqlx::query(
+            "CREATE TABLE board_column (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        (pool, tmp)
+    }
+
+    /// Helper: seed a workspace with 5 board columns and return (ws_id, col_id_map).
+    async fn seed_workspace_with_columns(
+        pool: &DbPool,
+    ) -> (String, std::collections::HashMap<ColumnName, String>) {
+        let ws_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO workspace (id, name, slug, root_path, github_owner, github_repo, created_at) VALUES (?1, 'Dev', 'dev', '/tmp/dev', 'owner', 'repo', ?2)",
+        )
+        .bind(&ws_id)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let columns = [
+            ("Backlog", 0i64),
+            ("Doing", 1),
+            ("Paused", 2),
+            ("PR", 3),
+            ("Done", 4),
+        ];
+
+        let mut col_id_by_name = std::collections::HashMap::new();
+        for (name, pos) in &columns {
+            let col_id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO board_column (id, workspace_id, name, position) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(&col_id)
+            .bind(&ws_id)
+            .bind(*name)
+            .bind(*pos)
+            .execute(pool)
+            .await
+            .unwrap();
+
+            let cname = match *name {
+                "Backlog" => ColumnName::Backlog,
+                "Doing" => ColumnName::Doing,
+                "Paused" => ColumnName::Paused,
+                "PR" => ColumnName::Pr,
+                "Done" => ColumnName::Done,
+                _ => unreachable!(),
+            };
+            col_id_by_name.insert(cname, col_id);
+        }
+
+        (ws_id, col_id_by_name)
+    }
+
+    /// Spike 4: Move Doing→Done issues close call + label removal.
+    /// Card in Doing column with github_issue_number=42, source=github,
+    /// labels_json='["kanban:doing"]', github_state='open'.
+    /// Enqueue outbox intent: from=Doing, to=Done.
+    /// Wiremock: mock set_issue_state("closed") → 200, remove_label("kanban:doing") → 204.
+    /// Assert: outbox row deleted, card moved to Done column, card's github_state = "closed".
+    #[tokio::test]
+    async fn send_outbox_doing_to_done() {
+        use crate::sync::worker::CaptureNotifier;
+        use wiremock::matchers::{body_json, method as match_method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let (pool, _tmp) = test_pool_with_columns().await;
+        let (ws_id, col_ids) = seed_workspace_with_columns(&pool).await;
+
+        let card_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let done_col_id = col_ids.get(&ColumnName::Done).unwrap().clone();
+
+        // Card in Doing column, optimistically moved to Done by the UI.
+        // DB: column_id = Done (optimistic), but labels_json still has "kanban:doing",
+        // github_state = "open" — the labels haven't been pushed to GitHub yet.
+        // Actually, for the conflict check, the card's labels_json and github_state
+        // represent the *remote* cached state. When we enqueue Doing→Done, the
+        // from_column=Doing matches the cached state (labels_json has kanban:doing,
+        // github_state=open => desired_column=Doing). So the conflict check passes.
+        // The optimistic move puts the card's column_id at Done in the UI.
+        // But for the outbox sender, we re-check from_column against cached labels/state.
+        sqlx::query(
+            "INSERT INTO card (id, workspace_id, column_id, title, position, source, github_issue_number, github_state, labels_json, remote_updated_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'Test card', 1.0, 'github', 42, 'open', '[\"kanban:doing\"]', ?4, ?4, ?4)",
+        )
+        .bind(&card_id)
+        .bind(&ws_id)
+        .bind(&done_col_id) // optimistically moved to Done in UI
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Enqueue outbox intent: from=Doing, to=Done
+        let base_remote = now.clone();
+        enqueue(&pool, &card_id, "Doing", "Done", &base_remote)
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+
+        // Mock: remove_label("kanban:doing") for issue 42 → 204
+        Mock::given(match_method("DELETE"))
+            .and(path("/repos/owner/repo/issues/42/labels/kanban:doing"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        // Mock: remove_label("kanban:paused") for issue 42 → 404 (not present, OK)
+        Mock::given(match_method("DELETE"))
+            .and(path("/repos/owner/repo/issues/42/labels/kanban:paused"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+
+        // Mock: remove_label("kanban:pr") for issue 42 → 404 (not present, OK)
+        Mock::given(match_method("DELETE"))
+            .and(path("/repos/owner/repo/issues/42/labels/kanban:pr"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+
+        // Mock: set_issue_state("closed") → 200
+        Mock::given(match_method("PATCH"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .and(body_json(serde_json::json!({ "state": "closed" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "number": 42,
+                "title": "Test issue",
+                "state": "closed",
+                "updated_at": "2025-01-03T00:00:00Z",
+                "assignee": null,
+                "labels": [],
+                "html_url": "https://github.com/owner/repo/issues/42",
+                "body": null,
+            })))
+            .mount(&server)
+            .await;
+
+        // Mock: get_issue for re-fetch → 200
+        Mock::given(match_method("GET"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "number": 42,
+                "title": "Test issue",
+                "state": "closed",
+                "updated_at": "2025-01-03T00:00:00Z",
+                "assignee": null,
+                "labels": [],
+                "html_url": "https://github.com/owner/repo/issues/42",
+                "body": null,
+            })))
+            .mount(&server)
+            .await;
+
+        let gh = crate::gh::client::GitHubClient::new(server.uri(), "test-token".to_string());
+        let rate_budget = crate::sync::worker::RateBudget::new();
+        let notifier = CaptureNotifier::new();
+
+        send_outbox(&pool, &gh, "owner", "repo", &ws_id, &notifier, &rate_budget)
+            .await
+            .expect("send_outbox should succeed");
+
+        // Assert: outbox row deleted
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
+            .bind(&card_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "outbox row should be deleted after success");
+
+        // Assert: card is in Done column
+        let card: Card = sqlx::query_as::<_, Card>(
+            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+        )
+        .bind(&card_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(card.column_id, done_col_id, "card should be in Done column");
+        assert_eq!(
+            card.github_state.as_deref(),
+            Some("closed"),
+            "card github_state should be closed"
+        );
+    }
+
+    /// Spike 5: 4 consecutive failures → row dropped, card reverted, notification captured.
+    /// Card in Paused column (optimistically moved from Backlog), github_issue_number=99,
+    /// labels_json='[]', github_state='open', remote_updated_at set.
+    /// Outbox intent: from=Backlog, to=Paused, attempts=3.
+    /// Wiremock: all calls return 500.
+    /// Assert: outbox row deleted, card reverted to Backlog, notification SYNC_WRITE_FAILED captured.
+    #[tokio::test]
+    async fn send_outbox_fourth_failure_reverts() {
+        use crate::sync::worker::CaptureNotifier;
+        use wiremock::matchers::{method as match_method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let (pool, _tmp) = test_pool_with_columns().await;
+        let (ws_id, col_ids) = seed_workspace_with_columns(&pool).await;
+
+        let card_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let past_11m = (now - chrono::Duration::seconds(660)).to_rfc3339();
+        let backlog_col_id = col_ids.get(&ColumnName::Backlog).unwrap().clone();
+        let paused_col_id = col_ids.get(&ColumnName::Paused).unwrap().clone();
+
+        // Card optimistically in Paused column, but labels_json='[]' and github_state='open'
+        // => desired_column = Backlog. from_column=Backlog matches.
+        sqlx::query(
+            "INSERT INTO card (id, workspace_id, column_id, title, position, source, github_issue_number, github_state, labels_json, remote_updated_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'Test card', 1.0, 'github', 99, 'open', '[]', ?4, ?4, ?4)",
+        )
+        .bind(&card_id)
+        .bind(&ws_id)
+        .bind(&paused_col_id) // optimistically in Paused
+        .bind(&past_11m)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Outbox intent: from=Backlog, to=Paused, attempts=3
+        // Using direct insert so we can set attempts=3
+        let payload = serde_json::json!({
+            "from_column_name": "Backlog",
+            "to_column_name": "Paused",
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO outbox (card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at)
+             VALUES (?1, 'set_column', ?2, ?3, 3, NULL, ?4, ?4)",
+        )
+        .bind(&card_id)
+        .bind(&payload)
+        .bind(&past_11m)
+        .bind(&past_11m)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Wiremock: all calls return 500
+        let server = MockServer::start().await;
+
+        // Mock: add_label for "kanban:paused" → 500
+        Mock::given(match_method("POST"))
+            .and(path("/repos/owner/repo/issues/99/labels"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&server)
+            .await;
+
+        let gh = crate::gh::client::GitHubClient::new(server.uri(), "test-token".to_string());
+        let rate_budget = crate::sync::worker::RateBudget::new();
+        let notifier = CaptureNotifier::new();
+
+        // send_outbox should not error (it handles failures internally)
+        send_outbox(&pool, &gh, "owner", "repo", &ws_id, &notifier, &rate_budget)
+            .await
+            .expect("send_outbox should not return error on API failure");
+
+        // Assert: outbox row deleted (dropped after 4th failure)
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
+            .bind(&card_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "outbox row should be deleted after 4th failure");
+
+        // Assert: card reverted to Backlog (desired_column of issue with no labels = Backlog)
+        let card: Card = sqlx::query_as::<_, Card>(
+            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
+        )
+        .bind(&card_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            card.column_id, backlog_col_id,
+            "card should be reverted to Backlog column"
+        );
+
+        // Assert: SYNC_WRITE_FAILED notification captured
+        let events = notifier.take();
+        let sync_write_failed = events
+            .iter()
+            .any(|(level, code, _)| level == "error" && code == "SYNC_WRITE_FAILED");
+        assert!(
+            sync_write_failed,
+            "should have SYNC_WRITE_FAILED notification, got: {:?}",
+            events
         );
     }
 }

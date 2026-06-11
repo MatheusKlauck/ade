@@ -530,6 +530,57 @@ pub async fn start_worker(
                     }
                 }
 
+                // M5-T4: Send outbox intents (§13.1 sender pass)
+                {
+                    let ws: crate::models::Workspace = match sqlx::query_as::<_, crate::models::Workspace>(
+                        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
+                    )
+                    .bind(&workspace_id)
+                    .fetch_one(&db)
+                    .await
+                    {
+                        Ok(ws) => ws,
+                        Err(_) => {
+                            // Can't look up workspace; skip outbox send
+                            continue;
+                        }
+                    };
+                    if let (Some(owner), Some(repo)) =
+                        (ws.github_owner.as_ref(), ws.github_repo.as_ref())
+                    {
+                        if let Err(e) = outbox::send_outbox(
+                            &db,
+                            &gh,
+                            owner,
+                            repo,
+                            &workspace_id,
+                            &notifier,
+                            &rate_budget,
+                        )
+                        .await
+                        {
+                            if matches!(e, AdeError::RateLimited(_)) {
+                                rate_budget
+                                    .pause_until(Instant::now() + Duration::from_secs(60))
+                                    .await;
+                                crate::notify::emit_notify(
+                                    &app,
+                                    "warn",
+                                    "RATE_LIMITED",
+                                    "GitHub rate limit hit during outbox send; pausing sync",
+                                );
+                            } else {
+                                crate::notify::emit_notify(
+                                    &app,
+                                    "error",
+                                    "OUTBOX_SEND_ERROR",
+                                    &format!("outbox send failed: {}", e),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Get current last_sync for the event
                 let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
                     "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
