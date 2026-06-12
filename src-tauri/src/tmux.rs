@@ -389,6 +389,60 @@ pub fn kill_session(session: &str) -> Result<(), AdeError> {
     Ok(())
 }
 
+/// Kill every detached ADE viewer session (`ade_*__v*` with no attached client).
+///
+/// Viewer sessions are ephemeral per-view attachments to a workspace's base
+/// session. They are normally killed on pane close / workspace close, but a
+/// hard app exit (crash, SIGKILL, `tauri dev` HMR restart) bypasses those
+/// paths: the PTY client dies, the viewer detaches, and the session lingers in
+/// the tmux server forever, accumulating across launches (the viewer leak).
+///
+/// A *detached* viewer is always disposable — the base session it mirrors is
+/// left untouched, so no work is lost. An *attached* viewer belongs to a live
+/// client (this or another running instance) and is never touched. Runs at
+/// startup to reap leftovers from a previous crash. Best-effort: returns the
+/// number of sessions killed, swallowing any list/kill failure (e.g. no server).
+pub fn kill_detached_viewers() -> usize {
+    let out = match Command::new(TMUX_BIN)
+        .arg("list-sessions")
+        .arg("-F")
+        .arg("#{session_name} #{session_attached}")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        // No tmux server running yet, or no sessions — nothing to reap.
+        _ => return 0,
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut killed = 0;
+    for line in stdout.lines() {
+        // Format is "<name> <attached_count>". Split from the right so a name
+        // is never mis-parsed (the attached count is always a trailing number).
+        let mut it = line.rsplitn(2, ' ');
+        let attached = it.next().unwrap_or("");
+        let name = match it.next() {
+            Some(n) => n,
+            None => continue,
+        };
+        // Only ADE viewer sessions (`ade_<slug>__v<uuid>`), only when no client
+        // is attached. `viewer_session()` is the single source of this shape.
+        if name.starts_with("ade_") && name.contains("__v") && attached == "0" {
+            let ok = Command::new(TMUX_BIN)
+                .arg("kill-session")
+                .arg("-t")
+                .arg(format!("={}", name))
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if ok {
+                killed += 1;
+            }
+        }
+    }
+    killed
+}
+
 /// Kill a viewer session.
 pub fn kill_viewer(viewer: &str) -> Result<(), AdeError> {
     let out = Command::new(TMUX_BIN)

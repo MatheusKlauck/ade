@@ -209,6 +209,15 @@ pub fn run() {
             // makes every tmux spawn fail with ENOENT. Fix it before anything,
             // including the sync workers below, shells out.
             ensure_path_env();
+            // Reap viewer sessions stranded by a previous hard exit (crash,
+            // SIGKILL, `tauri dev` HMR restart) — those bypass the clean-exit
+            // handler in `run()` and would otherwise pile up in the tmux server
+            // indefinitely. Only detached viewers are killed, so a second live
+            // instance's sessions (and all base sessions) are left untouched.
+            let reaped = tmux::kill_detached_viewers();
+            if reaped > 0 {
+                eprintln!("reaped {reaped} stranded tmux viewer session(s)");
+            }
             // Register the OS-native credential store (macOS Keychain / Windows
             // Credential Manager / Linux Secret Service) as keyring-core's
             // default. keyring-core's Entry::new() has NO store until one is set
@@ -262,10 +271,33 @@ pub fn run() {
             ipc::terminal::terminal_kill_window,
             ipc::sync::sync_now,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    if let Err(e) = result {
-        eprintln!("tauri application error: {}", e);
-        std::process::exit(1);
-    }
+    let app = match result {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("tauri application error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    app.run(|app_handle, event| {
+        // On a clean quit, kill every open pane's viewer session so it doesn't
+        // leak into the tmux server. `pane.close()` kills only the ephemeral
+        // viewer (and its PTY child) — base sessions are deliberately left
+        // alive so a workspace's windows survive an app restart (reattach).
+        // Hard exits (crash, SIGKILL, HMR) skip this; the startup sweep in
+        // `setup()` reaps whatever they strand.
+        if let tauri::RunEvent::Exit = event {
+            if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                let panes: Vec<crate::pty::PtyPane> = match state.pty.lock() {
+                    Ok(mut reg) => reg.drain().map(|(_, pane)| pane).collect(),
+                    Err(_) => Vec::new(),
+                };
+                for pane in panes {
+                    let _ = pane.close();
+                }
+            }
+        }
+    });
 }
