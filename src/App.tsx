@@ -23,7 +23,11 @@ import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
 import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
-import { useSettingsStore } from "./store/settings";
+import {
+  useSettingsStore,
+  getDefaultPreset,
+  type TerminalPreset,
+} from "./store/settings";
 import Onboarding from "./components/Onboarding";
 import { contrastingTextColor } from "./lib/color";
 
@@ -64,24 +68,50 @@ async function injectTaskPrompt(paneId: string, cardId: string) {
   terminalWrite(paneId, `${PASTE_START}${text}${PASTE_END}\r`).catch(() => {});
 }
 
+/** Turn a command list into a single payload to write to the PTY: trimmed,
+ * non-empty lines joined by newlines (each newline acts as Enter, so the shell
+ * runs them sequentially), with a trailing newline to submit the last one.
+ * Returns "" when there's nothing to run. */
+function joinCommands(cmds: string[]): string {
+  const lines = cmds.map((c) => c.trim()).filter(Boolean);
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
 /**
- * Schedule the startup command for a newly-opened pane and, when `injectCardId`
- * is given (a card just moved to Doing), the task-prompt injection right after it.
+ * Schedule the open commands for a newly-opened pane and, when `injectCardId`
+ * is given (a card just moved to Doing), the task-prompt injection right after.
+ *
+ * When `preset` is supplied (the user picked a named preset, or a card chose one
+ * via "Run with…") its open commands/delay/inject flag take over. For a plain
+ * card-driven open with no preset, the workspace's default preset applies.
  */
-function scheduleStartupSequence(paneId: string, injectCardId?: string) {
-  const { startupCommand, startupDelay } = useSettingsStore.getState();
-  const delaySecs = Math.max(0, parseInt(startupDelay, 10) || 0);
-  const hasStartup = !!(startupCommand && startupCommand.trim());
+function scheduleStartupSequence(
+  paneId: string,
+  opts: { preset?: TerminalPreset; injectCardId?: string } = {}
+) {
+  const { preset, injectCardId } = opts;
+  // For card opens with no explicit preset, fall back to the workspace default.
+  const effective =
+    preset ?? (injectCardId ? getDefaultPreset(useSettingsStore.getState()) : null);
+
+  const openCommands = effective?.openCommands ?? [];
+  const delaySecs = Math.max(0, effective?.delaySecs ?? 0);
+  const payload = joinCommands(openCommands);
+  const hasStartup = payload.length > 0;
+  // A card-driven open with no resolved preset still injects (preserves the
+  // original behavior); a preset injects only when it opts in. Injection always
+  // requires an actual card to pull the prompt from.
+  const wantsInject =
+    !!injectCardId && (effective ? effective.injectTask : true);
 
   if (hasStartup) {
     setTimeout(() => {
       if (!paneIsOpen(paneId)) return;
-      const cmd = startupCommand.replace(/\n?$/, "\n");
-      terminalWrite(paneId, cmd).catch(() => {});
+      terminalWrite(paneId, payload).catch(() => {});
     }, delaySecs * 1000);
   }
 
-  if (injectCardId) {
+  if (wantsInject) {
     // Inject after the startup command has been sent (+ settle), or after a
     // short settle when there's no startup command.
     const injectAt = hasStartup
@@ -161,6 +191,9 @@ export default function App() {
   const focusWindow = useTerminalsStore((s) => s.focusWindow);
   const clearHighlight = useTerminalsStore((s) => s.clearHighlight);
   const loadLocked = useTerminalsStore((s) => s.loadLocked);
+  const loadNames = useTerminalsStore((s) => s.loadNames);
+  const loadPresetWindows = useTerminalsStore((s) => s.loadPresetWindows);
+  const loadLayout = useTerminalsStore((s) => s.loadLayout);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
@@ -249,10 +282,16 @@ export default function App() {
     };
   }, []);
 
-  // When the active workspace changes, load its persisted terminal lock state.
+  // When the active workspace changes, load its persisted terminal lock state,
+  // custom names, window→preset associations, and split layout.
   useEffect(() => {
-    if (activeWorkspaceId) loadLocked(activeWorkspaceId);
-  }, [activeWorkspaceId, loadLocked]);
+    if (activeWorkspaceId) {
+      loadLocked(activeWorkspaceId);
+      loadNames(activeWorkspaceId);
+      loadPresetWindows(activeWorkspaceId);
+      loadLayout(activeWorkspaceId);
+    }
+  }, [activeWorkspaceId, loadLocked, loadNames, loadPresetWindows, loadLayout]);
 
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {
@@ -291,7 +330,24 @@ export default function App() {
             channel: result.channel,
           };
           addPane(pane);
-          scheduleStartupSequence(pane.paneId, payload.card_id);
+          // A preset is present only when this card was launched via its
+          // "Run with…" menu; otherwise fall back to the workspace defaults.
+          const preset = payload.card_id
+            ? useTerminalsStore.getState().takePendingPreset(payload.card_id)
+            : undefined;
+          // Remember which preset opened this window (the chosen one, else the
+          // workspace default) so manual close can run its closeCommands.
+          const effective =
+            preset ?? getDefaultPreset(useSettingsStore.getState());
+          if (effective) {
+            useTerminalsStore
+              .getState()
+              .setPresetForWindow(workspace_id, result.windowId, effective.id);
+          }
+          scheduleStartupSequence(pane.paneId, {
+            preset,
+            injectCardId: payload.card_id,
+          });
           focusWindow(window_id);
         } catch {
           // Window may no longer exist
@@ -399,7 +455,7 @@ export default function App() {
     }
   }, [panes, activeWorkspaceId, persistWindowIds]);
 
-  const handleNewTerminal = async () => {
+  const handleNewTerminal = async (preset?: TerminalPreset) => {
     if (!activeWorkspaceId) return;
     try {
       const result = await terminalOpen(activeWorkspaceId);
@@ -410,13 +466,35 @@ export default function App() {
         channel: result.channel,
       };
       addPane(pane);
-      scheduleStartupSequence(pane.paneId);
+      // Associate the explicitly chosen preset so manual close runs its
+      // closeCommands. A plain shell (no preset) gets no close commands.
+      if (preset) {
+        useTerminalsStore
+          .getState()
+          .setPresetForWindow(activeWorkspaceId, result.windowId, preset.id);
+      }
+      scheduleStartupSequence(pane.paneId, { preset });
     } catch (e) {
       console.error(e);
     }
   };
 
+  // Manual close (× button): run the window's preset closeCommands into the
+  // surviving tmux window before dropping the pane, then clear the association.
   const handleRemove = (paneId: string) => {
+    const ts = useTerminalsStore.getState();
+    const pane = ts.panes.find((p) => p.paneId === paneId);
+    if (pane) {
+      const presetId = ts.getPresetForWindow(pane.workspaceId, pane.windowId);
+      if (presetId) {
+        const preset = useSettingsStore
+          .getState()
+          .presets.find((p) => p.id === presetId);
+        const close = preset ? joinCommands(preset.closeCommands) : "";
+        if (close) terminalWrite(pane.paneId, close).catch(() => {});
+      }
+      ts.clearPresetForWindow(pane.workspaceId, pane.windowId);
+    }
     removePane(paneId);
   };
 

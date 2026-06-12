@@ -14,6 +14,18 @@
   border: 1px solid var(--focus-ring);
 }
 
+/* Draggable gutter between split terminal panes. Sits in the gap, invisible
+   until hovered or actively dragged, when an accent bar marks the boundary. */
+.term-divider {
+  background: transparent;
+  transition: background 0.12s ease;
+  touch-action: none;
+}
+.term-divider:hover,
+.term-divider:active {
+  background: var(--accent);
+}
+
 /* Theme variables (CONTRACTS §17 / DESIGN.md token layer) */
 :root[data-theme="dark"] {
   /* Core surfaces + ink — deep indigo→plum, tinted toward the magenta brand hue

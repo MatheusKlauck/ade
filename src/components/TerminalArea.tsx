@@ -1,16 +1,271 @@
-import { useState, type CSSProperties } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import TerminalPane from "./TerminalPane";
 import { useBoardStore } from "../store/board";
-import { useTerminalsStore } from "../store/terminals";
+import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
+import { useSettingsStore, type TerminalPreset } from "../store/settings";
 import { ChevronIcon, LockIcon } from "./icons";
-import type { OpenTerminal } from "../store/terminals";
+import type { OpenTerminal, TerminalLayout } from "../store/terminals";
 
 interface TerminalAreaProps {
   panes: OpenTerminal[];
-  onNewTerminal: () => void;
+  onNewTerminal: (preset?: TerminalPreset) => void;
   onRemovePane: (paneId: string) => void;
   highlightedWindowId: string | null;
   onHighlightDone: () => void;
+}
+
+/** Split "New terminal" control: the main button opens a plain shell, the caret
+ * opens a menu of the workspace's terminal presets. Each preset opens a terminal
+ * that runs its command (and, when applicable, injects the task prompt). */
+function NewTerminalButton({
+  onNewTerminal,
+}: {
+  onNewTerminal: (preset?: TerminalPreset) => void;
+}) {
+  const presets = useSettingsStore((s) => s.presets);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Close the menu on any outside click or Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const pick = (preset?: TerminalPreset) => {
+    setOpen(false);
+    onNewTerminal(preset);
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        onClick={() => pick()}
+        style={{
+          padding: "4px 12px",
+          background: "var(--accent)",
+          color: "var(--accent-ink)",
+          border: "none",
+          borderRadius: "4px 0 0 4px",
+          cursor: "pointer",
+          fontSize: 13,
+        }}
+      >
+        New terminal
+      </button>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Open with a preset"
+        style={{
+          padding: "4px 6px",
+          background: "var(--accent)",
+          color: "var(--accent-ink)",
+          border: "none",
+          borderLeft: "1px solid var(--accent-ink)",
+          borderRadius: "0 4px 4px 0",
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+        }}
+      >
+        <ChevronIcon size={12} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            minWidth: 200,
+            background: "var(--panel)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
+            zIndex: "var(--z-modal)",
+            padding: 4,
+            overflow: "hidden",
+          }}
+        >
+          <button role="menuitem" onClick={() => pick()} style={menuItemStyle}>
+            Plain shell
+          </button>
+          {presets.length > 0 && (
+            <div
+              style={{
+                height: 1,
+                background: "var(--border)",
+                margin: "4px 0",
+              }}
+            />
+          )}
+          {presets.length === 0 ? (
+            <div
+              style={{
+                padding: "6px 10px",
+                fontSize: 12,
+                color: "var(--muted)",
+              }}
+            >
+              No presets — add them in Settings.
+            </div>
+          ) : (
+            presets.map((p) => (
+              <button
+                key={p.id}
+                role="menuitem"
+                onClick={() => pick(p)}
+                title={p.openCommands.join(" && ") || undefined}
+                style={menuItemStyle}
+              >
+                New with {p.name}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const menuItemStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  padding: "6px 10px",
+  fontSize: 13,
+  background: "transparent",
+  border: "none",
+  borderRadius: 4,
+  color: "var(--fg)",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+// Gap between tiles (px); PAD is half of it, applied as an inset on every side
+// so adjacent tiles and the container edge all show an even gutter.
+const GAP = 6;
+const PAD = GAP / 2;
+// Smallest a tile may be dragged to, so a divider can't collapse a pane to zero.
+const MIN_ROW_PX = 110;
+const MIN_TILE_PX = 180;
+
+/** A draggable gutter between two tiles or two rows. Invisible until hovered. */
+function ResizeDivider({
+  orientation,
+  rectStyle,
+  onPointerDown,
+}: {
+  orientation: "row" | "col";
+  rectStyle: CSSProperties;
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
+  return (
+    <div
+      className="term-divider"
+      onPointerDown={onPointerDown}
+      style={{
+        position: "absolute",
+        zIndex: 15,
+        cursor: orientation === "row" ? "row-resize" : "col-resize",
+        ...rectStyle,
+      }}
+    />
+  );
+}
+
+/** One tile: an absolutely-positioned wrapper that is also a drop target for
+ * pane-reorder drags. It owns the little edge indicator shown while another
+ * pane's header is dragged over it. */
+function TerminalTile({
+  pane,
+  style,
+  hidden,
+  children,
+  onReorder,
+}: {
+  pane: OpenTerminal;
+  style: CSSProperties;
+  hidden: boolean;
+  children: React.ReactNode;
+  onReorder: (draggedWin: string, targetWin: string, edge: "before" | "after") => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [edge, setEdge] = useState<"before" | "after" | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    return dropTargetForElements({
+      element: el,
+      canDrop: ({ source }) =>
+        typeof source.data.termWindowId === "string" &&
+        source.data.termWindowId !== pane.windowId,
+      onDrag: ({ location }) => {
+        const rect = el.getBoundingClientRect();
+        setEdge(
+          location.current.input.clientX < rect.left + rect.width / 2
+            ? "before"
+            : "after"
+        );
+      },
+      onDragLeave: () => setEdge(null),
+      onDrop: ({ source, location }) => {
+        const rect = el.getBoundingClientRect();
+        const e =
+          location.current.input.clientX < rect.left + rect.width / 2
+            ? "before"
+            : "after";
+        setEdge(null);
+        onReorder(source.data.termWindowId as string, pane.windowId, e);
+      },
+    });
+  }, [pane.windowId, onReorder]);
+
+  return (
+    <div ref={ref} id={`terminal-pane-${pane.windowId}`} style={style}>
+      {edge && !hidden && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            [edge === "before" ? "left" : "right"]: 0,
+            width: 3,
+            background: "var(--accent)",
+            zIndex: 25,
+            pointerEvents: "none",
+          }}
+        />
+      )}
+      {children}
+    </div>
+  );
 }
 
 export default function TerminalArea({
@@ -22,16 +277,70 @@ export default function TerminalArea({
 }: TerminalAreaProps) {
   const boards = useBoardStore((s) => s.boards);
   const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
+  const namesByWorkspace = useTerminalsStore((s) => s.namesByWorkspace);
   const toggleLock = useTerminalsStore((s) => s.toggleLock);
+  const setTerminalName = useTerminalsStore((s) => s.setTerminalName);
+  const layoutByWorkspace = useTerminalsStore((s) => s.layoutByWorkspace);
+  const setLayout = useTerminalsStore((s) => s.setLayout);
   const [minimized, setMinimized] = useState<Record<string, boolean>>({});
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+
+  // The container all panes are absolutely positioned inside. Keeping every
+  // TerminalPane a direct child of this one element (never re-parented) is what
+  // lets resize and reorder be pure position changes — React reconciles by key,
+  // so a pane is never unmounted, so its PTY is never torn down.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+
+  // All active panes belong to the same (active) workspace.
+  const workspaceId = panes[0]?.workspaceId ?? null;
+  const rawLayout = workspaceId ? layoutByWorkspace[workspaceId] : undefined;
+  const winKey = panes.map((p) => p.windowId).join("|");
+  // Always render from a normalised layout so a freshly-opened terminal shows up
+  // immediately, even before the persistence effect below has written it back.
+  const layout = normalizeLayout(rawLayout ?? [], panes.map((p) => p.windowId));
+
+  // Persist the normalised layout whenever it diverges from what's stored —
+  // e.g. a terminal was opened (appended) or closed (dropped). Gated on
+  // rawLayout being defined so we never clobber the persisted layout with the
+  // default arrangement before loadLayout has had a chance to run.
+  useEffect(() => {
+    if (!workspaceId || rawLayout === undefined) return;
+    const norm = normalizeLayout(rawLayout, panes.map((p) => p.windowId));
+    if (JSON.stringify(norm) !== JSON.stringify(rawLayout)) {
+      setLayout(workspaceId, norm, true);
+    }
+    // winKey captures the set of open windows; rawLayout captures stored shape.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, rawLayout, winKey]);
+
+  // Move the dragged pane next to a drop target and persist. Reads the live
+  // layout from the store so the handler can stay stable (registered once per
+  // drop target) regardless of re-renders mid-drag.
+  const doReorder = useCallback(
+    (draggedWin: string, targetWin: string, edge: "before" | "after") => {
+      if (!workspaceId) return;
+      const st = useTerminalsStore.getState();
+      const wins = st.panes
+        .filter((p) => p.workspaceId === workspaceId)
+        .map((p) => p.windowId);
+      const base = normalizeLayout(st.layoutByWorkspace[workspaceId] ?? [], wins);
+      setLayout(workspaceId, reorderLayout(base, draggedWin, targetWin, edge), true);
+    },
+    [workspaceId, setLayout]
+  );
 
   const isLocked = (pane: OpenTerminal): boolean =>
     (lockedByWorkspace[pane.workspaceId] ?? []).includes(pane.windowId);
 
-  // Title from the linked card/issue, e.g. "#123 | Fix login". Falls back to
-  // "Terminal" for ad-hoc shells with no linked card.
+  // A user-given custom name takes precedence over everything else.
+  const customNameFor = (pane: OpenTerminal): string | undefined =>
+    namesByWorkspace[pane.workspaceId]?.[pane.windowId];
+
+  // Title: custom name if set, else the linked card/issue (e.g. "#123 | Fix
+  // login"), else "Terminal" for ad-hoc shells with no linked card.
   const titleFor = (pane: OpenTerminal): string => {
+    const custom = customNameFor(pane);
+    if (custom) return custom;
     const board = boards[pane.workspaceId];
     if (board) {
       for (const colId of Object.keys(board.cardsByColumn)) {
@@ -87,6 +396,161 @@ export default function TerminalArea({
   // pane is maximized, the tray is suppressed to keep focus on it.
   const minimizedPanes = maxId ? [] : panes.filter((p) => minimized[p.paneId]);
 
+  // A pane is hidden from the tiling when maximized-elsewhere or minimized.
+  const isHidden = (pane: OpenTerminal): boolean =>
+    maxId ? maxId !== pane.paneId : !!minimized[pane.paneId];
+
+  const paneByWin = new Map(panes.map((p) => [p.windowId, p]));
+
+  // --- Geometry: turn the weighted row/tile layout into absolute rectangles in
+  // fractional [0..1] coordinates, skipping hidden tiles/rows so the visible
+  // ones fill the space. Also collect the draggable boundaries between them. ---
+  type Rect = { top: number; left: number; width: number; height: number };
+  const rects = new Map<string, Rect>();
+  // Divider between two adjacent visible rows (aRi/bRi index into `layout`).
+  const rowDividers: { y: number; aRi: number; bRi: number }[] = [];
+  // Divider between two adjacent visible tiles within row `ri` (aTi/bTi index
+  // into layout[ri].tiles), spanning the row's vertical band y0..y1.
+  const colDividers: {
+    x: number;
+    y0: number;
+    y1: number;
+    ri: number;
+    aTi: number;
+    bTi: number;
+  }[] = [];
+
+  const visRows = layout
+    .map((row, ri) => ({
+      ri,
+      row,
+      vis: row.tiles
+        .map((tile, ti) => ({ tile, ti, pane: paneByWin.get(tile.windowId) }))
+        .filter(
+          (x): x is { tile: (typeof row.tiles)[number]; ti: number; pane: OpenTerminal } =>
+            !!x.pane && !isHidden(x.pane)
+        ),
+    }))
+    .filter((r) => r.vis.length > 0);
+
+  const sumRowW = visRows.reduce((s, r) => s + r.row.weight, 0) || 1;
+  let y0 = 0;
+  visRows.forEach((vr, k) => {
+    const h = vr.row.weight / sumRowW;
+    const y1 = y0 + h;
+    const sumTileW = vr.vis.reduce((s, x) => s + x.tile.weight, 0) || 1;
+    let x0 = 0;
+    vr.vis.forEach((x, j) => {
+      const w = x.tile.weight / sumTileW;
+      rects.set(x.tile.windowId, { top: y0, left: x0, width: w, height: h });
+      const x1 = x0 + w;
+      if (j < vr.vis.length - 1) {
+        colDividers.push({
+          x: x1,
+          y0,
+          y1,
+          ri: vr.ri,
+          aTi: x.ti,
+          bTi: vr.vis[j + 1].ti,
+        });
+      }
+      x0 = x1;
+    });
+    if (k < visRows.length - 1) {
+      rowDividers.push({ y: y1, aRi: vr.ri, bRi: visRows[k + 1].ri });
+    }
+    y0 = y1;
+  });
+
+  // Drag a horizontal divider: grow row `aRi`, shrink row `bRi`, others fixed.
+  // Convert pixel drag to weight delta via the container's height; persist once
+  // on release rather than on every frame.
+  const beginRowResize = (e: ReactPointerEvent, aRi: number, bRi: number) => {
+    e.preventDefault();
+    const cont = gridRef.current;
+    if (!cont || !workspaceId) return;
+    const H = cont.getBoundingClientRect().height;
+    if (H <= 0) return;
+    const start = layout;
+    const S = start.reduce((s, r) => s + r.weight, 0) || 1;
+    const wa = start[aRi].weight;
+    const wb = start[bRi].weight;
+    const minW = (MIN_ROW_PX / H) * S;
+    const lo = -(wa - minW);
+    const hi = wb - minW;
+    if (lo > hi) return;
+    const startY = e.clientY;
+    const onMove = (ev: PointerEvent) => {
+      const d = Math.max(lo, Math.min(hi, ((ev.clientY - startY) / H) * S));
+      const next = start.map((r, i) =>
+        i === aRi
+          ? { ...r, weight: wa + d }
+          : i === bRi
+          ? { ...r, weight: wb - d }
+          : r
+      );
+      setLayout(workspaceId, next, false);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const cur = useTerminalsStore.getState().layoutByWorkspace[workspaceId];
+      if (cur) setLayout(workspaceId, cur, true);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  // Drag a vertical divider: grow tile `aTi`, shrink tile `bTi` within row `ri`.
+  const beginColResize = (
+    e: ReactPointerEvent,
+    ri: number,
+    aTi: number,
+    bTi: number
+  ) => {
+    e.preventDefault();
+    const cont = gridRef.current;
+    if (!cont || !workspaceId) return;
+    const W = cont.getBoundingClientRect().width;
+    if (W <= 0) return;
+    const start = layout;
+    const tiles = start[ri].tiles;
+    const S = tiles.reduce((s, t) => s + t.weight, 0) || 1;
+    const wa = tiles[aTi].weight;
+    const wb = tiles[bTi].weight;
+    const minW = (MIN_TILE_PX / W) * S;
+    const lo = -(wa - minW);
+    const hi = wb - minW;
+    if (lo > hi) return;
+    const startX = e.clientX;
+    const onMove = (ev: PointerEvent) => {
+      const d = Math.max(lo, Math.min(hi, ((ev.clientX - startX) / W) * S));
+      const next: TerminalLayout = start.map((r, i) =>
+        i === ri
+          ? {
+              ...r,
+              tiles: r.tiles.map((t, j) =>
+                j === aTi
+                  ? { ...t, weight: wa + d }
+                  : j === bTi
+                  ? { ...t, weight: wb - d }
+                  : t
+              ),
+            }
+          : r
+      );
+      setLayout(workspaceId, next, false);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const cur = useTerminalsStore.getState().layoutByWorkspace[workspaceId];
+      if (cur) setLayout(workspaceId, cur, true);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   return (
     <div
       style={{
@@ -117,20 +581,7 @@ export default function TerminalArea({
           Terminals{panes.length > 0 ? ` · ${panes.length}` : ""}
         </span>
         <div style={{ flex: 1 }} />
-        <button
-          onClick={onNewTerminal}
-          style={{
-            padding: "4px 12px",
-            background: "var(--accent)",
-            color: "var(--accent-ink)",
-            border: "none",
-            borderRadius: 4,
-            cursor: "pointer",
-            fontSize: 13,
-          }}
-        >
-          New terminal
-        </button>
+        <NewTerminalButton onNewTerminal={onNewTerminal} />
       </div>
       {panes.length === 0 ? (
         <div
@@ -146,7 +597,7 @@ export default function TerminalArea({
         >
           <span style={{ fontSize: 13 }}>No terminals open</span>
           <button
-            onClick={onNewTerminal}
+            onClick={() => onNewTerminal()}
             style={{
               padding: "8px 20px",
               background: "var(--accent)",
@@ -163,16 +614,12 @@ export default function TerminalArea({
       ) : (
         <>
           <div
+            ref={gridRef}
             style={{
               flex: 1,
               minHeight: 0,
               position: "relative",
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-              gridAutoRows: "minmax(0, 1fr)",
-              gap: 8,
-              padding: 8,
-              overflow: "auto",
+              overflow: "hidden",
             }}
           >
             {panes.map((pane) => {
@@ -181,7 +628,8 @@ export default function TerminalArea({
               // otherwise minimized panes are hidden (shown in the tray below).
               // Hidden panes stay mounted (display:none) so their PTY keeps
               // running and the terminal refits when shown again.
-              const isHidden = maxId ? !isMax : !!minimized[pane.paneId];
+              const hide = isHidden(pane);
+              const rect = rects.get(pane.windowId);
               const locked = isLocked(pane);
               // Locked panes get an accented, ringed border so they stand out
               // from the freely-closeable ones.
@@ -189,10 +637,13 @@ export default function TerminalArea({
               const lockedRing: CSSProperties = locked
                 ? { boxShadow: "0 0 0 1px var(--accent)" }
                 : {};
+              // Every pane is absolutely positioned from the computed geometry,
+              // so resize/reorder are pure position changes — the pane element
+              // is never re-parented, so React never unmounts it (PTY survives).
               const wrapperStyle: CSSProperties = isMax
                 ? {
                     position: "absolute",
-                    inset: 0,
+                    inset: PAD,
                     zIndex: 20,
                     border: `1px solid ${borderColor}`,
                     ...lockedRing,
@@ -200,37 +651,74 @@ export default function TerminalArea({
                     overflow: "hidden",
                     background: "var(--bg)",
                   }
-                : isHidden
+                : hide || !rect
                 ? { display: "none" }
                 : {
-                    minHeight: 200,
-                    minWidth: 0,
+                    position: "absolute",
+                    top: `calc(${rect.top * 100}% + ${PAD}px)`,
+                    left: `calc(${rect.left * 100}% + ${PAD}px)`,
+                    width: `calc(${rect.width * 100}% - ${GAP}px)`,
+                    height: `calc(${rect.height * 100}% - ${GAP}px)`,
                     border: `1px solid ${borderColor}`,
                     ...lockedRing,
                     borderRadius: 4,
                     overflow: "hidden",
                   };
               return (
-                <div
+                <TerminalTile
                   key={pane.paneId}
-                  id={`terminal-pane-${pane.windowId}`}
+                  pane={pane}
                   style={wrapperStyle}
+                  hidden={!isMax && (hide || !rect)}
+                  onReorder={doReorder}
                 >
                   <TerminalPane
                     pane={pane}
                     title={titleFor(pane)}
                     maximized={isMax}
                     locked={locked}
+                    hasCustomName={customNameFor(pane) != null}
                     onToggleLock={() => toggleLock(pane.workspaceId, pane.windowId)}
+                    onRename={(name) =>
+                      setTerminalName(pane.workspaceId, pane.windowId, name)
+                    }
                     onRemove={() => handleRemove(pane.paneId)}
                     onToggleMinimize={() => toggleMinimize(pane.paneId)}
                     onToggleMaximize={() => toggleMaximize(pane.paneId)}
                     highlighted={highlightedWindowId === pane.windowId}
                     onHighlightDone={onHighlightDone}
                   />
-                </div>
+                </TerminalTile>
               );
             })}
+            {maxId == null &&
+              rowDividers.map((d) => (
+                <ResizeDivider
+                  key={`rd-${d.aRi}-${d.bRi}`}
+                  orientation="row"
+                  rectStyle={{
+                    left: PAD,
+                    right: PAD,
+                    top: `calc(${d.y * 100}% - ${PAD}px)`,
+                    height: GAP,
+                  }}
+                  onPointerDown={(e) => beginRowResize(e, d.aRi, d.bRi)}
+                />
+              ))}
+            {maxId == null &&
+              colDividers.map((d) => (
+                <ResizeDivider
+                  key={`cd-${d.ri}-${d.aTi}-${d.bTi}`}
+                  orientation="col"
+                  rectStyle={{
+                    top: `calc(${d.y0 * 100}% + ${PAD}px)`,
+                    height: `calc(${(d.y1 - d.y0) * 100}% - ${GAP}px)`,
+                    left: `calc(${d.x * 100}% - ${PAD}px)`,
+                    width: GAP,
+                  }}
+                  onPointerDown={(e) => beginColResize(e, d.ri, d.aTi, d.bTi)}
+                />
+              ))}
           </div>
           {minimizedPanes.length > 0 && (
             <div

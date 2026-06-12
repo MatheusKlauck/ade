@@ -8,7 +8,74 @@ export const DEFAULTS: Record<string, string> = {
   startup_command: "",
   startup_delay_secs: "3",
   sync_interval_secs: "30",
+  terminal_presets: "[]",
+  default_preset_id: "",
 };
+
+/** A named terminal launch config. Picking a preset when opening a terminal
+ * runs `openCommands` (one after another) after `delaySecs` and, when the
+ * terminal is tied to a card, optionally injects the task prompt (`injectTask`).
+ * `closeCommands` run when the terminal is closed (manually, or — for the
+ * workspace default preset — when the card moves to Done). Stored per-workspace
+ * as a JSON array in the `terminal_presets` setting. */
+export interface TerminalPreset {
+  id: string;
+  name: string;
+  openCommands: string[];
+  closeCommands: string[];
+  delaySecs: number;
+  injectTask: boolean;
+}
+
+/** Parse the stored JSON into a clean preset list, dropping anything malformed
+ * so one bad record can't blank the whole picker. */
+export function parsePresets(raw: string | null): TerminalPreset[] {
+  if (!raw) return [];
+  let arr: unknown;
+  try {
+    arr = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.flatMap((item): TerminalPreset[] => {
+    if (!item || typeof item !== "object") return [];
+    const o = item as Record<string, unknown>;
+    if (typeof o.id !== "string" || typeof o.name !== "string") return [];
+    // Open commands: prefer the list; migrate a legacy single `command` string
+    // into a one-element list so old stored presets keep working.
+    const openCommands = Array.isArray(o.openCommands)
+      ? o.openCommands.filter((c): c is string => typeof c === "string")
+      : typeof o.command === "string" && o.command
+        ? [o.command]
+        : [];
+    const closeCommands = Array.isArray(o.closeCommands)
+      ? o.closeCommands.filter((c): c is string => typeof c === "string")
+      : [];
+    return [
+      {
+        id: o.id,
+        name: o.name,
+        openCommands,
+        closeCommands,
+        delaySecs:
+          typeof o.delaySecs === "number" && o.delaySecs >= 0 ? o.delaySecs : 0,
+        injectTask: o.injectTask === true,
+      },
+    ];
+  });
+}
+
+/** Resolve the workspace's default preset object, or null when none is set or
+ * the stored id no longer matches a preset. Exported so non-hook callers (e.g.
+ * App.tsx scheduleStartupSequence) can read it from the store snapshot. */
+export function getDefaultPreset(s: {
+  presets: TerminalPreset[];
+  defaultPresetId: string | null;
+}): TerminalPreset | null {
+  if (!s.defaultPresetId) return null;
+  return s.presets.find((p) => p.id === s.defaultPresetId) ?? null;
+}
 
 interface SettingsState {
   workspaceId: string | null;
@@ -17,6 +84,8 @@ interface SettingsState {
   startupCommand: string;
   startupDelay: string;
   syncInterval: string;
+  presets: TerminalPreset[];
+  defaultPresetId: string | null;
   ghTokenDisplay: string;
   loaded: boolean;
 
@@ -26,6 +95,8 @@ interface SettingsState {
   setStartupCommand: (cmd: string) => Promise<void>;
   setStartupDelay: (secs: string) => Promise<void>;
   setSyncInterval: (secs: string) => Promise<void>;
+  setPresets: (presets: TerminalPreset[]) => Promise<void>;
+  setDefaultPreset: (id: string | null) => Promise<void>;
   setGhToken: (token: string) => Promise<string>; // returns login
 }
 
@@ -36,6 +107,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   startupCommand: DEFAULTS.startup_command,
   startupDelay: DEFAULTS.startup_delay_secs,
   syncInterval: DEFAULTS.sync_interval_secs,
+  presets: [],
+  defaultPresetId: null,
   ghTokenDisplay: "",
   loaded: false,
 
@@ -44,12 +117,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // active workspace changed while the IPC calls were in flight.
   load: async (workspaceId: string) => {
     set({ workspaceId, loaded: false });
-    const [t, a, sc, sd, si, tk] = await Promise.all([
+    const [t, a, sc, sd, si, pr, dp, tk] = await Promise.all([
       settingGet(workspaceId, "theme"),
       settingGet(workspaceId, "accent"),
       settingGet(workspaceId, "startup_command"),
       settingGet(workspaceId, "startup_delay_secs"),
       settingGet(workspaceId, "sync_interval_secs"),
+      settingGet(workspaceId, "terminal_presets"),
+      settingGet(workspaceId, "default_preset_id"),
       settingGet(workspaceId, "github_token_display"),
     ]);
     if (get().workspaceId !== workspaceId) return; // superseded by a newer load
@@ -59,6 +134,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       startupCommand: sc ?? DEFAULTS.startup_command,
       startupDelay: sd ?? DEFAULTS.startup_delay_secs,
       syncInterval: si ?? DEFAULTS.sync_interval_secs,
+      presets: parsePresets(pr),
+      defaultPresetId: dp ? dp : null,
       ghTokenDisplay: tk ?? "",
       loaded: true,
     });
@@ -102,6 +179,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const wid = get().workspaceId;
     set({ syncInterval: String(val) });
     if (wid) await settingSet(wid, "sync_interval_secs", String(val));
+  },
+
+  setPresets: async (presets: TerminalPreset[]) => {
+    const wid = get().workspaceId;
+    set({ presets });
+    if (wid) await settingSet(wid, "terminal_presets", JSON.stringify(presets));
+  },
+
+  setDefaultPreset: async (id: string | null) => {
+    const wid = get().workspaceId;
+    set({ defaultPresetId: id });
+    if (wid) await settingSet(wid, "default_preset_id", id ?? "");
   },
 
   setGhToken: async (token: string) => {
