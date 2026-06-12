@@ -2,7 +2,7 @@ use crate::board_pos::{append_position, insert_between, needs_rebalance, rebalan
 use crate::error::AdeError;
 use crate::gh::client::GitHubClient;
 use crate::gh::types::ColumnName;
-use crate::models::{BoardColumn, BoardGetResult, Card};
+use crate::models::{BoardGetResult, Card};
 use crate::notify::emit_notify;
 use crate::sync::outbox;
 use chrono::Utc;
@@ -11,31 +11,13 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tauri::State;
 
-use crate::gitlocal;
-use crate::tmux;
-
 #[tauri::command]
 pub async fn board_get(
     workspace_id: String,
     state: State<'_, Arc<crate::AppState>>,
 ) -> Result<BoardGetResult, AdeError> {
-    let columns: Vec<BoardColumn> =
-        sqlx::query_as::<_, BoardColumn>(
-            "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ? ORDER BY position",
-        )
-        .bind(&workspace_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(AdeError::Db)?;
-
-    let cards: Vec<Card> =
-        sqlx::query_as::<_, Card>(
-            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE workspace_id = ? ORDER BY position",
-        )
-        .bind(&workspace_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(AdeError::Db)?;
+    let columns = crate::repo::columns_for_workspace(&state.db, &workspace_id).await?;
+    let cards = crate::repo::cards_for_workspace(&state.db, &workspace_id).await?;
 
     Ok(BoardGetResult { columns, cards })
 }
@@ -76,13 +58,7 @@ pub async fn card_create(
     .await
     .map_err(AdeError::Db)?;
 
-    let card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
+    let card = crate::repo::card_by_id_required(&state.db, &id).await?;
 
     emit_board(&app, &workspace_id, &state.db).await?;
     Ok(card)
@@ -118,13 +94,7 @@ pub async fn card_update(
             .map_err(AdeError::Db)?;
     }
 
-    let card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-    )
-    .bind(&card_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
+    let card = crate::repo::card_by_id_required(&state.db, &card_id).await?;
 
     emit_board(&app, &card.workspace_id, &state.db).await?;
     Ok(card)
@@ -298,13 +268,7 @@ pub async fn card_move(
 
     tx.commit().await.map_err(AdeError::Db)?;
 
-    let mut card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-    )
-    .bind(&card_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
+    let mut card: Card = crate::repo::card_by_id_required(&state.db, &card_id).await?;
 
     emit_board(&app, &workspace_id, &state.db).await?;
 
@@ -363,303 +327,18 @@ pub async fn card_move(
         Some(r) => r.get::<String, _>("name"),
         None => return Ok(card),
     };
+    let target_column = ColumnName::try_from_str(&col_name);
 
-    // Move to Done: close the card's terminal. Mirrors the move-to-Doing launch
-    // below — the backend owns the terminal lifecycle, so this fires for every
-    // move path (drag or programmatic), not just the optimistic UI close in
-    // Board.tsx. We kill the tmux window (so the agent process actually stops,
-    // not just the viewer), drop any open PTY panes, clear the link, and tell
-    // the frontend to remove the pane.
-    if col_name == "Done" {
-        if let Some(window_id) = card.terminal_window_id.clone() {
-            // Run the default preset's close commands into the still-live tmux
-            // window before we tear it down. Best-effort: any failure (no default
-            // preset, malformed JSON, tmux gone) just skips to the kill below.
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct PresetClose {
-                id: String,
-                #[serde(default)]
-                close_commands: Vec<String>,
-            }
-            let default_id = crate::ipc::settings::workspace_setting_value(
-                &state.db,
-                &card.workspace_id,
-                "default_preset_id",
-            )
-            .await
-            .unwrap_or_default();
-            if !default_id.is_empty() {
-                let raw = crate::ipc::settings::workspace_setting_value(
-                    &state.db,
-                    &card.workspace_id,
-                    "terminal_presets",
-                )
-                .await
-                .unwrap_or_default();
-                if let Ok(list) = serde_json::from_str::<Vec<PresetClose>>(&raw) {
-                    if let Some(p) = list.into_iter().find(|p| p.id == default_id) {
-                        let cmds: Vec<String> = p
-                            .close_commands
-                            .into_iter()
-                            .map(|c| c.trim().to_string())
-                            .filter(|c| !c.is_empty())
-                            .collect();
-                        if !cmds.is_empty() {
-                            for c in &cmds {
-                                let _ = tmux::send_keys(&window_id, c);
-                            }
-                            // Give the commands a moment to start before the kill.
-                            tokio::time::sleep(std::time::Duration::from_millis(400))
-                                .await;
-                        }
-                    }
-                }
-            }
-
-            // Drop PTY panes for this window first (kills each viewer process).
-            // Scope the lock so it's released before the awaits below.
-            {
-                if let Ok(mut reg) = state.pty.lock() {
-                    let keys: Vec<String> = reg
-                        .iter()
-                        .filter(|(_, p)| {
-                            p.window_id == window_id && p.workspace_id == card.workspace_id
-                        })
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    for k in keys {
-                        if let Some(pane) = reg.remove(&k) {
-                            let _ = pane.close();
-                        }
-                    }
-                }
-            }
-            // Kill the tmux window itself. Best-effort: it may already be gone.
-            let _ = tmux::kill_window(&window_id);
-
-            // Clear the link so a later move back to Doing spawns a fresh window.
-            sqlx::query("UPDATE card SET terminal_window_id = NULL WHERE id = ?")
-                .bind(&card_id)
-                .execute(&state.db)
-                .await
-                .map_err(AdeError::Db)?;
-            card.terminal_window_id = None;
-
-            // Tell the frontend to drop the pane from its UI.
-            let _ = app.emit(
-                "evt:terminal_close",
-                serde_json::json!({
-                    "workspace_id": card.workspace_id,
-                    "window_id": window_id,
-                }),
-            );
-
-            // Board changed (terminal_window_id cleared).
-            emit_board(&app, &card.workspace_id, &state.db).await?;
-        }
+    if target_column == Some(ColumnName::Done) {
+        super::card_lifecycle::on_moved_to_done(&state.db, &app, &state.pty, &mut card).await?;
         return Ok(card);
     }
 
-    if col_name != "Doing" {
+    if target_column != Some(ColumnName::Doing) {
         return Ok(card);
     }
 
-    // 2. Look up workspace for this card
-    let ws_row = sqlx::query(
-        "SELECT slug, root_path, github_owner, github_repo FROM workspace WHERE id = ?",
-    )
-    .bind(&card.workspace_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
-
-    let ws = match ws_row {
-        Some(r) => r,
-        None => return Ok(card),
-    };
-    let slug: String = ws.get("slug");
-    let root_path: String = ws.get("root_path");
-    let github_owner: Option<String> = ws.get("github_owner");
-    let github_repo: Option<String> = ws.get("github_repo");
-
-    // 3. If card already has a terminal_window_id and it's alive, just re-focus it
-    if let Some(ref wid) = card.terminal_window_id {
-        if tmux::window_alive(&slug, wid).unwrap_or(false) {
-            let _ = app.emit(
-                "evt:terminal_focus",
-                serde_json::json!({
-                    "workspace_id": card.workspace_id,
-                    "window_id": wid,
-                }),
-            );
-            return Ok(card);
-        }
-    }
-
-    // 4. Ensure base tmux session exists before creating windows
-    if let Err(e) = tmux::ensure_base_session(&slug, &root_path) {
-        emit_notify(
-            &app,
-            "warn",
-            "TMUX_SESSION_FAILED",
-            &format!("failed to create tmux session: {}", e),
-        );
-        return Ok(card);
-    }
-
-    // 5. Branch: GitHub-linked card vs local card
-    let window_id: String =
-        if let Some(issue_number) = card.github_issue_number.filter(|_| card.source == "github") {
-            // GitHub-linked card
-            let fallback = format!("issue-{}", issue_number);
-            let winname = format!(
-                "{}-{}",
-                issue_number,
-                gitlocal::slugify(&card.title, &fallback)
-            );
-
-            // Construct html_url
-            let html_url = match (&github_owner, &github_repo) {
-                (Some(owner), Some(repo)) => {
-                    format!(
-                        "https://github.com/{}/{}/issues/{}",
-                        owner, repo, issue_number
-                    )
-                }
-                _ => format!("https://github.com/issues/{}", issue_number),
-            };
-
-            // Create issue window with env vars
-            let wid = match tmux::new_issue_window(
-                &slug,
-                &root_path,
-                &winname,
-                issue_number as u64,
-                &card.title,
-                &html_url,
-            ) {
-                Ok(w) => w,
-                Err(e) => {
-                    emit_notify(
-                        &app,
-                        "warn",
-                        "TMUX_WINDOW_FAILED",
-                        &format!("failed to create tmux issue window: {}", e),
-                    );
-                    return Ok(card);
-                }
-            };
-
-            // Auto-branch: check per-workspace setting (default true)
-            let auto_branch: bool = crate::ipc::settings::workspace_setting_value(
-                &state.db,
-                &card.workspace_id,
-                "auto_branch",
-            )
-            .await
-            .map(|val| val != "false")
-            .unwrap_or(true);
-
-            if auto_branch {
-                // The repo may live in a subdirectory of the workspace folder
-                // (e.g. `test/` → `test/zkDash`); create the branch there, not
-                // at the container root.
-                let repo_path = gitlocal::find_repo_path(&root_path)
-                    .unwrap_or_else(|| root_path.clone());
-                match gitlocal::prepare_branch(&repo_path, issue_number as u64) {
-                    Ok(gitlocal::BranchOutcome::ReusedExisting) => {
-                        emit_notify(
-                            &app,
-                            "info",
-                            "BRANCH_EXISTS_REUSED",
-                            &format!(
-                                "branch issue-{} already exists, checking it out",
-                                issue_number
-                            ),
-                        );
-                    }
-                    Ok(gitlocal::BranchOutcome::SkippedDirty) => {
-                        emit_notify(
-                            &app,
-                            "warn",
-                            "BRANCH_DIRTY_WORKTREE",
-                            &format!(
-                                "worktree has uncommitted changes; branch issue-{} not created",
-                                issue_number
-                            ),
-                        );
-                    }
-                    Ok(gitlocal::BranchOutcome::Created) => {
-                        // No notification on success
-                    }
-                    Err(e) => {
-                        emit_notify(
-                            &app,
-                            "warn",
-                            "BRANCH_FAILED",
-                            &format!("failed to prepare branch issue-{}: {}", issue_number, e),
-                        );
-                    }
-                }
-            }
-
-            wid
-        } else {
-            // Local card: use new_app_window (no env vars, no issue window name)
-            let id8 = &card.id[..card.id.len().min(8)];
-            let fallback = format!("card-{}", id8);
-            let winname = gitlocal::slugify(&card.title, &fallback);
-
-            let wid = match tmux::new_app_window(&slug, &root_path) {
-                Ok(w) => w,
-                Err(e) => {
-                    emit_notify(
-                        &app,
-                        "warn",
-                        "TMUX_WINDOW_FAILED",
-                        &format!("failed to create tmux app window: {}", e),
-                    );
-                    return Ok(card);
-                }
-            };
-
-            // Rename the window to the slugified name (new_app_window doesn't accept a name)
-            // tmux rename-window is safe to use with the window id
-            let _ = std::process::Command::new("tmux")
-                .arg("rename-window")
-                .arg("-t")
-                .arg(&wid)
-                .arg(&winname)
-                .output();
-
-            wid
-        };
-
-    // 6. Store terminal_window_id on the card
-    sqlx::query("UPDATE card SET terminal_window_id = ? WHERE id = ?")
-        .bind(&window_id)
-        .bind(&card_id)
-        .execute(&state.db)
-        .await
-        .map_err(AdeError::Db)?;
-
-    // 7. Emit terminal_focus event. This is a window freshly created for a card
-    // just moved to Doing, so carry the card id: the frontend injects the task
-    // title + description as the agent's prompt *only* for fresh launches. The
-    // re-focus/reuse path above intentionally omits card_id so an already-running
-    // task is never re-injected.
-    let _ = app.emit(
-        "evt:terminal_focus",
-        serde_json::json!({
-            "workspace_id": card.workspace_id,
-            "window_id": window_id,
-            "card_id": card_id,
-        }),
-    );
-
-    // 8. Re-emit board (terminal_window_id changed)
-    emit_board(&app, &card.workspace_id, &state.db).await?;
+    super::card_lifecycle::on_moved_to_doing(&state.db, &app, &card).await?;
 
     Ok(card)
 }
@@ -671,14 +350,9 @@ pub async fn card_promote(
     app: tauri::AppHandle,
 ) -> Result<Card, AdeError> {
     // 1. Load card
-    let card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-    )
-    .bind(&card_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AdeError::Db)?
-    .ok_or_else(|| AdeError::Other("card not found".to_string()))?;
+    let card: Card = crate::repo::card_by_id(&state.db, &card_id)
+        .await?
+        .ok_or_else(|| AdeError::Other("card not found".to_string()))?;
 
     // 2. Only local cards can be promoted
     if card.source != "local" {
@@ -705,7 +379,7 @@ pub async fn card_promote(
         .ok_or_else(|| AdeError::Other("GitHub token not found in keychain".to_string()))?;
 
     // 5. Create GitHubClient
-    let gh = GitHubClient::new("https://api.github.com".to_string(), token);
+    let gh = GitHubClient::new(crate::gh::client::GITHUB_API_BASE.to_string(), token);
 
     // 6. Create the GitHub issue
     let issue = gh
@@ -737,14 +411,10 @@ pub async fn card_promote(
 
     let col_name_str: Option<String> = col_row.map(|r| r.get::<String, _>("name"));
 
-    let column_name = match col_name_str.as_deref() {
-        Some("Backlog") => ColumnName::Backlog,
-        Some("Doing") => ColumnName::Doing,
-        Some("Paused") => ColumnName::Paused,
-        Some("PR") => ColumnName::Pr,
-        Some("Done") => ColumnName::Done,
-        _ => ColumnName::Backlog,
-    };
+    let column_name = col_name_str
+        .as_deref()
+        .and_then(ColumnName::try_from_str)
+        .unwrap_or(ColumnName::Backlog);
 
     let mut labels_vec: Vec<String> = Vec::new();
 
@@ -753,15 +423,11 @@ pub async fn card_promote(
             // No label needed
         }
         ColumnName::Doing | ColumnName::Paused | ColumnName::Pr => {
-            let label = format!(
-                "kanban:{}",
-                match column_name {
-                    ColumnName::Doing => "doing",
-                    ColumnName::Paused => "paused",
-                    ColumnName::Pr => "pr",
-                    _ => unreachable!(),
-                }
-            );
+            // Non-Backlog open columns always carry a kanban label.
+            let label = column_name
+                .kanban_label()
+                .expect("open non-Backlog columns have a kanban label")
+                .to_string();
             gh.add_label(&owner, &repo, issue.number, &label)
                 .await
                 .map_err(|e| {
@@ -796,39 +462,18 @@ pub async fn card_promote(
     emit_board(&app, &card.workspace_id, &state.db).await?;
 
     // 10. Return the updated card
-    let updated_card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-    )
-    .bind(&card_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
+    let updated_card = crate::repo::card_by_id_required(&state.db, &card_id).await?;
 
     Ok(updated_card)
 }
 
-async fn emit_board(
+pub(crate) async fn emit_board(
     app: &tauri::AppHandle,
     workspace_id: &str,
     pool: &crate::db::DbPool,
 ) -> Result<(), AdeError> {
-    let columns: Vec<BoardColumn> =
-        sqlx::query_as::<_, BoardColumn>(
-            "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ? ORDER BY position",
-        )
-        .bind(workspace_id)
-        .fetch_all(pool)
-        .await
-        .map_err(AdeError::Db)?;
-
-    let cards: Vec<Card> =
-        sqlx::query_as::<_, Card>(
-            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE workspace_id = ? ORDER BY position",
-        )
-        .bind(workspace_id)
-        .fetch_all(pool)
-        .await
-        .map_err(AdeError::Db)?;
+    let columns = crate::repo::columns_for_workspace(pool, workspace_id).await?;
+    let cards = crate::repo::cards_for_workspace(pool, workspace_id).await?;
 
     let payload = serde_json::json!({
         "workspace_id": workspace_id,
@@ -843,6 +488,7 @@ async fn emit_board(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::BoardColumn;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     async fn test_pool() -> (crate::db::DbPool, tempfile::TempDir) {

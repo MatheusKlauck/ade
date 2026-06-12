@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -7,15 +7,18 @@ import {
   dropTargetForElements,
 } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import {
+  boardGet,
   cardMove,
   terminalClose,
   terminalResize,
   terminalWrite,
 } from "../lib/ipc";
+import { COL_DOING } from "../lib/columns";
 import { useBoardStore } from "../store/board";
 import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
+import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
 import { LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
 
 interface TerminalPaneProps {
@@ -49,22 +52,7 @@ const iconBtnStyle: React.CSSProperties = {
   lineHeight: 1,
 };
 
-const menuItemStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  width: "100%",
-  padding: "6px 10px",
-  background: "transparent",
-  border: "none",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--fg)",
-  cursor: "pointer",
-  fontSize: 13,
-  textAlign: "left",
-};
-
-export default function TerminalPane({
+function TerminalPane({
   pane,
   title,
   maximized,
@@ -78,8 +66,8 @@ export default function TerminalPane({
   highlighted,
   onHighlightDone,
 }: TerminalPaneProps) {
-  // Position of the header context menu (right-click), or null when closed.
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Header context menu (right-click); Escape-to-dismiss is built in.
+  const { menu, open: openMenu, close: closeMenu } = useContextMenu();
   // Draft custom name while the header title is being edited, or null when not.
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -165,17 +153,27 @@ export default function TerminalPane({
       }
     };
 
-    // Resize observer
+    // Resize observer. Divider drags fire this per animation frame for every
+    // affected pane; fit() reflows the whole xterm buffer and terminalResize
+    // is an IPC round-trip, so debounce to the trailing edge and skip the IPC
+    // call when the grid size didn't actually change.
+    let resizeTimer: number | null = null;
+    let lastDims: { cols: number; rows: number } | null = null;
     const ro = new ResizeObserver(() => {
-      fit.fit();
-      const dims = fit.proposeDimensions();
-      if (dims) {
-        terminalResize(
-          pane.paneId,
-          Math.floor(dims.cols),
-          Math.floor(dims.rows)
-        ).catch(() => {});
-      }
+      if (resizeTimer != null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        const dims = fit.proposeDimensions();
+        if (!dims) return;
+        fit.fit();
+        const cols = Math.floor(dims.cols);
+        const rows = Math.floor(dims.rows);
+        if (lastDims && lastDims.cols === cols && lastDims.rows === rows) {
+          return;
+        }
+        lastDims = { cols, rows };
+        terminalResize(pane.paneId, cols, rows).catch(() => {});
+      }, 80);
     });
     if (containerRef.current) {
       ro.observe(containerRef.current);
@@ -199,6 +197,7 @@ export default function TerminalPane({
 
     return () => {
       ro.disconnect();
+      if (resizeTimer != null) window.clearTimeout(resizeTimer);
       focusEl?.removeEventListener("focusin", onFocusIn);
       focusEl?.removeEventListener("focusout", onFocusOut);
       const ts = useTerminalsStore.getState();
@@ -267,12 +266,20 @@ export default function TerminalPane({
 
         // Move card to "Doing" if not already there.
         const board = useBoardStore.getState().boards[pane.workspaceId];
-        const doingCol = board?.columns.find(
-          (c) => c.name.toLowerCase() === "doing"
-        );
+        const doingCol = board?.columns.find((c) => c.name === COL_DOING);
         if (doingCol && doingCol.id !== currentColumnId) {
           useBoardStore.getState().optimisticMove(pane.workspaceId, cardId, doingCol.id);
-          cardMove(cardId, doingCol.id).catch(() => {});
+          cardMove(cardId, doingCol.id).catch(() => {
+            // Backend rejected the move: re-fetch so the optimistic update
+            // doesn't leave the card stranded in Doing.
+            boardGet(pane.workspaceId)
+              .then((b) =>
+                useBoardStore
+                  .getState()
+                  .setBoard(pane.workspaceId, b.columns, b.cards)
+              )
+              .catch(() => {});
+          });
         }
       },
     });
@@ -304,22 +311,12 @@ export default function TerminalPane({
   const startRename = () => {
     // Seed the draft with the current title so it can be edited in place.
     setRenameDraft(title);
-    setMenu(null);
+    closeMenu();
   };
   const commitRename = () => {
     if (renameDraft != null) onRename?.(renameDraft);
     setRenameDraft(null);
   };
-
-  // Dismiss the header context menu on Escape.
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [menu]);
 
   return (
     <div
@@ -329,13 +326,14 @@ export default function TerminalPane({
         flexDirection: "column",
         height: "100%",
         opacity: reordering ? 0.5 : 1,
+        transition: "opacity var(--dur-instant) var(--ease-out-quart)",
       }}
     >
       <div
         ref={headerRef}
         onContextMenu={(e) => {
           e.preventDefault();
-          setMenu({ x: e.clientX, y: e.clientY });
+          openMenu(e.clientX, e.clientY);
         }}
         style={{
           display: "flex",
@@ -430,31 +428,7 @@ export default function TerminalPane({
       </div>
 
       {menu && (
-        <>
-          {/* Full-screen backdrop swallows the next click/right-click so the
-              menu closes when you act anywhere outside it. */}
-          <div
-            onClick={() => setMenu(null)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setMenu(null);
-            }}
-            style={{ position: "fixed", inset: 0, zIndex: 1000 }}
-          />
-          <div
-            style={{
-              position: "fixed",
-              top: menu.y,
-              left: menu.x,
-              zIndex: 1001,
-              minWidth: 150,
-              padding: 4,
-              background: "var(--surface-raised)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-md)",
-              boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
-            }}
-          >
+        <ContextMenu position={menu} onClose={closeMenu} minWidth={150}>
             <button
               style={menuItemStyle}
               onMouseEnter={(e) => {
@@ -480,7 +454,7 @@ export default function TerminalPane({
                 onClick={() => {
                   // An empty name clears the override; title reverts to the card.
                   onRename?.("");
-                  setMenu(null);
+                  closeMenu();
                 }}
               >
                 <RefreshIcon size={14} />
@@ -497,14 +471,13 @@ export default function TerminalPane({
               }}
               onClick={() => {
                 onToggleLock?.();
-                setMenu(null);
+                closeMenu();
               }}
             >
               {locked ? <LockOpenIcon size={14} /> : <LockIcon size={14} />}
               <span>{locked ? "Unlock" : "Lock"}</span>
             </button>
-          </div>
-        </>
+        </ContextMenu>
       )}
       <div
         ref={containerRef}
@@ -520,3 +493,7 @@ export default function TerminalPane({
     </div>
   );
 }
+
+// Memoized so divider drags (which re-render TerminalArea per pointermove)
+// don't re-render every pane; TerminalArea passes stable callbacks.
+export default memo(TerminalPane);

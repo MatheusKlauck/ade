@@ -4,44 +4,34 @@ import {
   useCallback,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
-  type CSSProperties,
 } from "react";
-import { useSettingsStore, type TerminalPreset } from "../store/settings";
+import { useSettingsStore } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
+import { useModalFocus } from "../lib/useModalFocus";
+import AppearanceTab from "./settings/AppearanceTab";
+import PresetsEditor from "./settings/PresetsEditor";
+import {
+  FieldStatus,
+  errorTextStyle,
+  fieldStyle,
+  sectionLabelStyle,
+  type SaveState,
+} from "./settings/shared";
 
 interface SettingsProps {
   onClose: () => void;
   onSaved: (login: string) => void;
 }
 
-/** Shared input styling for the terminal-preset editor rows. */
-const presetInputStyle: CSSProperties = {
-  boxSizing: "border-box",
-  padding: "6px 10px",
-  fontSize: 13,
-  background: "var(--input-bg)",
-  border: "1px solid var(--input-border)",
-  borderRadius: 4,
-  color: "var(--fg)",
-};
-
-/** Multi-line command list inside a preset row. */
-const presetTextareaStyle: CSSProperties = {
-  ...presetInputStyle,
-  width: "100%",
-  minHeight: 52,
-  resize: "vertical",
-  fontFamily: "var(--font-mono)",
-};
-
-/** Label wrapping a preset command textarea. */
-const presetFieldLabelStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  fontSize: 12,
-  color: "var(--muted)",
-};
+/** The settings modal is split into one tab per concern-domain so the panel
+ * never becomes a single scrolling wall of unrelated controls. */
+type TabId = "appearance" | "terminal" | "sync" | "account";
+const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
+  { id: "appearance", label: "Appearance" },
+  { id: "terminal", label: "Terminal" },
+  { id: "sync", label: "Sync" },
+  { id: "account", label: "Account" },
+];
 
 /** Normalize anything thrown across the IPC boundary into a readable string.
  * Tauri rejects with the serialized `AdeError` (`{ code, message }`), a plain
@@ -63,190 +53,141 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const activeWorkspaceName =
     workspaces.find((w) => w.id === activeWorkspaceId)?.name ?? "";
-  const theme = useSettingsStore((s) => s.theme);
-  const accent = useSettingsStore((s) => s.accent);
   const syncInterval = useSettingsStore((s) => s.syncInterval);
-  const presets = useSettingsStore((s) => s.presets);
-  const defaultPresetId = useSettingsStore((s) => s.defaultPresetId);
   const ghTokenDisplay = useSettingsStore((s) => s.ghTokenDisplay);
-  const setTheme = useSettingsStore((s) => s.setTheme);
-  const setAccent = useSettingsStore((s) => s.setAccent);
   const setSyncInterval = useSettingsStore((s) => s.setSyncInterval);
-  const setPresets = useSettingsStore((s) => s.setPresets);
-  const setDefaultPreset = useSettingsStore((s) => s.setDefaultPreset);
   const setGhToken = useSettingsStore((s) => s.setGhToken);
 
+  const [activeTab, setActiveTab] = useState<TabId>("appearance");
   const [localSyncInterval, setLocalSyncInterval] = useState(syncInterval);
-  const [localPresets, setLocalPresets] = useState<TerminalPreset[]>(presets);
   const [newToken, setNewToken] = useState("");
   const [showTokenInput, setShowTokenInput] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Errors are scoped to their field so a sync-validation message and a token
+  // failure can't overwrite each other (each renders beside its own control).
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  // Single-open accordion for the Terminal tab. Lives here (not in
+  // PresetsEditor) so the expanded row survives switching tabs and back.
+  const [expandedPresetId, setExpandedPresetId] = useState<string | null>(null);
+  // Per-field auto-save confirmation, keyed by control ("theme", "sync", …).
+  const [fieldStatus, setFieldStatus] = useState<Record<string, SaveState>>({});
 
-  const panelRef = useRef<HTMLDivElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const statusTimers = useRef<Map<string, number>>(new Map());
 
   // Modal focus management: pull focus into the dialog on open, return it to
-  // whatever was focused before (the gear button) on close.
-  useEffect(() => {
-    restoreFocusRef.current = document.activeElement as HTMLElement | null;
-    const panel = panelRef.current;
-    const first = panel?.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  // the gear button on close, Esc closes, and Tab is trapped in the panel.
+  const { panelRef, handleKeyDown } = useModalFocus(onClose);
+
+  // Flash a transient "Saved" / "Not saved" beside a field, then clear it.
+  // Saved confirmations fade quickly; failures linger so they're not missed.
+  const flashStatus = useCallback((field: string, state: SaveState) => {
+    setFieldStatus((m) => ({ ...m, [field]: state }));
+    const prev = statusTimers.current.get(field);
+    if (prev) window.clearTimeout(prev);
+    const id = window.setTimeout(
+      () => {
+        setFieldStatus((m) => {
+          const next = { ...m };
+          delete next[field];
+          return next;
+        });
+        statusTimers.current.delete(field);
+      },
+      state === "saved" ? 1800 : 4000
     );
-    (first ?? panel)?.focus();
-    return () => restoreFocusRef.current?.focus?.();
+    statusTimers.current.set(field, id);
   }, []);
 
-  // Esc closes; Tab is trapped so keyboard focus can't escape behind the scrim.
-  const handleKeyDown = useCallback(
-    (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const nodes = panel.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-      );
-      if (nodes.length === 0) return;
-      const first = nodes[0];
-      const last = nodes[nodes.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    },
-    [onClose]
-  );
+  // Cancel any pending status timers if the modal closes mid-flash.
+  useEffect(() => {
+    const timers = statusTimers.current;
+    return () => {
+      for (const id of timers.values()) window.clearTimeout(id);
+    };
+  }, []);
+
+  // Scroll affordance: a fade at the bottom of the scroll region signals there's
+  // more content below the fold, so the sticky footer never feels like the end.
+  const [showBottomFade, setShowBottomFade] = useState(false);
+  const updateFade = useCallback(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    setShowBottomFade(el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+  }, []);
 
   // Sync local state from store on mount
   useEffect(() => {
     setLocalSyncInterval(syncInterval);
-    setLocalPresets(presets);
-  }, [syncInterval, presets]);
+  }, [syncInterval]);
 
-  const handleThemeChange = useCallback(
-    async (newTheme: string) => {
-      try {
-        await setTheme(newTheme);
-      } catch {
-        // IPC failure in dev mode is non-fatal
-      }
-    },
-    [setTheme]
-  );
-
-  const handleAccentChange = useCallback(
-    async (color: string) => {
-      try {
-        await setAccent(color);
-      } catch {
-        // IPC failure in dev mode is non-fatal
-      }
-    },
-    [setAccent]
-  );
+  // Recompute the scroll fade whenever the visible content changes (tab switch,
+  // token input toggling open). The Terminal tab reports its own reshaping
+  // (preset add/remove) through PresetsEditor's onResize.
+  useEffect(() => {
+    updateFade();
+  }, [activeTab, showTokenInput, ghTokenDisplay, updateFade]);
 
   const handleSyncIntervalBlur = useCallback(async () => {
     const val = parseInt(localSyncInterval, 10);
     if (isNaN(val) || val < 10) {
-      setError("Sync interval must be at least 10 seconds");
+      setSyncError("Enter 10 seconds or more — faster polling hits GitHub rate limits.");
       return;
     }
-    setError(null);
+    setSyncError(null);
     try {
       await setSyncInterval(String(val));
+      flashStatus("sync", "saved");
     } catch {
-      // IPC failure in dev mode is non-fatal
+      flashStatus("sync", "error");
     }
-  }, [localSyncInterval, setSyncInterval]);
-
-  // Persist the given preset list (and mirror it locally). Best-effort: an IPC
-  // failure in dev mode is non-fatal, matching the other setting handlers.
-  const commitPresets = useCallback(
-    async (next: TerminalPreset[]) => {
-      setLocalPresets(next);
-      try {
-        await setPresets(next);
-      } catch {
-        // non-fatal
-      }
-    },
-    [setPresets]
-  );
-
-  // Edit a field locally while typing (persisted on blur via commitPresets).
-  const editPreset = useCallback(
-    (id: string, patch: Partial<TerminalPreset>) => {
-      setLocalPresets((list) =>
-        list.map((p) => (p.id === id ? { ...p, ...patch } : p))
-      );
-    },
-    []
-  );
-
-  const addPreset = useCallback(() => {
-    const preset: TerminalPreset = {
-      id: crypto.randomUUID(),
-      name: "",
-      openCommands: [],
-      closeCommands: [],
-      delaySecs: 0,
-      injectTask: false,
-    };
-    commitPresets([...localPresets, preset]);
-  }, [localPresets, commitPresets]);
-
-  const removePreset = useCallback(
-    (id: string) => {
-      commitPresets(localPresets.filter((p) => p.id !== id));
-      // Drop the default pointer if it referenced the removed preset.
-      if (id === defaultPresetId) setDefaultPreset(null);
-    },
-    [localPresets, commitPresets, defaultPresetId, setDefaultPreset]
-  );
+  }, [localSyncInterval, setSyncInterval, flashStatus]);
 
   // The token input is shown either on first-time setup (no stored token yet)
-  // or when the user clicks "Replace". The Save button follows the same rule.
+  // or when the user clicks "Replace".
   const tokenInputVisible = !ghTokenDisplay || showTokenInput;
 
   const handleTokenReplace = async () => {
     if (!newToken.trim()) return;
     setSaving(true);
-    setError(null);
+    setTokenError(null);
     try {
       const login = await setGhToken(newToken);
       setNewToken("");
       setShowTokenInput(false);
+      flashStatus("account", "saved");
       onSaved(login);
     } catch (e: unknown) {
       // Surface the real backend error. AdeError crosses the IPC boundary as a
       // plain object `{ code, message }` (NOT a JS Error), so `e instanceof
       // Error` is false and we'd otherwise show a useless generic string.
       console.error("token validation failed:", e);
-      setError(formatTokenError(e));
+      setTokenError(formatTokenError(e));
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleTabKeyDown = (
+    e: ReactKeyboardEvent<HTMLButtonElement>,
+    idx: number
+  ) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    const next = (idx + dir + TABS.length) % TABS.length;
+    setActiveTab(TABS[next].id);
+    tabRefs.current[next]?.focus();
   };
 
   return (
     <div
       style={{
         position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: "rgba(0, 0, 0, 0.6)",
+        inset: 0,
+        background: "var(--scrim)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -262,489 +203,332 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
         tabIndex={-1}
         onKeyDown={handleKeyDown}
         style={{
+          display: "flex",
+          flexDirection: "column",
           background: "var(--panel)",
           border: "1px solid var(--border)",
           borderRadius: 8,
-          padding: 24,
-          minWidth: 420,
-          maxWidth: 500,
+          width: 1000,
+          maxWidth: "calc(100vw - 48px)",
           color: "var(--fg)",
-          maxHeight: "85vh",
-          overflowY: "auto",
+          maxHeight: "90vh",
+          overflow: "hidden",
           outline: "none",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3
-          id="settings-title"
-          style={{
-            margin: 0,
-            marginBottom: 4,
-            fontSize: 16,
-            color: "var(--fg)",
-          }}
-        >
-          Settings
-        </h3>
-        <p
-          style={{
-            margin: 0,
-            marginBottom: 20,
-            fontSize: 12,
-            color: "var(--muted)",
-          }}
-        >
-          {activeWorkspaceName
-            ? `Per-workspace · ${activeWorkspaceName}`
-            : "Per-workspace settings"}
-        </p>
-
-        {/* Theme */}
-        <div style={{ marginBottom: 20 }}>
-          <label
+        {/* ── Sticky header: identity + close + tab nav ───────────────────── */}
+        <div style={{ flexShrink: 0, padding: "20px 24px 0" }}>
+          <div
             style={{
-              display: "block",
-              fontSize: 13,
-              color: "var(--muted)",
-              marginBottom: 8,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 12,
             }}
           >
-            Theme
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              onClick={() => handleThemeChange("dark")}
-              style={{
-                padding: "6px 16px",
-                fontSize: 13,
-                background:
-                  theme === "dark" ? "var(--accent)" : "var(--input-bg)",
-                color: theme === "dark" ? "var(--accent-ink)" : "var(--fg)",
-                border:
-                  theme === "dark"
-                    ? "1px solid var(--accent)"
-                    : "1px solid var(--input-border)",
-                borderRadius: 4,
-                cursor: "pointer",
-              }}
-            >
-              Dark
-            </button>
-            <button
-              onClick={() => handleThemeChange("light")}
-              style={{
-                padding: "6px 16px",
-                fontSize: 13,
-                background:
-                  theme === "light" ? "var(--accent)" : "var(--input-bg)",
-                color: theme === "light" ? "var(--accent-ink)" : "var(--fg)",
-                border:
-                  theme === "light"
-                    ? "1px solid var(--accent)"
-                    : "1px solid var(--input-border)",
-                borderRadius: 4,
-                cursor: "pointer",
-              }}
-            >
-              Light
-            </button>
-          </div>
-        </div>
-
-        {/* Accent color */}
-        <div style={{ marginBottom: 20 }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: 13,
-              color: "var(--muted)",
-              marginBottom: 8,
-            }}
-          >
-            Accent Color
-          </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="color"
-              value={accent}
-              onChange={(e) => handleAccentChange(e.target.value)}
-              style={{
-                width: 40,
-                height: 32,
-                padding: 0,
-                border: "1px solid var(--input-border)",
-                borderRadius: 4,
-                background: "var(--input-bg)",
-                cursor: "pointer",
-              }}
-            />
-            <span style={{ fontSize: 13, color: "var(--fg)" }}>{accent}</span>
-          </div>
-        </div>
-
-        {/* Terminal presets */}
-        <div style={{ marginBottom: 20 }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: 13,
-              color: "var(--muted)",
-              marginBottom: 8,
-            }}
-          >
-            Terminal Presets
-          </label>
-          <p
-            style={{
-              margin: "0 0 8px",
-              fontSize: 11,
-              color: "var(--muted)",
-            }}
-          >
-            Named launch configs in the “New terminal” dropdown. Each runs its
-            open commands (in order) after its own delay, and its close commands
-            when the terminal is closed. The default preset is used for
-            card-driven terminals: its open commands run when a card moves to
-            Doing, its close commands when it moves to Done.
-          </p>
-          {localPresets.length === 0 && (
-            <p
-              style={{
-                margin: "0 0 8px",
-                fontSize: 12,
-                color: "var(--muted)",
-              }}
-            >
-              No presets yet.
-            </p>
-          )}
-          {localPresets.map((preset) => (
-            <div
-              key={preset.id}
-              style={{
-                border: "1px solid var(--input-border)",
-                borderRadius: 4,
-                padding: 10,
-                marginBottom: 8,
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  type="text"
-                  value={preset.name}
-                  onChange={(e) =>
-                    editPreset(preset.id, { name: e.target.value })
-                  }
-                  onBlur={() => commitPresets(localPresets)}
-                  placeholder="Name (e.g. claude)"
-                  style={{ ...presetInputStyle, flex: 1 }}
-                />
-                <button
-                  onClick={() => removePreset(preset.id)}
-                  title="Remove preset"
-                  style={{
-                    padding: "0 10px",
-                    fontSize: 13,
-                    background: "var(--input-bg)",
-                    border: "1px solid var(--input-border)",
-                    borderRadius: 4,
-                    color: "var(--status-error)",
-                    cursor: "pointer",
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-              <label style={presetFieldLabelStyle}>
-                Open commands (one per line)
-                <textarea
-                  value={preset.openCommands.join("\n")}
-                  onChange={(e) =>
-                    editPreset(preset.id, {
-                      openCommands: e.target.value.split("\n"),
-                    })
-                  }
-                  onBlur={() => commitPresets(localPresets)}
-                  placeholder={"e.g.\nnvm use 20\nnpm run dev"}
-                  rows={2}
-                  style={presetTextareaStyle}
-                />
-              </label>
-              <label style={presetFieldLabelStyle}>
-                Close commands (one per line)
-                <textarea
-                  value={preset.closeCommands.join("\n")}
-                  onChange={(e) =>
-                    editPreset(preset.id, {
-                      closeCommands: e.target.value.split("\n"),
-                    })
-                  }
-                  onBlur={() => commitPresets(localPresets)}
-                  placeholder={"e.g.\ngit stash"}
-                  rows={2}
-                  style={presetTextareaStyle}
-                />
-              </label>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  flexWrap: "wrap",
-                }}
-              >
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                    color: "var(--muted)",
-                  }}
-                >
-                  Delay
-                  <input
-                    type="number"
-                    min={0}
-                    value={preset.delaySecs}
-                    onChange={(e) =>
-                      editPreset(preset.id, {
-                        delaySecs: Math.max(
-                          0,
-                          parseInt(e.target.value, 10) || 0
-                        ),
-                      })
-                    }
-                    onBlur={() => commitPresets(localPresets)}
-                    style={{ ...presetInputStyle, width: 70 }}
-                  />
-                  s
-                </label>
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                    color: "var(--muted)",
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={preset.injectTask}
-                    onChange={(e) =>
-                      commitPresets(
-                        localPresets.map((p) =>
-                          p.id === preset.id
-                            ? { ...p, injectTask: e.target.checked }
-                            : p
-                        )
-                      )
-                    }
-                  />
-                  Inject task prompt
-                </label>
-              </div>
-            </div>
-          ))}
-          <button
-            onClick={addPreset}
-            style={{
-              padding: "6px 14px",
-              fontSize: 13,
-              background: "var(--input-bg)",
-              border: "1px solid var(--input-border)",
-              borderRadius: 4,
-              color: "var(--fg)",
-              cursor: "pointer",
-            }}
-          >
-            + Add preset
-          </button>
-          {localPresets.length > 0 && (
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginTop: 12,
-                fontSize: 12,
-                color: "var(--muted)",
-              }}
-            >
-              Default preset
-              <select
-                value={defaultPresetId ?? ""}
-                onChange={(e) => setDefaultPreset(e.target.value || null)}
-                style={{ ...presetInputStyle, flex: 1 }}
-              >
-                <option value="">None</option>
-                {localPresets
-                  .filter((p) => p.name.trim())
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          )}
-        </div>
-
-        {/* Sync interval */}
-        <div style={{ marginBottom: 20 }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: 13,
-              color: "var(--muted)",
-              marginBottom: 8,
-            }}
-          >
-            Sync Interval (seconds, min 10)
-          </label>
-          <input
-            type="number"
-            min={10}
-            value={localSyncInterval}
-            onChange={(e) => setLocalSyncInterval(e.target.value)}
-            onBlur={handleSyncIntervalBlur}
-            style={{
-              width: 120,
-              padding: "8px 12px",
-              fontSize: 13,
-              background: "var(--input-bg)",
-              border: "1px solid var(--input-border)",
-              borderRadius: 4,
-              color: "var(--fg)",
-              boxSizing: "border-box",
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSyncIntervalBlur();
-            }}
-          />
-        </div>
-
-        {/* GitHub token */}
-        <div style={{ marginBottom: 8 }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: 13,
-              color: "var(--muted)",
-              marginBottom: 8,
-            }}
-          >
-            GitHub Personal Access Token
-          </label>
-          {ghTokenDisplay ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 13,
-                  color: "var(--fg)",
-                  fontFamily: "var(--font-mono)",
-                  padding: "8px 12px",
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                  borderRadius: 4,
-                  flex: 1,
-                }}
-              >
-                {ghTokenDisplay}
-              </span>
-              <button
-                onClick={() => setShowTokenInput(true)}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: 13,
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                  borderRadius: 4,
-                  color: "var(--fg)",
-                  cursor: "pointer",
-                }}
-              >
-                Replace
-              </button>
-            </div>
-          ) : (
             <div>
-              <input
-                type="password"
-                value={newToken}
-                onChange={(e) => setNewToken(e.target.value)}
-                placeholder="ghp_..."
+              <h3
+                id="settings-title"
+                style={{ margin: 0, fontSize: 16, color: "var(--fg)" }}
+              >
+                Settings
+              </h3>
+              <p
                 style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "8px 12px",
-                  fontSize: 13,
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                  borderRadius: 4,
-                  color: "var(--fg)",
+                  margin: "2px 0 0",
+                  fontSize: 12,
+                  color: "var(--muted)",
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleTokenReplace();
-                }}
-              />
+              >
+                {activeWorkspaceName
+                  ? `Per-workspace · ${activeWorkspaceName}`
+                  : "Per-workspace settings"}
+              </p>
             </div>
-          )}
-          {showTokenInput && ghTokenDisplay && (
-            <div style={{ marginTop: 8 }}>
-              <input
-                type="password"
-                value={newToken}
-                onChange={(e) => setNewToken(e.target.value)}
-                placeholder="New token…"
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "8px 12px",
-                  fontSize: 13,
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                  borderRadius: 4,
-                  color: "var(--fg)",
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleTokenReplace();
-                }}
-              />
-            </div>
-          )}
-        </div>
+            <button
+              onClick={onClose}
+              aria-label="Close settings"
+              style={{
+                flexShrink: 0,
+                width: 28,
+                height: 28,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 16,
+                lineHeight: 1,
+                background: "transparent",
+                border: "none",
+                borderRadius: 4,
+                color: "var(--muted)",
+                cursor: "pointer",
+              }}
+            >
+              ✕
+            </button>
+          </div>
 
-        {error && (
-          <p
+          <div
+            role="tablist"
+            aria-label="Settings sections"
             style={{
-              fontSize: 12,
-              color: "var(--status-error)",
-              marginTop: 8,
-              marginBottom: 0,
+              display: "flex",
+              gap: 2,
+              marginTop: 16,
+              borderBottom: "1px solid var(--border)",
             }}
           >
-            {error}
-          </p>
-        )}
+            {TABS.map((tab, idx) => {
+              const selected = tab.id === activeTab;
+              return (
+                <button
+                  key={tab.id}
+                  ref={(el) => {
+                    tabRefs.current[idx] = el;
+                  }}
+                  role="tab"
+                  id={`settings-tab-${tab.id}`}
+                  aria-selected={selected}
+                  aria-controls={`settings-panel-${tab.id}`}
+                  tabIndex={selected ? 0 : -1}
+                  onClick={() => setActiveTab(tab.id)}
+                  onKeyDown={(e) => handleTabKeyDown(e, idx)}
+                  style={{
+                    padding: "8px 12px",
+                    fontSize: 13,
+                    fontWeight: selected ? 600 : 400,
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: selected
+                      ? "2px solid var(--accent)"
+                      : "2px solid transparent",
+                    marginBottom: -1,
+                    color: selected ? "var(--fg)" : "var(--muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
+        {/* ── Scrollable body: the active tab panel + a bottom fade ───────── */}
         <div
           style={{
+            position: "relative",
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+          }}
+        >
+          <div
+            ref={contentRef}
+            onScroll={updateFade}
+            style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}
+          >
+            {/* Appearance: theme + accent */}
+            {activeTab === "appearance" && (
+              <AppearanceTab
+                themeStatus={fieldStatus.theme}
+                accentStatus={fieldStatus.accent}
+                onSaveResult={flashStatus}
+              />
+            )}
+
+            {/* Terminal: presets */}
+            {activeTab === "terminal" && (
+              <PresetsEditor
+                saveState={fieldStatus.presets}
+                onSaveResult={(state) => flashStatus("presets", state)}
+                onResize={updateFade}
+                expandedPresetId={expandedPresetId}
+                onExpandedChange={setExpandedPresetId}
+              />
+            )}
+
+            {/* Sync: interval */}
+            {activeTab === "sync" && (
+              <div
+                role="tabpanel"
+                id="settings-panel-sync"
+                aria-labelledby="settings-tab-sync"
+                style={{ maxWidth: 560 }}
+              >
+                <label style={sectionLabelStyle}>
+                  Sync Interval (seconds, min 10)
+                  <FieldStatus state={fieldStatus.sync} />
+                </label>
+                <input
+                  type="number"
+                  min={10}
+                  value={localSyncInterval}
+                  onChange={(e) => setLocalSyncInterval(e.target.value)}
+                  onBlur={handleSyncIntervalBlur}
+                  style={{ ...fieldStyle, width: 120 }}
+                  aria-invalid={syncError ? true : undefined}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSyncIntervalBlur();
+                  }}
+                />
+                {syncError && <p style={errorTextStyle}>{syncError}</p>}
+              </div>
+            )}
+
+            {/* Account: GitHub token */}
+            {activeTab === "account" && (
+              <div
+                role="tabpanel"
+                id="settings-panel-account"
+                aria-labelledby="settings-tab-account"
+                style={{ maxWidth: 560 }}
+              >
+                <label style={sectionLabelStyle}>
+                  GitHub Personal Access Token
+                  <FieldStatus state={fieldStatus.account} />
+                </label>
+                <p
+                  style={{
+                    margin: "0 0 10px",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    color: "var(--muted)",
+                  }}
+                >
+                  Needs the <strong style={{ fontWeight: 600 }}>repo</strong>{" "}
+                  scope so ADE can read and update your issues. Generate one in
+                  GitHub → Settings → Developer settings → Personal access tokens.
+                </p>
+                {!tokenInputVisible ? (
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <span
+                      aria-label={`Current token, masked: ${ghTokenDisplay}`}
+                      style={{
+                        ...fieldStyle,
+                        flex: 1,
+                        fontFamily: "var(--font-mono)",
+                      }}
+                    >
+                      {ghTokenDisplay}
+                    </span>
+                    <button
+                      onClick={() => setShowTokenInput(true)}
+                      style={{
+                        padding: "6px 16px",
+                        fontSize: 13,
+                        background: "var(--input-bg)",
+                        border: "1px solid var(--input-border)",
+                        borderRadius: 4,
+                        color: "var(--fg)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Replace
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <input
+                      type="password"
+                      value={newToken}
+                      onChange={(e) => setNewToken(e.target.value)}
+                      placeholder={ghTokenDisplay ? "New token…" : "ghp_..."}
+                      aria-label="GitHub personal access token"
+                      style={{ ...fieldStyle, width: "100%" }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleTokenReplace();
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 8,
+                        marginTop: 8,
+                      }}
+                    >
+                      {ghTokenDisplay && (
+                        <button
+                          onClick={() => {
+                            setShowTokenInput(false);
+                            setNewToken("");
+                            setTokenError(null);
+                          }}
+                          style={{
+                            padding: "6px 16px",
+                            fontSize: 13,
+                            background: "transparent",
+                            border: "1px solid var(--input-border)",
+                            borderRadius: 4,
+                            color: "var(--fg)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        onClick={handleTokenReplace}
+                        disabled={saving || !newToken.trim()}
+                        style={{
+                          padding: "6px 16px",
+                          fontSize: 13,
+                          background:
+                            saving || !newToken.trim()
+                              ? "var(--input-bg)"
+                              : "var(--accent)",
+                          color:
+                            saving || !newToken.trim()
+                              ? "var(--muted)"
+                              : "var(--accent-ink)",
+                          border: "none",
+                          borderRadius: 4,
+                          cursor:
+                            saving || !newToken.trim()
+                              ? "not-allowed"
+                              : "pointer",
+                        }}
+                      >
+                        {saving ? "Saving…" : "Save Token"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {tokenError && <p style={errorTextStyle}>{tokenError}</p>}
+              </div>
+            )}
+          </div>
+
+          {showBottomFade && (
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 24,
+                background:
+                  "linear-gradient(to bottom, transparent, var(--panel))",
+                pointerEvents: "none",
+              }}
+            />
+          )}
+        </div>
+
+        {/* ── Sticky footer ──────────────────────────────────────────────── */}
+        <div
+          style={{
+            flexShrink: 0,
             display: "flex",
             justifyContent: "flex-end",
-            marginTop: 16,
             gap: 8,
+            padding: "12px 24px",
+            borderTop: "1px solid var(--border)",
           }}
         >
           <button
@@ -755,33 +539,12 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
               background: "transparent",
               border: "1px solid var(--input-border)",
               borderRadius: 4,
-              color: "var(--muted)",
+              color: "var(--fg)",
               cursor: "pointer",
             }}
           >
-            Close
+            Done
           </button>
-          {tokenInputVisible && (
-            <button
-              onClick={handleTokenReplace}
-              disabled={saving || !newToken.trim()}
-              style={{
-                padding: "6px 16px",
-                fontSize: 13,
-                background:
-                  saving || !newToken.trim()
-                    ? "var(--input-bg)"
-                    : "var(--accent)",
-                color: saving || !newToken.trim() ? "var(--muted)" : "var(--accent-ink)",
-                border: "none",
-                borderRadius: 4,
-                cursor:
-                  saving || !newToken.trim() ? "not-allowed" : "pointer",
-              }}
-            >
-              {saving ? "Saving…" : "Save Token"}
-            </button>
-          )}
         </div>
       </div>
     </div>

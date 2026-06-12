@@ -20,17 +20,9 @@ pub async fn card_detail(
     state: State<'_, Arc<crate::AppState>>,
 ) -> Result<CardDetail, AdeError> {
     // 1. Load the card from DB
-    let card: Card = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, \
-         github_issue_number, github_state, assignee, labels_json, remote_updated_at, \
-         terminal_window_id, created_at, updated_at \
-         FROM card WHERE id = ?",
-    )
-    .bind(&card_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AdeError::Db)?
-    .ok_or_else(|| AdeError::Other(format!("card not found: {}", card_id)))?;
+    let card: Card = crate::repo::card_by_id(&state.db, &card_id)
+        .await?
+        .ok_or_else(|| AdeError::Other(format!("card not found: {}", card_id)))?;
 
     // 2. If not a GitHub card or no issue number, return cached fields only
     if card.source != "github" || card.github_issue_number.is_none() {

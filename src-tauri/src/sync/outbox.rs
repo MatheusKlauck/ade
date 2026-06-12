@@ -7,19 +7,19 @@ use crate::sync::worker::{Notifier, RateBudget};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-#[allow(dead_code)]
 pub struct OutboxRow {
     pub card_id: String,
+    #[allow(dead_code)] // populated by FromRow; read only in tests
     pub intent: String,
     pub payload_json: String,
     pub base_remote_updated_at: String,
     pub attempts: i64,
+    #[allow(dead_code)] // populated by FromRow; read only in tests
     pub last_error: Option<String>,
     pub last_attempt_at: Option<String>,
     pub created_at: String,
 }
 
-#[allow(dead_code)]
 pub async fn enqueue(
     db: &DbPool,
     card_id: &str,
@@ -27,12 +27,54 @@ pub async fn enqueue(
     to_column: &str,
     base_remote_updated_at: &str,
 ) -> Result<(), AdeError> {
+    let now = Utc::now().to_rfc3339();
+
+    // If an intent is already pending for this card, merge instead of
+    // replacing wholesale: the remote still reflects the ORIGINAL source
+    // column, so the conflict check (§13 step 1) must keep comparing against
+    // it. Replacing `from` with the latest local column would make two quick
+    // legitimate drags look like a remote conflict and revert the user's move.
+    let existing: Option<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
+        "SELECT card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at FROM outbox WHERE card_id = ?",
+    )
+    .bind(card_id)
+    .fetch_optional(db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    let (effective_from, base_remote, created_at) = match &existing {
+        Some(row) => {
+            let original_from = serde_json::from_str::<serde_json::Value>(&row.payload_json)
+                .ok()
+                .and_then(|p| {
+                    p.get("from_column_name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| from_column.to_string());
+            (
+                original_from,
+                row.base_remote_updated_at.clone(),
+                row.created_at.clone(),
+            )
+        }
+        None => (
+            from_column.to_string(),
+            base_remote_updated_at.to_string(),
+            now.clone(),
+        ),
+    };
+
+    // Moving back to the original column cancels out: nothing to push.
+    if effective_from == to_column {
+        return resolve(db, card_id).await;
+    }
+
     let payload_json = serde_json::json!({
-        "from_column_name": from_column,
+        "from_column_name": effective_from,
         "to_column_name": to_column,
     })
     .to_string();
-    let now = Utc::now().to_rfc3339();
 
     sqlx::query(
         "INSERT OR REPLACE INTO outbox (card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at)
@@ -40,8 +82,8 @@ pub async fn enqueue(
     )
     .bind(card_id)
     .bind(&payload_json)
-    .bind(base_remote_updated_at)
-    .bind(&now)
+    .bind(&base_remote)
+    .bind(&created_at)
     .execute(db)
     .await
     .map_err(AdeError::Db)?;
@@ -52,7 +94,6 @@ pub async fn enqueue(
 /// Load every pending intent for a workspace, regardless of backoff/due state.
 /// Reconcile suspension (§12 Row 4) and conflict-drop (§13 step 1) must consider
 /// ALL pending rows — `due()` only governs when the network sender retries.
-#[allow(dead_code)]
 pub async fn all_for_workspace(
     db: &DbPool,
     workspace_id: &str,
@@ -70,15 +111,23 @@ pub async fn all_for_workspace(
     Ok(rows)
 }
 
-#[allow(dead_code)]
-pub async fn due(db: &DbPool, now: &str) -> Result<Vec<OutboxRow>, AdeError> {
+/// Retry backoff schedule (seconds) indexed by attempt count.
+const BACKOFF_SCHEDULE_SECS: [i64; 4] = [0, 5, 30, 120];
+const BACKOFF_MAX_SECS: i64 = 600;
+
+pub async fn due(db: &DbPool, now: &str, workspace_id: &str) -> Result<Vec<OutboxRow>, AdeError> {
     let now_dt: DateTime<Utc> = now
         .parse()
         .map_err(|e| AdeError::Other(format!("invalid now timestamp: {}", e)))?;
 
+    // Scoped to the workspace: each worker only sends its own intents
+    // (it holds that workspace's column map for conflict reverts).
     let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
-        "SELECT card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at FROM outbox",
+        "SELECT o.card_id, o.intent, o.payload_json, o.base_remote_updated_at, o.attempts, o.last_error, o.last_attempt_at, o.created_at
+         FROM outbox o JOIN card c ON c.id = o.card_id
+         WHERE c.workspace_id = ?",
     )
+    .bind(workspace_id)
     .fetch_all(db)
     .await
     .map_err(AdeError::Db)?;
@@ -93,12 +142,10 @@ pub async fn due(db: &DbPool, now: &str) -> Result<Vec<OutboxRow>, AdeError> {
                 .map_err(|e| AdeError::Other(format!("invalid created_at: {}", e)))?;
             now_dt >= created
         } else {
-            let delay_secs = match row.attempts {
-                1 => 5,
-                2 => 30,
-                3 => 120,
-                _ => 600,
-            };
+            let delay_secs = BACKOFF_SCHEDULE_SECS
+                .get(row.attempts as usize)
+                .copied()
+                .unwrap_or(BACKOFF_MAX_SECS);
 
             let ref_str = row.last_attempt_at.as_deref().unwrap_or(&row.created_at);
             let ref_time: DateTime<Utc> = ref_str
@@ -117,7 +164,6 @@ pub async fn due(db: &DbPool, now: &str) -> Result<Vec<OutboxRow>, AdeError> {
     Ok(due_rows)
 }
 
-#[allow(dead_code)]
 pub async fn record_failure(
     db: &DbPool,
     card_id: &str,
@@ -137,7 +183,6 @@ pub async fn record_failure(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub async fn resolve(db: &DbPool, card_id: &str) -> Result<(), AdeError> {
     sqlx::query("DELETE FROM outbox WHERE card_id = ?")
         .bind(card_id)
@@ -154,7 +199,6 @@ pub async fn resolve(db: &DbPool, card_id: &str) -> Result<(), AdeError> {
 /// Mirrors `engine::desired_column` but works on DB fields instead of `RemoteIssue`.
 /// Closed → Done; has kanban:doing → Doing; kanban:paused → Paused;
 /// kanban:pr → Pr; else → Backlog.
-#[allow(dead_code)]
 pub fn desired_column_from_labels_state(
     github_state: Option<&str>,
     labels_json: Option<&str>,
@@ -166,9 +210,9 @@ pub fn desired_column_from_labels_state(
         if let Ok(labels) = serde_json::from_str::<Vec<String>>(lj) {
             for label in &labels {
                 match label.as_str() {
-                    "kanban:doing" => return ColumnName::Doing,
-                    "kanban:paused" => return ColumnName::Paused,
-                    "kanban:pr" => return ColumnName::Pr,
+                    crate::gh::types::KANBAN_DOING => return ColumnName::Doing,
+                    crate::gh::types::KANBAN_PAUSED => return ColumnName::Paused,
+                    crate::gh::types::KANBAN_PR => return ColumnName::Pr,
                     _ => {}
                 }
             }
@@ -177,27 +221,13 @@ pub fn desired_column_from_labels_state(
     ColumnName::Backlog
 }
 
-/// Return the kanban label name for a non-Done, non-Backlog column.
-/// Doing → "kanban:doing", Paused → "kanban:paused", Pr → "kanban:pr".
-/// Done and Backlog have no label.
-fn kanban_label_for_column(col: &ColumnName) -> Option<&'static str> {
-    match col {
-        ColumnName::Doing => Some("kanban:doing"),
-        ColumnName::Paused => Some("kanban:paused"),
-        ColumnName::Pr => Some("kanban:pr"),
-        ColumnName::Done | ColumnName::Backlog => None,
-    }
-}
-
-/// All kanban label names (used for "remove all kanban labels").
-const KANBAN_LABELS: &[&str] = &["kanban:doing", "kanban:paused", "kanban:pr"];
+use crate::gh::types::KANBAN_LABELS;
 
 // ── send_outbox ──────────────────────────────────────────────────────
 
 /// Process all due outbox intents by making real GitHub API calls.
 /// Per CONTRACTS §13: conflict-check, map to API calls, success → resolve,
 /// failure → increment attempts (after 4th → drop & revert).
-#[allow(dead_code)]
 pub async fn send_outbox(
     db: &DbPool,
     gh: &GitHubClient,
@@ -208,40 +238,24 @@ pub async fn send_outbox(
     rate_budget: &RateBudget,
 ) -> Result<(), AdeError> {
     let now = Utc::now().to_rfc3339();
-    let due_rows = due(db, &now).await?;
+    let due_rows = due(db, &now, workspace_id).await?;
 
     // Load column id ↔ name mappings for this workspace.
-    let columns: Vec<crate::models::BoardColumn> = sqlx::query_as::<_, crate::models::BoardColumn>(
-        "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_all(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let columns: Vec<crate::models::BoardColumn> =
+        crate::repo::columns_for_workspace(db, workspace_id).await?;
 
     let mut col_id_by_name: std::collections::HashMap<ColumnName, String> =
         std::collections::HashMap::new();
     for col in &columns {
-        let cname = match col.name.as_str() {
-            "Backlog" => ColumnName::Backlog,
-            "Doing" => ColumnName::Doing,
-            "Paused" => ColumnName::Paused,
-            "PR" => ColumnName::Pr,
-            "Done" => ColumnName::Done,
-            _ => continue,
+        let Some(cname) = ColumnName::try_from_str(&col.name) else {
+            continue;
         };
         col_id_by_name.insert(cname, col.id.clone());
     }
 
     for row in due_rows {
         // Load the card from DB.
-        let card: Option<Card> = sqlx::query_as::<_, Card>(
-            "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE id = ?",
-        )
-        .bind(&row.card_id)
-        .fetch_optional(db)
-        .await
-        .map_err(AdeError::Db)?;
+        let card: Option<Card> = crate::repo::card_by_id(db, &row.card_id).await?;
 
         let card = match card {
             Some(c) => c,
@@ -285,17 +299,19 @@ pub async fn send_outbox(
                 continue;
             }
         };
-        let from_column = match parse_column_name_enum(from_col_str) {
-            Ok(c) => c,
-            Err(e) => {
-                record_failure(db, &row.card_id, &e.to_string(), &now).await?;
+        let from_column = match ColumnName::try_from_str(from_col_str) {
+            Some(c) => c,
+            None => {
+                let err = format!("unknown column name: {}", from_col_str);
+                record_failure(db, &row.card_id, &err, &now).await?;
                 continue;
             }
         };
-        let to_column = match parse_column_name_enum(to_col_str) {
-            Ok(c) => c,
-            Err(e) => {
-                record_failure(db, &row.card_id, &e.to_string(), &now).await?;
+        let to_column = match ColumnName::try_from_str(to_col_str) {
+            Some(c) => c,
+            None => {
+                let err = format!("unknown column name: {}", to_col_str);
+                record_failure(db, &row.card_id, &err, &now).await?;
                 continue;
             }
         };
@@ -364,11 +380,10 @@ pub async fn send_outbox(
                 .await
                 .map_err(AdeError::Db)?;
             }
-            Err(AdeError::RateLimited(_)) => {
-                // Propagate rate limit upward — the worker loop handles pausing.
-                return Err(AdeError::RateLimited(
-                    "rate limited during outbox send".to_string(),
-                ));
+            Err(e @ AdeError::RateLimited(_)) => {
+                // Propagate rate limit upward (keeping the reset hint) —
+                // the worker loop handles pausing.
+                return Err(e);
             }
             Err(e) => {
                 // Step 4 — Failure: increment attempts.
@@ -411,18 +426,6 @@ pub async fn send_outbox(
     Ok(())
 }
 
-/// Parse a column name string into a `ColumnName` enum variant.
-fn parse_column_name_enum(name: &str) -> Result<ColumnName, AdeError> {
-    match name {
-        "Backlog" => Ok(ColumnName::Backlog),
-        "Doing" => Ok(ColumnName::Doing),
-        "Paused" => Ok(ColumnName::Paused),
-        "PR" => Ok(ColumnName::Pr),
-        "Done" => Ok(ColumnName::Done),
-        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
-    }
-}
-
 /// Result of successfully executing an outbox intent: the updated issue's
 /// `updated_at`, `state`, and `labels` from the re-fetch.
 struct OutboxResult {
@@ -458,7 +461,7 @@ async fn execute_outbox_intent(
             rate_budget.check().await?;
             gh.set_issue_state(owner, repo, issue_number, "open")
                 .await?;
-            if let Some(label) = kanban_label_for_column(to_column) {
+            if let Some(label) = to_column.kanban_label() {
                 rate_budget.check().await?;
                 gh.add_label(owner, repo, issue_number, label).await?;
             }
@@ -472,12 +475,12 @@ async fn execute_outbox_intent(
         }
         // Otherwise (both non-Done, non-Backlog): remove source label + add target label.
         (_, _) => {
-            if let Some(from_label) = kanban_label_for_column(from_column) {
+            if let Some(from_label) = from_column.kanban_label() {
                 rate_budget.check().await?;
                 gh.remove_label(owner, repo, issue_number, from_label)
                     .await?;
             }
-            if let Some(to_label) = kanban_label_for_column(to_column) {
+            if let Some(to_label) = to_column.kanban_label() {
                 rate_budget.check().await?;
                 gh.add_label(owner, repo, issue_number, to_label).await?;
             }
@@ -626,15 +629,39 @@ mod tests {
         );
         assert_eq!(rows[0].card_id, card_id);
         assert_eq!(rows[0].attempts, 0);
+        // The merged intent keeps the ORIGINAL source column (the remote still
+        // reflects Backlog) and only updates the destination.
         let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
-        assert_eq!(payload["from_column_name"], "Doing");
+        assert_eq!(payload["from_column_name"], "Backlog");
         assert_eq!(payload["to_column_name"], "Paused");
+    }
+
+    #[tokio::test]
+    async fn enqueue_back_to_origin_cancels_intent() {
+        let (pool, _tmp) = test_pool().await;
+        let (_ws_id, card_id) = seed_workspace_and_card(&pool).await;
+
+        let base_remote = Utc::now().to_rfc3339();
+
+        enqueue(&pool, &card_id, "Backlog", "Doing", &base_remote)
+            .await
+            .unwrap();
+        enqueue(&pool, &card_id, "Doing", "Backlog", &base_remote)
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox WHERE card_id = ?")
+            .bind(&card_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "moving back to the origin cancels the intent");
     }
 
     #[tokio::test]
     async fn backoff_schedule_respected() {
         let (pool, _tmp) = test_pool().await;
-        let (_ws_id, card_id) = seed_workspace_and_card(&pool).await;
+        let (ws_id, card_id) = seed_workspace_and_card(&pool).await;
         let now = Utc::now();
 
         // Row with attempts=1, last_attempt_at=30 seconds ago -> due (30s >= 5s)
@@ -652,12 +679,12 @@ mod tests {
         .unwrap();
 
         let now_str = now.to_rfc3339();
-        let due_rows = due(&pool, &now_str).await.unwrap();
+        let due_rows = due(&pool, &now_str, &ws_id).await.unwrap();
         assert_eq!(due_rows.len(), 1, "attempts=1 with 30s elapsed is due");
 
         // Row with attempts=2, last_attempt_at=20 seconds ago -> NOT due (20s < 30s)
         let (pool2, _tmp2) = test_pool().await;
-        let (_ws2, card_id2) = seed_workspace_and_card(&pool2).await;
+        let (ws2, card_id2) = seed_workspace_and_card(&pool2).await;
         let past_20s = (now - chrono::Duration::seconds(20)).to_rfc3339();
         sqlx::query(
             "INSERT INTO outbox (card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at)
@@ -671,7 +698,7 @@ mod tests {
         .await
         .unwrap();
 
-        let due_rows2 = due(&pool2, &now_str).await.unwrap();
+        let due_rows2 = due(&pool2, &now_str, &ws2).await.unwrap();
         assert!(
             due_rows2.is_empty(),
             "attempts=2 with 20s elapsed is NOT due (needs 30s)"
@@ -679,7 +706,7 @@ mod tests {
 
         // Row with attempts=0 -> due immediately
         let (pool3, _tmp3) = test_pool().await;
-        let (_ws3, card_id3) = seed_workspace_and_card(&pool3).await;
+        let (ws3, card_id3) = seed_workspace_and_card(&pool3).await;
         let past_60s = (now - chrono::Duration::seconds(60)).to_rfc3339();
         sqlx::query(
             "INSERT INTO outbox (card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at)
@@ -692,7 +719,7 @@ mod tests {
         .await
         .unwrap();
 
-        let due_rows3 = due(&pool3, &now_str).await.unwrap();
+        let due_rows3 = due(&pool3, &now_str, &ws3).await.unwrap();
         assert_eq!(due_rows3.len(), 1, "attempts=0 is always due");
     }
 
@@ -761,7 +788,7 @@ mod tests {
     #[tokio::test]
     async fn fourth_failure_flag() {
         let (pool, _tmp) = test_pool().await;
-        let (_ws_id, card_id) = seed_workspace_and_card(&pool).await;
+        let (ws_id, card_id) = seed_workspace_and_card(&pool).await;
         let now = Utc::now();
         // attempts=3, last_attempt_at=11 minutes ago -> still due (10m delay elapsed)
         let past_11m = (now - chrono::Duration::seconds(660)).to_rfc3339();
@@ -778,7 +805,7 @@ mod tests {
         .unwrap();
 
         let now_str = now.to_rfc3339();
-        let due_rows = due(&pool, &now_str).await.unwrap();
+        let due_rows = due(&pool, &now_str, &ws_id).await.unwrap();
         assert_eq!(
             due_rows.len(),
             1,

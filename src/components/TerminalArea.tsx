@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useMemo,
   useRef,
   useCallback,
   type CSSProperties,
@@ -12,6 +13,8 @@ import { useBoardStore } from "../store/board";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
 import { ChevronIcon, LockIcon } from "./icons";
+import { useEnterAnimation } from "../lib/useEnterAnimation";
+import { menuItemBlockStyle as menuItemStyle } from "./ContextMenu";
 import type { OpenTerminal, TerminalLayout } from "../store/terminals";
 
 interface TerminalAreaProps {
@@ -151,22 +154,6 @@ function NewTerminalButton({
   );
 }
 
-const menuItemStyle: CSSProperties = {
-  display: "block",
-  width: "100%",
-  textAlign: "left",
-  padding: "6px 10px",
-  fontSize: 13,
-  background: "transparent",
-  border: "none",
-  borderRadius: 4,
-  color: "var(--fg)",
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-};
-
 // Gap between tiles (px); PAD is half of it, applied as an inset on every side
 // so adjacent tiles and the container edge all show an even gutter.
 const GAP = 6;
@@ -208,12 +195,16 @@ function TerminalTile({
   hidden,
   children,
   onReorder,
+  entering,
+  onEntered,
 }: {
   pane: OpenTerminal;
   style: CSSProperties;
   hidden: boolean;
   children: React.ReactNode;
   onReorder: (draggedWin: string, targetWin: string, edge: "before" | "after") => void;
+  entering: boolean;
+  onEntered: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [edge, setEdge] = useState<"before" | "after" | null>(null);
@@ -248,7 +239,17 @@ function TerminalTile({
   }, [pane.windowId, onReorder]);
 
   return (
-    <div ref={ref} id={`terminal-pane-${pane.windowId}`} style={style}>
+    <div
+      ref={ref}
+      id={`terminal-pane-${pane.windowId}`}
+      style={style}
+      className={entering ? "ade-pane-enter" : undefined}
+      onAnimationEnd={(e) => {
+        // Only the tile's own entrance — ignore animationend bubbling up from
+        // a child (e.g. the focus-glow on the pane).
+        if (e.target === e.currentTarget) onEntered();
+      }}
+    >
       {edge && !hidden && (
         <div
           style={{
@@ -291,8 +292,25 @@ export default function TerminalArea({
   // so a pane is never unmounted, so its PTY is never torn down.
   const gridRef = useRef<HTMLDivElement | null>(null);
 
+  // Active divider-drag teardown. Listeners are normally removed on pointerup,
+  // but if this component unmounts mid-drag (e.g. workspace switch) the
+  // window-level handlers would keep firing against a dead workspace.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.();
+    },
+    []
+  );
+
   // All active panes belong to the same (active) workspace.
   const workspaceId = panes[0]?.workspaceId ?? null;
+  // Entrance for freshly-opened terminals only. Keyed on workspaceId so flipping
+  // workspaces re-seeds the set instead of animating every pane back in.
+  const { isEntering, onEntered } = useEnterAnimation(
+    panes.map((p) => p.paneId),
+    workspaceId
+  );
   const rawLayout = workspaceId ? layoutByWorkspace[workspaceId] : undefined;
   const winKey = panes.map((p) => p.windowId).join("|");
   // Always render from a normalised layout so a freshly-opened terminal shows up
@@ -363,34 +381,70 @@ export default function TerminalArea({
       ? maximizedPaneId
       : null;
 
-  const toggleMinimize = (paneId: string) => {
+  const toggleMinimize = useCallback((paneId: string) => {
     setMinimized((m) => ({ ...m, [paneId]: !m[paneId] }));
     // A pane can't be both minimized and maximized.
     setMaximizedPaneId((id) => (id === paneId ? null : id));
-  };
+  }, []);
 
-  const toggleMaximize = (paneId: string) => {
+  const toggleMaximize = useCallback((paneId: string) => {
     setMinimized((m) => (m[paneId] ? { ...m, [paneId]: false } : m));
     setMaximizedPaneId((id) => (id === paneId ? null : paneId));
-  };
+  }, []);
 
   const restore = (paneId: string) => {
     setMinimized((m) => ({ ...m, [paneId]: false }));
   };
 
-  const handleRemove = (paneId: string) => {
-    // Locked terminals can't be closed. The header's close button is already
-    // disabled when locked; this guards every other path into removal too.
-    const pane = panes.find((p) => p.paneId === paneId);
-    if (pane && isLocked(pane)) return;
-    setMinimized((m) => {
-      const next = { ...m };
-      delete next[paneId];
-      return next;
-    });
-    setMaximizedPaneId((id) => (id === paneId ? null : id));
-    onRemovePane(paneId);
-  };
+  const handleRemove = useCallback(
+    (paneId: string) => {
+      // Locked terminals can't be closed. The header's close button is already
+      // disabled when locked; this guards every other path into removal too.
+      const st = useTerminalsStore.getState();
+      const pane = st.panes.find((p) => p.paneId === paneId);
+      if (
+        pane &&
+        (st.lockedByWorkspace[pane.workspaceId] ?? []).includes(pane.windowId)
+      ) {
+        return;
+      }
+      setMinimized((m) => {
+        const next = { ...m };
+        delete next[paneId];
+        return next;
+      });
+      setMaximizedPaneId((id) => (id === paneId ? null : id));
+      onRemovePane(paneId);
+    },
+    [onRemovePane]
+  );
+
+  // Per-pane handler bundles, stable across renders so the memoized
+  // TerminalPane isn't re-rendered by fresh closures on every divider-drag
+  // frame. Rebuilt only when the pane set (or a store action) changes.
+  const paneHandlers = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        onToggleLock: () => void;
+        onRename: (name: string) => void;
+        onRemove: () => void;
+        onToggleMinimize: () => void;
+        onToggleMaximize: () => void;
+      }
+    >();
+    for (const pane of panes) {
+      map.set(pane.paneId, {
+        onToggleLock: () => toggleLock(pane.workspaceId, pane.windowId),
+        onRename: (name: string) =>
+          setTerminalName(pane.workspaceId, pane.windowId, name),
+        onRemove: () => handleRemove(pane.paneId),
+        onToggleMinimize: () => toggleMinimize(pane.paneId),
+        onToggleMaximize: () => toggleMaximize(pane.paneId),
+      });
+    }
+    return map;
+  }, [panes, toggleLock, setTerminalName, handleRemove, toggleMinimize, toggleMaximize]);
 
   // Panes shown as chips in the minimized tray (hidden from the grid). When a
   // pane is maximized, the tray is suppressed to keep focus on it.
@@ -491,14 +545,19 @@ export default function TerminalArea({
       );
       setLayout(workspaceId, next, false);
     };
-    const onUp = () => {
+    const detach = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      dragCleanupRef.current = null;
+    };
+    const onUp = () => {
+      detach();
       const cur = useTerminalsStore.getState().layoutByWorkspace[workspaceId];
       if (cur) setLayout(workspaceId, cur, true);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    dragCleanupRef.current = detach;
   };
 
   // Drag a vertical divider: grow tile `aTi`, shrink tile `bTi` within row `ri`.
@@ -541,14 +600,19 @@ export default function TerminalArea({
       );
       setLayout(workspaceId, next, false);
     };
-    const onUp = () => {
+    const detach = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      dragCleanupRef.current = null;
+    };
+    const onUp = () => {
+      detach();
       const cur = useTerminalsStore.getState().layoutByWorkspace[workspaceId];
       if (cur) setLayout(workspaceId, cur, true);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    dragCleanupRef.current = detach;
   };
 
   return (
@@ -671,6 +735,8 @@ export default function TerminalArea({
                   style={wrapperStyle}
                   hidden={!isMax && (hide || !rect)}
                   onReorder={doReorder}
+                  entering={isEntering(pane.paneId)}
+                  onEntered={() => onEntered(pane.paneId)}
                 >
                   <TerminalPane
                     pane={pane}
@@ -678,13 +744,11 @@ export default function TerminalArea({
                     maximized={isMax}
                     locked={locked}
                     hasCustomName={customNameFor(pane) != null}
-                    onToggleLock={() => toggleLock(pane.workspaceId, pane.windowId)}
-                    onRename={(name) =>
-                      setTerminalName(pane.workspaceId, pane.windowId, name)
-                    }
-                    onRemove={() => handleRemove(pane.paneId)}
-                    onToggleMinimize={() => toggleMinimize(pane.paneId)}
-                    onToggleMaximize={() => toggleMaximize(pane.paneId)}
+                    onToggleLock={paneHandlers.get(pane.paneId)?.onToggleLock}
+                    onRename={paneHandlers.get(pane.paneId)?.onRename}
+                    onRemove={paneHandlers.get(pane.paneId)!.onRemove}
+                    onToggleMinimize={paneHandlers.get(pane.paneId)?.onToggleMinimize}
+                    onToggleMaximize={paneHandlers.get(pane.paneId)?.onToggleMaximize}
                     highlighted={highlightedWindowId === pane.windowId}
                     onHighlightDone={onHighlightDone}
                   />

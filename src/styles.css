@@ -14,6 +14,38 @@
   border: 1px solid var(--focus-ring);
 }
 
+/* Lifecycle entrances — applied only to items that are genuinely NEW since the
+   view first painted (see useEnterAnimation), never on initial load. They report
+   "this just appeared": a terminal spun up from a card → Doing, a card synced in.
+   The global prefers-reduced-motion rule neutralizes both. */
+@keyframes ade-pane-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.ade-pane-enter {
+  animation: ade-pane-enter 240ms var(--ease-out-quart);
+}
+
+@keyframes ade-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ade-card-enter {
+  animation: ade-card-enter 200ms var(--ease-out-quart);
+}
+
 /* Draggable gutter between split terminal panes. Sits in the gap, invisible
    until hovered or actively dragged, when an accent bar marks the boundary. */
 .term-divider {
@@ -60,6 +92,19 @@
   --status-info: #0e7c8a;
   --status-warning: #f39c12;
   --status-success: #3fe07a;
+
+  /* Status as TEXT. The fills above are tuned to carry white/dark ink as a
+     background; on the panel surface they need their own per-theme values to
+     clear WCAG AA. On the dark panel the saturated fills already pass, so the
+     text tokens mostly match them here — except error, nudged brighter so it
+     also clears AA on the lightest dark surface (--input-bg, e.g. the Remove
+     button fill), where #e74c3c lands at 4.24:1. */
+  --status-error-text: #f4685c;
+  --status-warning-text: #f39c12;
+  --status-success-text: #3fe07a;
+
+  /* Modal scrim — the dim behind dialogs (Settings, ConfirmDialog). */
+  --scrim: rgba(0, 0, 0, 0.6);
 
   /* Brand secondary — the icon's cyan "data" hue, for sync / in-progress state. */
   --accent-cyan: #2fdce4;
@@ -131,6 +176,15 @@
   --status-info: #0e7c8a;
   --status-warning: #f39c12;
   --status-success: #107a39;
+
+  /* Status as TEXT — darkened so error/warning clear WCAG AA (≥4.5:1) on the
+     white panel, where the saturated fills above fail (#f39c12 ≈ 2.2:1). */
+  --status-error-text: #c0392b;
+  --status-warning-text: #92600a;
+  --status-success-text: #107a39;
+
+  /* Modal scrim — the dim behind dialogs (Settings, ConfirmDialog). */
+  --scrim: rgba(0, 0, 0, 0.6);
 
   /* Brand secondary — the icon's cyan "data" hue, deepened for light surfaces. */
   --accent-cyan: #0c7a86;

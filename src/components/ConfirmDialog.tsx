@@ -1,10 +1,5 @@
-import {
-  useEffect,
-  useRef,
-  useCallback,
-  useId,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from "react";
+import { useRef, useId } from "react";
+import { useModalFocus } from "../lib/useModalFocus";
 
 interface ConfirmDialogProps {
   title: string;
@@ -30,52 +25,19 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const messageId = useId();
 
-  useEffect(() => {
-    restoreFocusRef.current = document.activeElement as HTMLElement | null;
-    cancelRef.current?.focus();
-    return () => restoreFocusRef.current?.focus?.();
-  }, []);
-
-  const handleKeyDown = useCallback(
-    (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onCancel();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const nodes = panel.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-      );
-      if (nodes.length === 0) return;
-      const first = nodes[0];
-      const last = nodes[nodes.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    },
-    [onCancel]
-  );
+  // Initial focus lands on Cancel so a reflexive Enter never confirms.
+  const { panelRef, handleKeyDown } = useModalFocus(onCancel, cancelRef);
 
   return (
     <div
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0, 0, 0, 0.6)",
+        background: "var(--scrim)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

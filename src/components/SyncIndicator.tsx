@@ -42,7 +42,7 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
       <span
         style={{
           fontSize: 11,
-          color: "var(--status-error)",
+          color: "var(--status-error-text)",
         }}
         title="Sync error"
       >

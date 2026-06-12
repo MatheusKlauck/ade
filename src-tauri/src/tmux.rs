@@ -125,13 +125,13 @@ pub fn ensure_base_session(slug: &str, root_path: &str) -> Result<(), AdeError> 
         ));
     }
 
-    // Set window-size latest
+    // Set window-size latest, scoped to this session only — `-g` here would
+    // mutate the user's server-global option and affect their own tmux sessions.
     let out = Command::new(TMUX_BIN)
         .arg("set-option")
         .arg("-t")
         .arg(format!("{}:", base))
         .arg("-w")
-        .arg("-g")
         .arg("window-size")
         .arg("latest")
         .output()
@@ -169,6 +169,7 @@ pub fn new_app_window(slug: &str, root_path: &str) -> Result<String, AdeError> {
     }
 
     let window_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    set_window_size_latest(&window_id);
     inject_shell_integration(&window_id);
     Ok(window_id)
 }
@@ -211,8 +212,22 @@ pub fn new_issue_window(
     }
 
     let window_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    set_window_size_latest(&window_id);
     inject_shell_integration(&window_id);
     Ok(window_id)
+}
+
+/// Best-effort: size a window to its most recently active client. Applied
+/// per-window so ADE never touches the user's global tmux options.
+fn set_window_size_latest(window_id: &str) {
+    let _ = Command::new(TMUX_BIN)
+        .arg("set-option")
+        .arg("-t")
+        .arg(window_id)
+        .arg("-w")
+        .arg("window-size")
+        .arg("latest")
+        .output();
 }
 
 /// Shell snippet that makes bash/zsh emit an OSC 133;D;<exit> marker whenever an
@@ -448,7 +463,8 @@ pub fn kill_viewer(viewer: &str) -> Result<(), AdeError> {
     let out = Command::new(TMUX_BIN)
         .arg("kill-session")
         .arg("-t")
-        .arg(viewer)
+        // `=` forces exact-match; bare names fall back to tmux prefix matching.
+        .arg(format!("={}", viewer))
         .output()
         .map_err(|e| AdeError::Tmux(e.to_string()))?;
 

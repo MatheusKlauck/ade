@@ -214,7 +214,7 @@ export default function Onboarding() {
         <p
           style={{
             fontSize: 13,
-            color: "var(--status-error)",
+            color: "var(--status-error-text)",
             marginTop: "var(--space-lg)",
             maxWidth: 340,
             textAlign: "center",

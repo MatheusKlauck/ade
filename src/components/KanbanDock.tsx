@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useBoardStore } from "../store/board";
-import Board, { COLUMN_ORDER } from "./Board";
+import { COL_DOING, COLUMN_ORDER } from "../lib/columns";
+import Board from "./Board";
 import { ChevronIcon } from "./icons";
 
 interface KanbanDockProps {
@@ -36,7 +37,7 @@ export default function KanbanDock({ workspaceId }: KanbanDockProps) {
   );
   const cardsByColumn = board?.cardsByColumn || {};
 
-  const doing = columns.find((c) => c.name === "Doing");
+  const doing = columns.find((c) => c.name === COL_DOING);
   const doingCards = doing ? cardsByColumn[doing.id] || [] : [];
 
   // Esc collapses the panel.

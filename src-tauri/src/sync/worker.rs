@@ -11,91 +11,15 @@ use chrono::Utc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-use tokio::sync::Mutex;
 
-/// Trait for emitting notifications. In production, this wraps `app.emit`.
-/// In tests, it appends to a Vec for assertion.
-pub trait Notifier: Send + Sync {
-    fn notify(&self, level: &str, code: &str, message: &str);
-}
+// The Notifier impls live in sync/notifier.rs and RateBudget in sync/rate.rs;
+// re-export here so existing `crate::sync::worker::{...}` paths keep working.
+pub use crate::sync::notifier::Notifier;
+pub use crate::sync::rate::RateBudget;
+#[cfg(test)]
+pub use crate::sync::notifier::CaptureNotifier;
 
-/// A no-op notifier that discards all notifications.
-#[allow(dead_code)]
-pub struct NoopNotifier;
-
-impl Notifier for NoopNotifier {
-    fn notify(&self, _level: &str, _code: &str, _message: &str) {}
-}
-
-/// A notifier that captures (level, code, message) triples for test assertion.
-#[allow(dead_code)]
-pub struct CaptureNotifier {
-    events: std::sync::Mutex<Vec<(String, String, String)>>,
-}
-
-#[allow(dead_code)]
-impl CaptureNotifier {
-    pub fn new() -> Self {
-        Self {
-            events: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn take(&self) -> Vec<(String, String, String)> {
-        self.events.lock().expect("lock").drain(..).collect()
-    }
-}
-
-impl Notifier for CaptureNotifier {
-    fn notify(&self, level: &str, code: &str, message: &str) {
-        self.events.lock().expect("lock").push((
-            level.to_string(),
-            code.to_string(),
-            message.to_string(),
-        ));
-    }
-}
-
-// ── RateBudget ──────────────────────────────────────────────────────
-
-/// Per-process rate-limit budget. Shared across all workspace workers.
-/// When a 403/429 is received, `pause_until` is set; all workers skip
-/// cycles until the pause expires.
-pub struct RateBudget {
-    paused_until: Mutex<Option<Instant>>,
-}
-
-impl RateBudget {
-    pub fn new() -> Self {
-        Self {
-            paused_until: Mutex::new(None),
-        }
-    }
-
-    /// Returns Ok(()) if not paused, Err(RateLimited) if paused.
-    /// Callers should check before making HTTP requests.
-    pub async fn check(&self) -> Result<(), AdeError> {
-        let guard = self.paused_until.lock().await;
-        if let Some(until) = *guard {
-            if Instant::now() < until {
-                let remaining = until - Instant::now();
-                return Err(AdeError::RateLimited(format!("{:?}", remaining)));
-            }
-        }
-        Ok(())
-    }
-
-    /// Set paused_until from a rate limit response.
-    pub async fn pause_until(&self, until: Instant) {
-        *self.paused_until.lock().await = Some(until);
-    }
-
-    /// Clear the pause (e.g., after a successful request).
-    #[allow(dead_code)]
-    pub async fn clear(&self) {
-        *self.paused_until.lock().await = None;
-    }
-}
+use crate::sync::notifier::AppNotifier;
 
 // ── CycleResult ─────────────────────────────────────────────────────
 
@@ -129,13 +53,7 @@ pub async fn run_cycle(
     rate_budget.check().await?;
 
     // 1. Look up workspace
-    let ws: crate::models::Workspace = sqlx::query_as::<_, crate::models::Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_one(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let ws: crate::models::Workspace = crate::repo::workspace_by_id(db, workspace_id).await?;
 
     let owner = ws
         .github_owner
@@ -172,13 +90,7 @@ pub async fn run_cycle(
     let issue_count = remote_issues.len();
 
     // 4. Build a map of local cards by github_issue_number for reconciliation
-    let local_cards: Vec<Card> = sqlx::query_as::<_, Card>(
-        "SELECT id, workspace_id, column_id, title, body_preview, position, source, github_issue_number, github_state, assignee, labels_json, remote_updated_at, terminal_window_id, created_at, updated_at FROM card WHERE workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_all(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let local_cards: Vec<Card> = crate::repo::cards_for_workspace(db, workspace_id).await?;
 
     let mut local_by_number: std::collections::HashMap<i64, Card> =
         std::collections::HashMap::new();
@@ -200,26 +112,16 @@ pub async fn run_cycle(
     }
 
     // Build column name lookup: column_id -> ColumnName
-    let columns: Vec<crate::models::BoardColumn> = sqlx::query_as::<_, crate::models::BoardColumn>(
-        "SELECT id, workspace_id, name, position FROM board_column WHERE workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_all(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let columns: Vec<crate::models::BoardColumn> =
+        crate::repo::columns_for_workspace(db, workspace_id).await?;
 
     let mut col_name_by_id: std::collections::HashMap<String, ColumnName> =
         std::collections::HashMap::new();
     let mut col_id_by_name: std::collections::HashMap<ColumnName, String> =
         std::collections::HashMap::new();
     for col in &columns {
-        let cname = match col.name.as_str() {
-            "Backlog" => ColumnName::Backlog,
-            "Doing" => ColumnName::Doing,
-            "Paused" => ColumnName::Paused,
-            "PR" => ColumnName::Pr,
-            "Done" => ColumnName::Done,
-            _ => continue,
+        let Some(cname) = ColumnName::try_from_str(&col.name) else {
+            continue;
         };
         col_name_by_id.insert(col.id.clone(), cname);
         col_id_by_name.insert(cname, col.id.clone());
@@ -288,14 +190,7 @@ pub async fn run_cycle(
             .and_then(|row| {
                 let payload: serde_json::Value = serde_json::from_str(&row.payload_json).ok()?;
                 let to_col_str = payload.get("to_column_name")?.as_str()?;
-                let to_col = match to_col_str {
-                    "Backlog" => ColumnName::Backlog,
-                    "Doing" => ColumnName::Doing,
-                    "Paused" => ColumnName::Paused,
-                    "PR" => ColumnName::Pr,
-                    "Done" => ColumnName::Done,
-                    _ => return None,
-                };
+                let to_col = ColumnName::try_from_str(to_col_str)?;
                 Some(PendingIntent {
                     base_remote_updated_at: Some(row.base_remote_updated_at.clone()),
                     to: to_col,
@@ -433,14 +328,8 @@ fn parse_column_name(payload_json: &str) -> Result<ColumnName, AdeError> {
         .get("from_column_name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| AdeError::Other("outbox payload missing from_column_name".into()))?;
-    match from_col_str {
-        "Backlog" => Ok(ColumnName::Backlog),
-        "Doing" => Ok(ColumnName::Doing),
-        "Paused" => Ok(ColumnName::Paused),
-        "PR" => Ok(ColumnName::Pr),
-        "Done" => Ok(ColumnName::Done),
-        other => Err(AdeError::Other(format!("unknown column name: {}", other))),
-    }
+    ColumnName::try_from_str(from_col_str)
+        .ok_or_else(|| AdeError::Other(format!("unknown column name: {}", from_col_str)))
 }
 
 // ── start_worker ─────────────────────────────────────────────────────
@@ -468,6 +357,12 @@ pub async fn start_worker(
             _ = interval.tick() => false,
             _ = notify.notified() => true,
         };
+
+        // No token yet: skip quietly instead of burning a 401 + SYNC_ERROR
+        // toast every cycle. The worker is respawned when a token is saved.
+        if !gh.has_token() {
+            continue;
+        }
 
         // Check rate budget — if paused, skip this cycle.
         if let Err(AdeError::RateLimited(_)) = rate_budget.check().await {
@@ -508,25 +403,18 @@ pub async fn start_worker(
                     );
                 }
 
+                // Look up owner/repo once for the post-cycle hooks. A lookup
+                // failure skips the hooks but must NOT skip the trailing
+                // "idle" emit, or the UI stays stuck on "syncing".
+                let ws: Option<crate::models::Workspace> =
+                    crate::repo::workspace_by_id(&db, &workspace_id).await.ok();
+                let owner_repo = ws.as_ref().and_then(|ws| {
+                    Some((ws.github_owner.as_ref()?, ws.github_repo.as_ref()?))
+                });
+
                 // If seed, ensure labels once
                 if result.was_seed {
-                    // Look up owner/repo again
-                    let ws: crate::models::Workspace = match sqlx::query_as::<_, crate::models::Workspace>(
-                        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-                    )
-                    .bind(&workspace_id)
-                    .fetch_one(&db)
-                    .await
-                    {
-                        Ok(ws) => ws,
-                        Err(_) => {
-                            // Can't look up workspace; skip labels ensure
-                            continue;
-                        }
-                    };
-                    if let (Some(owner), Some(repo)) =
-                        (ws.github_owner.as_ref(), ws.github_repo.as_ref())
-                    {
+                    if let Some((owner, repo)) = owner_repo {
                         if let Ok(()) = gh.ensure_labels(owner, repo).await {
                             let _ = sqlx::query(
                                 "UPDATE sync_state SET labels_ensured = 1 WHERE workspace_id = ?",
@@ -539,52 +427,35 @@ pub async fn start_worker(
                 }
 
                 // M5-T4: Send outbox intents (§13.1 sender pass)
-                {
-                    let ws: crate::models::Workspace = match sqlx::query_as::<_, crate::models::Workspace>(
-                        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
+                if let Some((owner, repo)) = owner_repo {
+                    if let Err(e) = outbox::send_outbox(
+                        &db,
+                        &gh,
+                        owner,
+                        repo,
+                        &workspace_id,
+                        &notifier,
+                        &rate_budget,
                     )
-                    .bind(&workspace_id)
-                    .fetch_one(&db)
                     .await
                     {
-                        Ok(ws) => ws,
-                        Err(_) => {
-                            // Can't look up workspace; skip outbox send
-                            continue;
-                        }
-                    };
-                    if let (Some(owner), Some(repo)) =
-                        (ws.github_owner.as_ref(), ws.github_repo.as_ref())
-                    {
-                        if let Err(e) = outbox::send_outbox(
-                            &db,
-                            &gh,
-                            owner,
-                            repo,
-                            &workspace_id,
-                            &notifier,
-                            &rate_budget,
-                        )
-                        .await
-                        {
-                            if matches!(e, AdeError::RateLimited(_)) {
-                                rate_budget
-                                    .pause_until(Instant::now() + Duration::from_secs(60))
-                                    .await;
-                                crate::notify::emit_notify(
-                                    &app,
-                                    "warn",
-                                    "RATE_LIMITED",
-                                    "GitHub rate limit hit during outbox send; pausing sync",
-                                );
-                            } else {
-                                crate::notify::emit_notify(
-                                    &app,
-                                    "error",
-                                    "OUTBOX_SEND_ERROR",
-                                    &format!("outbox send failed: {}", e),
-                                );
-                            }
+                        if let AdeError::RateLimited(ref hint) = e {
+                            rate_budget
+                                .pause_until(Instant::now() + rate_limit_pause(hint))
+                                .await;
+                            crate::notify::emit_notify(
+                                &app,
+                                "warn",
+                                "RATE_LIMITED",
+                                "GitHub rate limit hit during outbox send; pausing sync",
+                            );
+                        } else {
+                            crate::notify::emit_notify(
+                                &app,
+                                "error",
+                                "OUTBOX_SEND_ERROR",
+                                &format!("outbox send failed: {}", e),
+                            );
                         }
                     }
                 }
@@ -608,12 +479,12 @@ pub async fn start_worker(
                     }),
                 );
             }
-            Err(AdeError::RateLimited(ref _msg)) => {
-                // Set a default pause of 60 seconds from now.
-                // In production, the actual reset time from the header is used
-                // (parsed by the GitHub client), but we need a fallback.
+            Err(AdeError::RateLimited(ref hint)) => {
+                // Pause until the reset hinted by the rate-limit headers
+                // (x-ratelimit-reset epoch or retry-after delta), with a 60s
+                // fallback when the hint isn't parseable.
                 rate_budget
-                    .pause_until(Instant::now() + Duration::from_secs(60))
+                    .pause_until(Instant::now() + rate_limit_pause(hint))
                     .await;
                 crate::notify::emit_notify(
                     &app,
@@ -621,12 +492,21 @@ pub async fn start_worker(
                     "RATE_LIMITED",
                     "GitHub rate limit hit; pausing sync",
                 );
+                // Keep showing the last successful sync time in the UI.
+                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
+                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
+                )
+                .bind(&workspace_id)
+                .fetch_optional(&db)
+                .await
+                .ok()
+                .flatten();
                 let _ = app.emit(
                     "evt:sync",
                     serde_json::json!({
                         "workspace_id": workspace_id,
                         "status": "error",
-                        "last_sync": serde_json::Value::Null,
+                        "last_sync": last_sync,
                     }),
                 );
             }
@@ -653,13 +533,19 @@ pub async fn start_worker(
     }
 }
 
-/// A Notifier that wraps a `tauri::AppHandle` and emits via `app.emit`.
-struct AppNotifier(tauri::AppHandle);
-
-impl Notifier for AppNotifier {
-    fn notify(&self, level: &str, code: &str, message: &str) {
-        crate::notify::emit_notify(&self.0, level, code, message);
-    }
+/// Translate the hint carried by `AdeError::RateLimited` into a pause duration.
+/// The hint is either `x-ratelimit-reset` (unix epoch seconds) or `retry-after`
+/// (delta seconds). Unparseable hints fall back to 60s; pauses cap at 1h.
+fn rate_limit_pause(hint: &str) -> Duration {
+    const FALLBACK_SECS: u64 = 60;
+    const MAX_SECS: u64 = 3600;
+    let secs = match hint.trim().parse::<i64>() {
+        // Values this large are an epoch timestamp, not a delta.
+        Ok(v) if v > 1_000_000_000 => (v - Utc::now().timestamp()).max(1) as u64,
+        Ok(v) if v > 0 => v as u64,
+        _ => FALLBACK_SECS,
+    };
+    Duration::from_secs(secs.min(MAX_SECS))
 }
 
 #[cfg(test)]

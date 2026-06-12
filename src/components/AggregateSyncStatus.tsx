@@ -44,7 +44,7 @@ export default function AggregateSyncStatus() {
         title="Go to the workspace with a sync error"
         style={{
           ...baseStyle,
-          color: "var(--status-error)",
+          color: "var(--status-error-text)",
           background: "transparent",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-pill)",

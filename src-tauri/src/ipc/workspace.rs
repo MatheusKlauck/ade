@@ -52,9 +52,11 @@ pub async fn workspace_create(
     // If a workspace already exists for this exact folder, reuse it instead of
     // creating a duplicate. A soft-closed one is reopened (closed_at -> NULL),
     // which restores its preserved board/cards.
-    if let Some(existing) = sqlx::query_as::<_, Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE root_path = ?",
-    )
+    if let Some(existing) = sqlx::query_as::<_, Workspace>(concat!(
+        "SELECT ",
+        crate::repo::workspace_cols!(),
+        " FROM workspace WHERE root_path = ?"
+    ))
     .bind(&path)
     .fetch_optional(&state.db)
     .await
@@ -87,13 +89,7 @@ pub async fn workspace_create(
 
         // Re-fetch so the returned workspace and the worker decision reflect any
         // freshly-detected owner/repo.
-        let refreshed: Workspace = sqlx::query_as::<_, Workspace>(
-            "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-        )
-        .bind(&existing.id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(AdeError::Db)?;
+        let refreshed: Workspace = crate::repo::workspace_by_id(&state.db, &existing.id).await?;
 
         // (Re)spawn a sync worker if this workspace is GitHub-linked (it was
         // torn down on close, or just became linked above).
@@ -214,13 +210,7 @@ pub async fn workspace_create(
         .await;
     }
 
-    let ws: Workspace = sqlx::query_as::<_, Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-    )
-    .bind(&ws_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AdeError::Db)?;
+    let ws: Workspace = crate::repo::workspace_by_id(&state.db, &ws_id).await?;
 
     Ok(ws)
 }
@@ -229,9 +219,11 @@ pub async fn workspace_create(
 pub async fn workspace_list(
     state: State<'_, Arc<crate::AppState>>,
 ) -> Result<Vec<Workspace>, AdeError> {
-    let workspaces: Vec<Workspace> = sqlx::query_as::<_, Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE closed_at IS NULL ORDER BY created_at",
-    )
+    let workspaces: Vec<Workspace> = sqlx::query_as::<_, Workspace>(concat!(
+        "SELECT ",
+        crate::repo::workspace_cols!(),
+        " FROM workspace WHERE closed_at IS NULL ORDER BY created_at"
+    ))
     .fetch_all(&state.db)
     .await
     .map_err(AdeError::Db)?;

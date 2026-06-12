@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   dropTargetForElements,
 } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import type { ElementDropTargetEventBasePayload } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
-import { boardGet, cardCreate, cardMove, subscribeBoard, terminalWrite } from "../lib/ipc";
+import { boardGet, cardCreate, cardMove, terminalWrite } from "../lib/ipc";
 import type { Card as CardType } from "../lib/ipc";
 import type { TerminalPreset } from "../store/settings";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
+import { COL_BACKLOG, COL_DOING, COL_DONE, COLUMN_ORDER } from "../lib/columns";
+import { useEnterAnimation } from "../lib/useEnterAnimation";
 import Card from "./Card";
 import CardDetail from "./CardDetail";
 import { ChevronIcon } from "./icons";
-
-export const COLUMN_ORDER = ["Backlog", "Doing", "Paused", "PR", "Done"];
 
 // Paginate cards per column so a long backlog can't make a column outgrow the
 // board panel. One page = PAGE_SIZE cards; the card list also scrolls internally
@@ -40,23 +40,8 @@ export default function Board({ workspaceId }: BoardProps) {
   // Per-column current page (0-indexed); columns paginate at PAGE_SIZE cards.
   const [pages, setPages] = useState<Record<string, number>>({});
 
-  // Subscribe to board events for the active workspace
-  useEffect(() => {
-    const unsub = subscribeBoard((payload) => {
-      setBoard(payload.workspace_id, payload.columns, payload.cards);
-    });
-    return () => {
-      unsub.then((u) => u());
-    };
-  }, [setBoard]);
-
-  // Fetch board data when workspace changes
-  useEffect(() => {
-    if (!workspaceId) return;
-    boardGet(workspaceId).then((res) => {
-      setBoard(workspaceId, res.columns, res.cards);
-    }).catch(() => {});
-  }, [workspaceId, setBoard]);
+  // Board subscription + fetch live in App (which owns them for every
+  // workspace); this component just renders from the store.
 
   // Reset pagination when the workspace changes.
   useEffect(() => {
@@ -87,7 +72,7 @@ export default function Board({ workspaceId }: BoardProps) {
       // Close terminal if card was dropped into Done
       try {
         const targetCol = board?.columns.find((c) => c.id === columnId);
-        if (targetCol?.name === "Done") {
+        if (targetCol?.name === COL_DONE) {
           const allCards = Object.values(board?.cardsByColumn || {}).flat();
           const draggedCard = allCards.find((c) => c.id === draggedCardId);
           if (draggedCard?.terminal_window_id) {
@@ -127,7 +112,7 @@ export default function Board({ workspaceId }: BoardProps) {
       // Close terminal if card was dropped into Done
       try {
         const targetCol = board?.columns.find((c) => c.id === targetColumnId);
-        if (targetCol?.name === "Done") {
+        if (targetCol?.name === COL_DONE) {
           const allCards = Object.values(cards).flat();
           const draggedCard = allCards.find((c) => c.id === draggedCardId);
           if (draggedCard?.terminal_window_id) {
@@ -146,7 +131,7 @@ export default function Board({ workspaceId }: BoardProps) {
 
   const handleCreateCard = () => {
     if (!workspaceId || !newTitle.trim()) return;
-    const backlog = columns.find((c) => c.name === "Backlog");
+    const backlog = columns.find((c) => c.name === COL_BACKLOG);
     if (!backlog) return;
     cardCreate(workspaceId, backlog.id, newTitle.trim()).then(() => {
       setNewTitle("");
@@ -161,7 +146,7 @@ export default function Board({ workspaceId }: BoardProps) {
       if (!workspaceId) return;
       const board = useBoardStore.getState().boards[workspaceId];
       if (!board) return;
-      const doingCol = board.columns.find((c) => c.name === "Doing");
+      const doingCol = board.columns.find((c) => c.name === COL_DOING);
       if (!doingCol) return;
 
       // If the card already has a live terminal, run the preset's open commands
@@ -197,8 +182,12 @@ export default function Board({ workspaceId }: BoardProps) {
     [workspaceId, optimisticMove]
   );
 
-  const sortedColumns = [...columns].sort(
-    (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
+  const sortedColumns = useMemo(
+    () =>
+      [...columns].sort(
+        (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
+      ),
+    [columns]
   );
 
   const workspaces = useWorkspacesStore((s) => s.workspaces);
@@ -279,7 +268,7 @@ export default function Board({ workspaceId }: BoardProps) {
             cards={cardsByColumn[col.id] || []}
             onDropCard={handleDropOnColumn}
             onDropBeforeCard={handleDropBeforeCard}
-            showNewCardInput={col.name === "Backlog"}
+            showNewCardInput={col.name === COL_BACKLOG}
             newTitle={newTitle}
             setNewTitle={setNewTitle}
             onCreateCard={handleCreateCard}
@@ -407,6 +396,12 @@ function Column({
   const visibleCards = cards.slice(start, start + PAGE_SIZE);
   const hasPages = cards.length > PAGE_SIZE;
 
+  // Entrance for cards genuinely new to this column (created, synced from
+  // GitHub, or moved in) — computed over the FULL column, not the visible page,
+  // so flipping pages never re-animates. The Column remounts per workspace
+  // (keyed by column id), so no reset key is needed here.
+  const { isEntering, onEntered } = useEnterAnimation(cards.map((c) => c.id));
+
   const pageBtnStyle: CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
@@ -485,6 +480,8 @@ function Column({
             onDropBefore={onDropBeforeCard}
             onDoubleClick={() => onCardDoubleClick(card.id)}
             onRunWithPreset={onRunWithPreset}
+            entering={isEntering(card.id)}
+            onEntered={() => onEntered(card.id)}
           />
         ))}
       </div>

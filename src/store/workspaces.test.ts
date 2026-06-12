@@ -70,6 +70,15 @@ describe("closeWorkspace", () => {
   });
 });
 
+describe("load hydration flag", () => {
+  it("starts unloaded and flips loaded=true after load() settles", async () => {
+    useWorkspacesStore.setState({ loaded: false });
+    expect(useWorkspacesStore.getState().loaded).toBe(false);
+    await useWorkspacesStore.getState().load();
+    expect(useWorkspacesStore.getState().loaded).toBe(true);
+  });
+});
+
 describe("addWorkspace dedupe", () => {
   beforeEach(() => {
     workspaceCreateMock.mockReset();

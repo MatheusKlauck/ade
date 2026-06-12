@@ -1,10 +1,36 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>ADE</title>
+    <script>
+      // Apply the last-used theme/accent BEFORE first paint, so a returning user
+      // never sees a flash of unstyled (or wrong-theme) content. The real,
+      // per-workspace settings load a moment later and re-apply + re-cache these
+      // (App.tsx). `data-theme="dark"` on <html> is the floor: even if this
+      // script or localStorage fails, the dark tokens are always defined.
+      (function () {
+        try {
+          var root = document.documentElement;
+          var theme = localStorage.getItem("ade-theme");
+          if (theme === "dark" || theme === "light") {
+            root.setAttribute("data-theme", theme);
+          }
+          var accent = localStorage.getItem("ade-accent");
+          if (accent && /^#[0-9a-fA-F]{3,8}$/.test(accent)) {
+            root.style.setProperty("--accent", accent);
+          }
+          var ink = localStorage.getItem("ade-accent-ink");
+          if (ink && /^#[0-9a-fA-F]{3,8}$/.test(ink)) {
+            root.style.setProperty("--accent-ink", ink);
+          }
+        } catch (e) {
+          /* localStorage unavailable — the data-theme="dark" default still applies */
+        }
+      })();
+    </script>
   </head>
 
   <body>

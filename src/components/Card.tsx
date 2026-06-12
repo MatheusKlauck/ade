@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import type { Card as CardType } from "../lib/ipc";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
+import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
 
 interface CardProps {
   card: CardType;
@@ -9,24 +10,10 @@ interface CardProps {
   onDoubleClick?: () => void;
   // Launch this card's task with a chosen terminal preset (right-click → Run with…).
   onRunWithPreset?: (card: CardType, preset: TerminalPreset) => void;
+  /** True while this card is animating in (new to its column). */
+  entering?: boolean;
+  onEntered?: () => void;
 }
-
-// Matches the terminal header context menu (TerminalPane.tsx) so card and
-// terminal menus read as one system.
-const menuItemStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  width: "100%",
-  padding: "6px 10px",
-  background: "transparent",
-  border: "none",
-  borderRadius: "var(--radius-sm)",
-  color: "var(--fg)",
-  cursor: "pointer",
-  fontSize: 13,
-  textAlign: "left",
-};
 
 function sourceBadge(card: CardType): string {
   if (card.source === "github" && card.github_issue_number) {
@@ -45,23 +32,15 @@ export default function Card({
   onDropBefore,
   onDoubleClick,
   onRunWithPreset,
+  entering,
+  onEntered,
 }: CardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [over, setOver] = useState(false);
-  // Position of the right-click "Run with…" menu, or null when closed.
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Right-click "Run with…" menu; Escape-to-dismiss is built into the hook.
+  const { menu, open: openMenu, close: closeMenu } = useContextMenu();
   const presets = useSettingsStore((s) => s.presets);
-
-  // Dismiss the context menu on Escape (mirrors TerminalPane).
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [menu]);
 
   // The drop-target effect below only re-runs on [card.id, card.column_id],
   // so its onDrop closure would otherwise capture a stale `onDropBefore`.
@@ -118,10 +97,14 @@ export default function Card({
     <>
     <div
       ref={ref}
+      className={entering ? "ade-card-enter" : undefined}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget) onEntered?.();
+      }}
       onDoubleClick={onDoubleClick}
       onContextMenu={(e) => {
         e.preventDefault();
-        setMenu({ x: e.clientX, y: e.clientY });
+        openMenu(e.clientX, e.clientY);
       }}
       style={{
         padding: "var(--space-sm) var(--space-md)",
@@ -135,7 +118,15 @@ export default function Card({
         borderRadius: "var(--radius-sm)",
         cursor: "grab",
         opacity: dragging ? 0.5 : 1,
-        transition: "background var(--dur-instant) var(--ease-out-quart)",
+        // Picked-up: a touch smaller, reading as "lifted away". Drop target: an
+        // accent inset ring (state, not resting decoration — stays flat at rest).
+        transform: dragging ? "scale(0.98)" : "scale(1)",
+        boxShadow: over ? "inset 0 0 0 1px var(--accent)" : "none",
+        transition:
+          "background var(--dur-instant) var(--ease-out-quart)," +
+          " transform var(--dur-instant) var(--ease-out-quart)," +
+          " box-shadow var(--dur-instant) var(--ease-out-quart)," +
+          " opacity var(--dur-instant) var(--ease-out-quart)",
       }}
     >
       <div
@@ -193,30 +184,7 @@ export default function Card({
     </div>
 
     {menu && (
-      <>
-        {/* Full-screen backdrop closes the menu on any click/right-click outside it. */}
-        <div
-          onClick={() => setMenu(null)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setMenu(null);
-          }}
-          style={{ position: "fixed", inset: 0, zIndex: 1000 }}
-        />
-        <div
-          style={{
-            position: "fixed",
-            top: menu.y,
-            left: menu.x,
-            zIndex: 1001,
-            minWidth: 170,
-            padding: 4,
-            background: "var(--surface-raised)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
-          }}
-        >
+      <ContextMenu position={menu} onClose={closeMenu} minWidth={170}>
           <div
             style={{
               padding: "4px 10px 6px",
@@ -252,7 +220,7 @@ export default function Card({
                 }}
                 onClick={() => {
                   onRunWithPreset?.(card, preset);
-                  setMenu(null);
+                  closeMenu();
                 }}
               >
                 <span
@@ -267,8 +235,7 @@ export default function Card({
               </button>
             ))
           )}
-        </div>
-      </>
+      </ContextMenu>
     )}
     </>
   );

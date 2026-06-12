@@ -2,23 +2,26 @@
 name: ADE
 description: Terminal-native, dark-first workspace where the board, terminals, and GitHub state stay legible at a glance.
 colors:
-  bg-base: "#1a1a1a"
-  surface-raised: "#222222"
-  surface-panel: "#1e1e1e"
-  surface-input: "#2a2a2a"
-  ink: "#cccccc"
-  ink-muted: "#999999"
-  border: "#333333"
-  border-input: "#444444"
-  accent: "#4a9eff"
+  bg-base: "#14122b"
+  surface-raised: "#241d40"
+  surface-panel: "#1b1633"
+  surface-input: "#221c3a"
+  ink: "#d6d2e2"
+  ink-muted: "#a39cba"
+  border: "#3a2f55"
+  border-input: "#463a66"
+  accent: "#f02fc2"
+  accent-cyan: "#2fdce4"
   on-accent: "#ffffff"
-  source-github: "#8250df"
-  source-local: "#6e7781"
+  accent-ink: "#1a1a1a"
+  source-github: "#a371f7"
+  source-local: "#8b949e"
   status-error: "#e74c3c"
   status-error-deep: "#c0392b"
-  status-info: "#2980b9"
+  status-info: "#0e7c8a"
   status-warning: "#f39c12"
-  focus-ring: "#3498db"
+  status-success: "#3fe07a"
+  focus-ring: "#f02fc2"
 typography:
   display:
     fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif"
@@ -71,7 +74,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.accent}"
-    textColor: "{colors.on-accent}"
+    textColor: "{colors.accent-ink}"
     rounded: "{rounded.sm}"
     padding: "6px 16px"
     typography: "{typography.body}"
@@ -144,12 +147,15 @@ is the home and the most-tuned.
 This system explicitly rejects three looks: the **generic SaaS dashboard** (gradient
 hero-metrics, identical rounded card grids, decorative purple-blue), the **cluttered IDE**
 (panel overload, busy toolbars, every control fighting for the same pixel), and the **flat
-Material / Google** look the UI is moving away from (Roboto, Google-blue `#4a9eff`, flat
-uniform shadows). Density is welcome; clutter is the enemy.
+Material / Google** look the UI was born in and has now left behind (Roboto, the retired
+Google-blue `#4a9eff`, flat uniform shadows). The accent has since evolved to a deliberate
+brand magenta (`#f02fc2`) on a deep indigo base; that move is done, not pending. Density is
+welcome; clutter is the enemy.
 
 **Key Characteristics:**
 - Dark-first; one calm surface, layered tonally rather than with shadows.
-- A single reserved accent — action, current selection, and state only, never decoration.
+- A single reserved accent (brand magenta) — action, current selection, and state only,
+  never decoration.
 - Monospace for identifiers and data; system sans for labels and prose.
 - Every state has a legible, redundant signal (color + icon/shape/label).
 - Tight, consistent radii (4px) and an 8px-based spacing rhythm.
@@ -157,44 +163,58 @@ uniform shadows). Density is welcome; clutter is the enemy.
 
 ## 2. Colors
 
-A near-black neutral base with cool blue accent and two semantic source hues; everything
-else is grayscale. Values below are the **dark theme** (canonical). The light theme mirrors
-each role at inverted lightness.
+A deep indigo→plum neutral base, tinted toward the magenta brand hue, carrying one magenta
+accent and two semantic source hues; everything else is a tinted near-black grayscale. Values
+below are the **dark theme** (canonical). The light theme mirrors each surface at inverted
+lightness, but the brand hues (accent, cyan) hold their value across both themes — the
+surfaces invert, the brand does not.
 
 ### Primary
-- **Signal Blue** (`#4a9eff`): The one accent. Primary buttons, active tab underline,
-  current selection, the syncing spinner, and the focus ring family. Reserved for action and
-  state — it should never appear as decoration. *Light theme:* a denser `#1a73e8`.
-  *(This is the inherited Google-blue and the top candidate to evolve toward a more
-  terminal-native hue; see Don'ts.)*
+- **Signal Magenta** (`#f02fc2`): The one action accent. Primary buttons, active tab
+  underline, current selection, the sync spinner, and the focus-ring family
+  (`focus-ring` is the same magenta). Reserved for action and state — it should never appear
+  as decoration. Holds at `#f02fc2` in both themes. *(This is the brand hue from the app icon;
+  it replaced the retired Google-blue `#4a9eff` — see Overview and Don'ts.)*
+  - **Accent-Ink** (`#1a1a1a` static fallback): the text color *on* the magenta button,
+    auto-computed at runtime (`contrastingTextColor`, App.tsx) so it stays legible for any
+    user-chosen accent. Saturated chips/status keep white text via **On-Accent** (`#ffffff`).
+- **Data Cyan** (`#2fdce4`): The brand's second hue, from the icon's cyan "data" mark.
+  Reserved narrowly for live/in-progress data signaling (sync, in-flight state) — the only
+  sanctioned non-magenta brand color, and still never decoration. *Light theme:* a deepened
+  `#0c7a86`.
 
 ### Secondary — Source identity
-- **Linked Violet** (`#8250df`): Marks a card mirrored from a GitHub issue (badge, the
+- **Linked Violet** (`#a371f7`): Marks a card mirrored from a GitHub issue (badge, the
   `owner/repo` tag in tabs). Borrowed from GitHub's own palette so the association reads
-  instantly.
-- **Local Slate** (`#6e7781`): Marks a local-only card (badge, `local` tag). Deliberately
-  muted so linked cards read as the "promoted" state.
+  instantly; lightened on the dark base so the 10–11px tags clear WCAG AA (≈5.6:1).
+  *Light theme:* a denser `#6639ba`.
+- **Local Slate** (`#8b949e`): Marks a local-only card (badge, `local` tag). Deliberately
+  muted so linked cards read as the "promoted" state. *Light theme:* `#57606a`.
 
 ### Neutral — the surface stack
-Depth is built from four near-black layers, lightest sitting on top:
-- **Base** (`#1a1a1a`): The app background, behind everything.
-- **Raised** (`#222222`): Kanban columns and grouped regions that lift off the base.
-- **Panel** (`#1e1e1e`): Cards, the active tab, modals, terminal chrome.
-- **Input** (`#2a2a2a`): Field fills and ghost-button rest state.
-- **Ink** (`#cccccc`): Primary text. **Ink-Muted** (`#999999`): labels, metadata,
+Depth is built from four indigo-plum layers (no shadow), each tinted toward the magenta brand
+hue. Listed darkest → lightest; depth comes from going *lighter*, not from shadow:
+- **Base** (`#14122b`): The app background, behind everything — the darkest surface.
+- **Panel** (`#1b1633`): Cards, the active tab, modals, terminal chrome.
+- **Input** (`#221c3a`): Field fills and ghost-button rest state.
+- **Raised** (`#241d40`): Kanban columns and grouped regions that lift off the base — the
+  lightest surface.
+- **Ink** (`#d6d2e2`): Primary text. **Ink-Muted** (`#a39cba`): labels, metadata,
   secondary text.
-- **Border** (`#333333`) / **Border-Input** (`#444444`): hairline dividers and field strokes.
+- **Border** (`#3a2f55`) / **Border-Input** (`#463a66`): hairline dividers and field strokes.
 
 ### Tertiary — semantic status
 - **Error** (`#e74c3c`) / **Error-Deep** (`#c0392b`): sync failures, validation, the error
   toast fill.
-- **Info** (`#2980b9`): the info toast fill.
+- **Info** (`#0e7c8a`): the info toast fill (a deep teal, distinct from Data Cyan).
 - **Warning** (`#f39c12`): degraded / attention states (tmux missing, dirty worktree).
-- **Focus Ring** (`#3498db`): the terminal-pane focus indicator.
+- **Success** (`#3fe07a`): confirmed/healthy state. *Light theme:* a denser `#107a39`.
+- **Focus Ring** (`#f02fc2`): the terminal-pane focus indicator — the brand magenta.
 
 ### Named Rules
-**The One Accent Rule.** Signal Blue carries action and state, nothing else. If you reach
-for it to "add color," stop — the answer is hierarchy or a neutral, not more blue.
+**The One Accent Rule.** Signal Magenta carries action and state, nothing else. If you reach
+for it to "add color," stop — the answer is hierarchy or a neutral, not more magenta. Data
+Cyan is the lone exception, and only for live/in-progress data — never for emphasis.
 
 **The Two-Hue Source Rule.** Only Linked Violet and Local Slate carry meaning beyond the
 neutral/accent system. Don't introduce a third identity hue; card state is a binary.
@@ -238,8 +258,8 @@ soft gray shadows on a light card.
 Shadow-like treatments are reserved for two non-resting moments:
 - **Modal scrim:** a `rgba(0,0,0,0.6)` overlay dims the app behind dialogs (Settings,
   Card detail).
-- **Focus ring:** a brief Signal-Blue / Focus-Ring glow announces a terminal pane that was
-  just focused or auto-launched (see Components).
+- **Focus ring:** a brief magenta (`focus-ring` `#f02fc2`) glow announces a terminal pane that
+  was just focused or auto-launched (see Components).
 
 ### Named Rules
 **The Flat-At-Rest Rule.** If a surface needs to feel "above" another, move it up the tonal
@@ -254,58 +274,59 @@ accent reserved for action and state. Quiet until you interact.
 
 ### Buttons
 - **Shape:** 4px radius (`{rounded.sm}`); larger empty-state CTAs use 6px (`{rounded.md}`).
-- **Primary:** Signal-Blue fill, white text, no border, `6px 16px` padding. The single
-  affirmative action per surface.
+- **Primary:** Signal-Magenta fill, auto-contrasting Accent-Ink text, no border, `6px 16px`
+  padding. The single affirmative action per surface.
 - **Ghost / Secondary:** Input-fill or transparent with a 1px Border-Input stroke, Ink or
   Ink-Muted text. Close, Replace, the `+` add-workspace, settings gear.
-- **Hover / Focus:** *Gap to close.* States are not yet defined. Target: hover lightens the
-  fill one tonal step (or accent → a slightly brighter blue) over 150ms; focus shows a
-  2px Signal-Blue ring. Ship the whole set, not just the default.
+- **Hover / Focus:** hover lifts the fill via `brightness(1.08)` over ~180ms (active dims to
+  `0.94`); `:focus-visible` shows a 2px magenta (`focus-ring`) ring at `2px` offset. Defined
+  globally in `styles.css` so every button inherits the set.
 - **Disabled:** Input fill, Ink-Muted text, `not-allowed` cursor, 0.5 opacity.
 
 ### Cards (Kanban)
 - **Corner / Padding:** 4px radius, `8px 12px` padding, 8px vertical gap between cards.
-- **Background:** Panel (`#1e1e1e`) at rest; **drag** = one step lighter; **drop-target** =
-  an accent-tinted fill (Signal Blue at ~8% over the surface), *not* a hardcoded light blue.
+- **Background:** Panel (`#1b1633`) at rest; **drag** = one step lighter; **drop-target** =
+  an accent-tinted fill (`drop-target`: Signal Magenta at ~12% over the surface via
+  `color-mix`), *not* a hardcoded light blue.
 - **Source badge:** a pill (10px radius, 10px micro text) — Linked Violet `#123` for GitHub
   cards, Local Slate `local` for local cards. Issue number set in the badge.
 - **Assignee:** two-letter initials, 11px Ink-Muted, below the title.
 
 ### Columns
-- **Background:** Raised (`#222222`) — a single tonal step above the base, never a light gray.
+- **Background:** Raised (`#241d40`) — the lightest tonal step above the base, never a light gray.
 - **Header:** 14px/600 column name; drop-over tints the column with accent-at-low-alpha.
 - **Width:** 260–320px; horizontal scroll when columns overflow.
 
 ### Inputs / Fields
 - **Style:** Input fill, 1px Border-Input stroke, 4px radius, `8px 12px`, 13px text.
-- **Focus:** *Gap to close.* Currently `outline: none` with no replacement — fails keyboard
-  accessibility. Target: a 1px Signal-Blue border + soft Signal-Blue ring on `:focus-visible`.
+- **Focus:** a magenta (`accent`) border plus a soft `3px` magenta ring (`color-mix` at 25%)
+  on `:focus-visible`, defined globally in `styles.css`.
 - **Mono fields:** token/identifier inputs use the mono face.
 
 ### Navigation (Workspace Tabs)
-- **Style:** a top tab bar over the base; active tab = Panel fill + 2px Signal-Blue bottom
-  border + Ink/600 text; inactive = transparent + Ink-Muted/400. Each tab shows the
+- **Style:** a top tab bar over the base; active tab = Panel fill + 2px magenta (`accent`)
+  bottom border + Ink/600 text; inactive = transparent + Ink-Muted/400. Each tab shows the
   `owner/repo` (Linked Violet) or `local` (Local Slate) tag and a live SyncIndicator.
 
 ### Signature: SyncIndicator
 The clearest expression of "state is never a guess." Three states, each color **plus** an
 icon and label so it survives color-blindness and grayscale:
-- **Syncing:** Signal-Blue spinner + "Syncing…".
+- **Syncing:** magenta (`accent`) spinner + "Syncing…".
 - **Idle:** "✓ Synced {relative time}" in muted ink.
 - **Error:** "⚠ Sync error" in Error red, with a tooltip.
 
 ### Signature: Terminal pane focus glow
 When a pane is focused or auto-launched from a card moving to Doing, its border animates a
-1s Signal-Blue glow → border, then settles. This is the one piece of "alive" motion; keep it
-brief and provide a reduced-motion fallback (instant border, no glow).
+1s magenta (`focus-ring`) glow → border, then settles. This is the one piece of "alive"
+motion; keep it brief and provide a reduced-motion fallback (instant border, no glow).
 
 ## 6. Do's and Don'ts
 
 ### Do:
 - **Do** keep the surface flat at rest and build depth with the tonal stack
-  (base `#1a1a1a` → raised `#222222` → panel `#1e1e1e` → input `#2a2a2a`).
-- **Do** reserve Signal-Blue for action, current selection, and state. Decoration uses
-  neutrals or hierarchy.
+  (base `#14122b` → panel `#1b1633` → input `#221c3a` → raised `#241d40`).
+- **Do** reserve Signal-Magenta for action, current selection, and state. Decoration uses
+  neutrals or hierarchy. Data Cyan is allowed only for live/in-progress data.
 - **Do** set every identifier, issue number, branch, token, and command in the mono face.
 - **Do** give every state a redundant signal: color **and** an icon, shape, or label
   (the SyncIndicator is the model).
@@ -322,8 +343,9 @@ brief and provide a reduced-motion fallback (instant border, no glow).
   identical rounded card grids as decoration, no decorative purple-blue.
 - **Don't** build **cluttered IDE chrome**: no toolbar overload, no panel-in-panel nesting,
   no control shown "just in case."
-- **Don't** lean on the **flat Material / Google** look — and treat the inherited Google-blue
-  `#4a9eff` as provisional; evolve the accent toward a more deliberate, terminal-native hue.
+- **Don't** lean on the **flat Material / Google** look, and don't reintroduce the retired
+  Google-blue `#4a9eff` (Roboto, uniform shadows). The accent is now a deliberate brand
+  magenta `#f02fc2` on a deep indigo base — that evolution is complete; keep it.
 - **Don't** play **terminal costume**: no neon/matrix green, no glitch, no fake-CRT scanlines.
   Terminal-native here is real density and mono, not theatrics.
 - **Don't** add box-shadows to resting surfaces, or `outline: none` without a visible

@@ -1,7 +1,6 @@
 // M2-T7: Core types for the GitHub client and sync engine.
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct RemoteIssue {
     pub number: u64,
     pub title: String,
@@ -16,7 +15,6 @@ pub struct RemoteIssue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum SyncAction {
     CreateCard {
         issue: RemoteIssue,
@@ -29,6 +27,7 @@ pub enum SyncAction {
     RefreshCardFields {
         card_id: String,
     },
+    #[allow(dead_code)] // constructed only by engine tests today
     TouchRemoteUpdatedAt {
         card_id: String,
     },
@@ -36,7 +35,6 @@ pub enum SyncAction {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct IssueComment {
     pub id: u64,
     pub user_login: String,
@@ -46,11 +44,62 @@ pub struct IssueComment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum ColumnName {
     Backlog,
     Doing,
     Paused,
     Pr,
     Done,
+}
+
+/// The kanban labels managed by ADE on GitHub, with their colors.
+pub const KANBAN_LABELS_WITH_COLORS: &[(&str, &str)] = &[
+    (KANBAN_DOING, "1f883d"),
+    (KANBAN_PAUSED, "d4a72c"),
+    (KANBAN_PR, "8250df"),
+];
+
+pub const KANBAN_DOING: &str = "kanban:doing";
+pub const KANBAN_PAUSED: &str = "kanban:paused";
+pub const KANBAN_PR: &str = "kanban:pr";
+
+/// All kanban label names (used for "remove all kanban labels").
+pub const KANBAN_LABELS: &[&str] = &[KANBAN_DOING, KANBAN_PAUSED, KANBAN_PR];
+
+impl ColumnName {
+    /// The canonical board column name as stored in the DB and shown in the UI.
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ColumnName::Backlog => "Backlog",
+            ColumnName::Doing => "Doing",
+            ColumnName::Paused => "Paused",
+            ColumnName::Pr => "PR",
+            ColumnName::Done => "Done",
+        }
+    }
+
+    /// Parse a canonical column name. Single source of truth for the
+    /// string ↔ enum mapping used by the board, sync worker, and outbox.
+    pub fn try_from_str(name: &str) -> Option<ColumnName> {
+        match name {
+            "Backlog" => Some(ColumnName::Backlog),
+            "Doing" => Some(ColumnName::Doing),
+            "Paused" => Some(ColumnName::Paused),
+            "PR" => Some(ColumnName::Pr),
+            "Done" => Some(ColumnName::Done),
+            _ => None,
+        }
+    }
+
+    /// The kanban label that marks this column on GitHub.
+    /// Done and Backlog have no label.
+    pub fn kanban_label(&self) -> Option<&'static str> {
+        match self {
+            ColumnName::Doing => Some(KANBAN_DOING),
+            ColumnName::Paused => Some(KANBAN_PAUSED),
+            ColumnName::Pr => Some(KANBAN_PR),
+            ColumnName::Done | ColumnName::Backlog => None,
+        }
+    }
 }

@@ -45,3 +45,29 @@ export function contrastingTextColor(bg: string): string {
     ? DARK_INK
     : LIGHT_INK;
 }
+
+/** WCAG contrast ratio between two hex colors, or null if either won't parse. */
+export function contrastRatioHex(a: string, b: string): number | null {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  if (la === null || lb === null) return null;
+  return contrastRatio(la, lb);
+}
+
+/**
+ * The best achievable contrast for label text sitting ON an accent fill — i.e.
+ * the ratio `contrastingTextColor` actually delivers. Used to warn when a
+ * user-chosen accent can't carry legible button text in either ink. Null if the
+ * accent can't be parsed.
+ */
+export function bestInkContrast(
+  accent: string
+): { ink: string; ratio: number } | null {
+  const L = relativeLuminance(accent);
+  if (L === null) return null;
+  const dark = contrastRatio(L, relativeLuminance(DARK_INK) as number);
+  const light = contrastRatio(L, relativeLuminance(LIGHT_INK) as number);
+  return dark >= light
+    ? { ink: DARK_INK, ratio: dark }
+    : { ink: LIGHT_INK, ratio: light };
+}

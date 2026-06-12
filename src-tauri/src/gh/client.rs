@@ -1,21 +1,25 @@
 // M2-T7: GitHub client with injectable base URL for wiremock testing.
 
 use crate::error::AdeError;
-use crate::gh::types::{IssueComment, RemoteIssue};
+use crate::gh::types::{IssueComment, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
 use std::time::Duration;
+
+/// Production GitHub API base URL (overridable for tests).
+pub const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// Max characters kept in a card's `body_preview`.
+const BODY_PREVIEW_CHARS: usize = 280;
 
 /// HTTP client for the GitHub Issues API.
 ///
 /// `base_url` defaults to `https://api.github.com` in production but can be
 /// overridden with a wiremock URL in tests.
-#[allow(dead_code)]
 pub struct GitHubClient {
     base_url: String,
     token: String,
     http: reqwest::Client,
 }
 
-#[allow(dead_code)]
 impl GitHubClient {
     pub fn new(base_url: String, token: String) -> Self {
         // Build a client with bounded timeouts and a short idle-pool timeout.
@@ -38,6 +42,12 @@ impl GitHubClient {
             token,
             http,
         }
+    }
+
+    /// Whether a (non-empty) token is configured. Workers skip cycles when
+    /// no token is available instead of spamming 401 errors.
+    pub fn has_token(&self) -> bool {
+        !self.token.is_empty()
     }
 
     /// Seed fetch: GET /repos/{owner}/{repo}/issues?state=open&per_page=100&page=N
@@ -89,11 +99,21 @@ impl GitHubClient {
         let mut page: u32 = 1;
 
         loop {
-            let url = format!(
-                "{}/repos/{}/{}/issues?state=all&per_page=100&since={}&page={}",
-                self.base_url, owner, repo, since, page
-            );
-            let response = self.get(&url).await?;
+            // Build via Url so `since` is percent-encoded — an RFC3339 watermark
+            // like `2026-01-01T00:00:00+00:00` carries a `+` that would otherwise
+            // be decoded as a space, making GitHub ignore the param entirely
+            // (silently turning every incremental fetch into a full fetch).
+            let url = reqwest::Url::parse_with_params(
+                &format!("{}/repos/{}/{}/issues", self.base_url, owner, repo),
+                &[
+                    ("state", "all"),
+                    ("per_page", "100"),
+                    ("since", since),
+                    ("page", &page.to_string()),
+                ],
+            )
+            .map_err(|e| AdeError::GitHub(format!("invalid incremental url: {e}")))?;
+            let response = self.get(url.as_str()).await?;
             let items: Vec<serde_json::Value> = response.json().await.map_err(|e| {
                 AdeError::GitHub(format!("failed to parse incremental response: {e}"))
             })?;
@@ -161,17 +181,21 @@ impl GitHubClient {
             .await?;
 
         let response = self.check_rate_limit(response).await?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(AdeError::GitHub(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                body.chars().take(200).collect::<String>()
-            )));
-        }
+        Self::expect_success(response).await
+    }
 
-        Ok(response)
+    /// Map a non-2xx response into an `AdeError::GitHub` with a truncated body.
+    async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response, AdeError> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(AdeError::GitHub(format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            body.chars().take(200).collect::<String>()
+        )))
     }
 
     /// Map a JSON array of GitHub issue objects to RemoteIssue, filtering out PRs.
@@ -226,14 +250,9 @@ impl GitHubClient {
             .and_then(|b| b.as_str())
             .map(|s| s.to_string());
 
-        let body_preview = raw_body.as_ref().map(|body| {
-            let chars: Vec<char> = body.chars().collect();
-            if chars.len() <= 280 {
-                chars.into_iter().collect()
-            } else {
-                chars[..280].iter().collect()
-            }
-        });
+        let body_preview = raw_body
+            .as_ref()
+            .map(|body| body.chars().take(BODY_PREVIEW_CHARS).collect::<String>());
 
         Ok(RemoteIssue {
             number,
@@ -254,29 +273,17 @@ impl GitHubClient {
     /// Ensure the three kanban labels exist in the repo.
     /// POST /repos/{owner}/{repo}/labels for each label.
     /// HTTP 422 (already exists) → OK.
-    #[allow(dead_code)]
     pub async fn ensure_labels(&self, owner: &str, repo: &str) -> Result<(), AdeError> {
-        let labels = [
-            ("kanban:doing", "1f883d"),
-            ("kanban:paused", "d4a72c"),
-            ("kanban:pr", "8250df"),
-        ];
-
-        for (name, color) in &labels {
+        for (name, color) in KANBAN_LABELS_WITH_COLORS {
             let url = format!("{}/repos/{}/{}/labels", self.base_url, owner, repo);
             let body = serde_json::json!({
                 "name": name,
                 "color": color,
             });
             let response = self.post(&url, &body).await?;
-            let status = response.status().as_u16();
-            if status != 201 && status != 422 {
-                let text = response.text().await.unwrap_or_default();
-                return Err(AdeError::GitHub(format!(
-                    "HTTP {}: {}",
-                    status,
-                    text.chars().take(200).collect::<String>()
-                )));
+            // 422 = label already exists.
+            if response.status().as_u16() != 422 {
+                Self::expect_success(response).await?;
             }
         }
 
@@ -286,7 +293,6 @@ impl GitHubClient {
     /// Add a label to an issue.
     /// POST /repos/{owner}/{repo}/issues/{issue_number}/labels
     /// HTTP 404 → OK (label already removed).
-    #[allow(dead_code)]
     pub async fn add_label(
         &self,
         owner: &str,
@@ -302,25 +308,16 @@ impl GitHubClient {
             "labels": [label],
         });
         let response = self.post(&url, &body).await?;
-        let status = response.status();
-        if status.as_u16() == 404 {
+        if response.status().as_u16() == 404 {
             return Ok(());
         }
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(AdeError::GitHub(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                text.chars().take(200).collect::<String>()
-            )));
-        }
+        Self::expect_success(response).await?;
         Ok(())
     }
 
     /// Remove a label from an issue.
     /// DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{label}
     /// HTTP 404 → OK (label already gone).
-    #[allow(dead_code)]
     pub async fn remove_label(
         &self,
         owner: &str,
@@ -333,24 +330,15 @@ impl GitHubClient {
             self.base_url, owner, repo, issue_number, label
         );
         let response = self.delete(&url).await?;
-        let status = response.status();
-        if status.as_u16() == 404 {
+        if response.status().as_u16() == 404 {
             return Ok(());
         }
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(AdeError::GitHub(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                text.chars().take(200).collect::<String>()
-            )));
-        }
+        Self::expect_success(response).await?;
         Ok(())
     }
 
     /// Open or close an issue.
     /// PATCH /repos/{owner}/{repo}/issues/{issue_number} with body { "state": state }.
-    #[allow(dead_code)]
     pub async fn set_issue_state(
         &self,
         owner: &str,
@@ -366,21 +354,12 @@ impl GitHubClient {
             "state": state,
         });
         let response = self.patch(&url, &body).await?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(AdeError::GitHub(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                text.chars().take(200).collect::<String>()
-            )));
-        }
+        Self::expect_success(response).await?;
         Ok(())
     }
 
     /// Create a new issue.
     /// POST /repos/{owner}/{repo}/issues with body { "title": title, "body": body }.
-    #[allow(dead_code)]
     pub async fn create_issue(
         &self,
         owner: &str,
@@ -393,7 +372,7 @@ impl GitHubClient {
             "title": title,
             "body": body,
         });
-        let response = self.post(&url, &json_body).await?;
+        let response = Self::expect_success(self.post(&url, &json_body).await?).await?;
         let item: serde_json::Value = response
             .json()
             .await
@@ -403,7 +382,6 @@ impl GitHubClient {
 
     /// Fetch a single issue by number.
     /// GET /repos/{owner}/{repo}/issues/{issue_number}
-    #[allow(dead_code)]
     pub async fn get_issue(
         &self,
         owner: &str,
@@ -424,7 +402,6 @@ impl GitHubClient {
 
     /// Fetch up to 30 comments for an issue.
     /// GET /repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=30
-    #[allow(dead_code)]
     pub async fn get_issue_comments(
         &self,
         owner: &str,

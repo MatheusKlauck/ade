@@ -18,7 +18,7 @@ import AppBar from "./components/AppBar";
 import Settings from "./components/Settings";
 import TerminalArea from "./components/TerminalArea";
 import KanbanDock from "./components/KanbanDock";
-import Toast, { type ToastData } from "./components/Toast";
+import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
@@ -147,18 +147,47 @@ function formatTerminalAlert(p: TerminalAlertPayload): string {
   const who = title ? `${title}: ` : "";
   if (p.kind === "completed") {
     const failed = p.detail && p.detail !== "0";
-    return `${who}comando concluído${failed ? ` (exit ${p.detail})` : ""}`;
+    return failed
+      ? `${who}command failed (exit ${p.detail})`
+      : `${who}command finished`;
   }
   if (p.kind === "bell") return `${who}bell`;
-  return `${who}${p.detail || "notificação"}`;
+  return `${who}${p.detail || "notification"}`;
+}
+
+/** Most toasts visible at once. A burst beyond this drops the oldest, but never
+ * an error — errors must not vanish silently (they also persist in the
+ * NotificationCenter), so they're kept even past the cap. */
+const MAX_TOASTS = 3;
+
+function capToasts(list: ToastItem[]): ToastItem[] {
+  if (list.length <= MAX_TOASTS) return list;
+  let toDrop = list.length - MAX_TOASTS;
+  return list.filter((t) => {
+    if (toDrop > 0 && t.level !== "error") {
+      toDrop--;
+      return false;
+    }
+    return true;
+  });
 }
 
 export default function App() {
-  const [toast, setToast] = useState<ToastData | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const toastIdRef = useRef(0);
 
-  // Stable so the Toast's auto-dismiss timer isn't reset on every App re-render.
-  const dismissToast = useCallback(() => setToast(null), []);
+  // Append a toast to the stack (capped; errors never silently dropped).
+  const pushToast = useCallback((data: ToastData) => {
+    setToasts((cur) =>
+      capToasts([...cur, { ...data, id: ++toastIdRef.current }])
+    );
+  }, []);
+  // Stable so each Toast's auto-dismiss timer isn't reset on every re-render.
+  const dismissToast = useCallback(
+    (id: number) => setToasts((cur) => cur.filter((t) => t.id !== id)),
+    []
+  );
 
   // Apply theme at startup using settings store
   const settingsLoad = useSettingsStore((s) => s.load);
@@ -166,15 +195,22 @@ export default function App() {
   const settingsAccent = useSettingsStore((s) => s.accent);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
 
-  // Apply theme/accent from store whenever they change (and on initial load)
+  // Apply theme/accent from store whenever they change (and on initial load),
+  // then cache them so the pre-paint script in index.html can restore the same
+  // values on the next cold start — no flash of the wrong theme.
   useEffect(() => {
     if (settingsLoaded) {
+      const ink = contrastingTextColor(settingsAccent);
       document.documentElement.setAttribute("data-theme", settingsTheme);
       document.documentElement.style.setProperty("--accent", settingsAccent);
-      document.documentElement.style.setProperty(
-        "--accent-ink",
-        contrastingTextColor(settingsAccent)
-      );
+      document.documentElement.style.setProperty("--accent-ink", ink);
+      try {
+        localStorage.setItem("ade-theme", settingsTheme);
+        localStorage.setItem("ade-accent", settingsAccent);
+        localStorage.setItem("ade-accent-ink", ink);
+      } catch {
+        /* best-effort cache; quota/availability errors are non-fatal */
+      }
     }
   }, [settingsTheme, settingsAccent, settingsLoaded]);
 
@@ -195,6 +231,7 @@ export default function App() {
   const loadPresetWindows = useTerminalsStore((s) => s.loadPresetWindows);
   const loadLayout = useTerminalsStore((s) => s.loadLayout);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
+  const workspacesLoaded = useWorkspacesStore((s) => s.loaded);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const updateSyncStatus = useWorkspacesStore((s) => s.updateSyncStatus);
@@ -219,17 +256,14 @@ export default function App() {
   const notifyPush = useNotificationsStore((s) => s.push);
 
   useEffect(() => {
-    let unsub: (() => void) | null = null;
-    subscribeNotify((payload) => {
-      setToast(payload);
+    const unsub = subscribeNotify((payload) => {
+      pushToast(payload);
       notifyPush(payload.level as NotifyLevel, payload.code as NotifyCode, payload.message);
-    }).then((u) => {
-      unsub = u;
     });
     return () => {
-      if (unsub) unsub();
+      unsub.then((u) => u());
     };
-  }, [notifyPush]);
+  }, [notifyPush, pushToast]);
 
   // Load workspaces on mount
   useEffect(() => {
@@ -272,6 +306,13 @@ export default function App() {
       const last = alertThrottle.current.get(key) ?? 0;
       if (now - last < 700) return;
       alertThrottle.current.set(key, now);
+      // Bounded: past ~200 entries, evict everything older than the throttle
+      // window so a long session of many windows can't grow the map forever.
+      if (alertThrottle.current.size > 200) {
+        for (const [k, t] of alertThrottle.current) {
+          if (now - t >= 700) alertThrottle.current.delete(k);
+        }
+      }
 
       useWorkspacesStore
         .getState()
@@ -314,8 +355,13 @@ export default function App() {
     const unsub = subscribeTerminalFocus(async (payload) => {
       const { workspace_id, window_id } = payload;
 
-      // Check if a pane for this window_id already exists
-      const existing = panes.find((p) => p.windowId === window_id);
+      // Check if a pane for this window_id already exists. Read panes via
+      // getState() so this subscription mounts once — depending on `panes`
+      // would tear down/re-create the Tauri listener on every pane change and
+      // could drop a terminal_focus event in the gap.
+      const existing = useTerminalsStore
+        .getState()
+        .panes.find((p) => p.windowId === window_id);
       if (existing) {
         // Pane exists — highlight it briefly
         focusWindow(window_id);
@@ -350,14 +396,24 @@ export default function App() {
           });
           focusWindow(window_id);
         } catch {
-          // Window may no longer exist
+          // The tmux window is gone (died/killed since the focus event was
+          // queued). Surface it rather than swallow — same rule the reattach
+          // path follows: nothing fails silently.
+          const title = titleForWindow(workspace_id, window_id);
+          pushToast({
+            level: "warn",
+            code: "TERMINAL_GONE",
+            message: title
+              ? `Couldn't open "${title}" — its tmux window is gone.`
+              : "Couldn't open that terminal — its tmux window is gone.",
+          });
         }
       }
     });
     return () => {
       unsub.then((u) => u());
     };
-  }, [panes, focusWindow, addPane]);
+  }, [focusWindow, addPane, pushToast]);
 
   // Subscribe to terminal close events (a card moved to Done). The backend has
   // already killed the tmux window; drop the matching pane from the UI.
@@ -411,9 +467,10 @@ export default function App() {
         );
         if (!stored) return;
         const windowIds: string[] = JSON.parse(stored);
-        let failed = 0;
-        for (const wid of windowIds) {
-          try {
+        // Reattach in parallel — each window is independent, and a serial loop
+        // would make restore latency scale with the number of terminals.
+        const results = await Promise.allSettled(
+          windowIds.map(async (wid) => {
             const result = await terminalOpen(activeWorkspaceId, wid);
             const pane: OpenTerminal = {
               paneId: result.paneId,
@@ -422,16 +479,16 @@ export default function App() {
               channel: result.channel,
             };
             addPane(pane);
-          } catch {
-            // The tmux window is gone (died/killed since we last saw it). That's
-            // silent data loss for the user, so surface it rather than swallow.
-            failed++;
-          }
-        }
+          })
+        );
+        // A rejection means the tmux window is gone (died/killed since we last
+        // saw it). That's silent data loss for the user, so surface it rather
+        // than swallow.
+        const failed = results.filter((r) => r.status === "rejected").length;
         if (failed > 0) {
           // Toast (not the history store): there's no CONTRACTS §7 code for
           // reattach loss, and that enum is exhaustive — so don't invent one.
-          setToast({
+          pushToast({
             level: "warn",
             code: "TERMINALS_NOT_RESTORED",
             message: `${failed} terminal${failed > 1 ? "s" : ""} couldn't be restored — the tmux window${failed > 1 ? "s are" : " is"} gone.`,
@@ -446,7 +503,7 @@ export default function App() {
       }
     }
     reattach();
-  }, [activeWorkspaceId, addPane, getPanesForWorkspace, removePanesForWorkspace]);
+  }, [activeWorkspaceId, addPane, getPanesForWorkspace, removePanesForWorkspace, pushToast]);
 
   // Persist window IDs when panes change (for current workspace)
   useEffect(() => {
@@ -499,10 +556,27 @@ export default function App() {
   };
 
   const handleSettingsSaved = (login: string) => {
-    setToast({ level: "info", code: "TOKEN_SAVED", message: `GitHub connected as ${login}` });
+    pushToast({ level: "info", code: "TOKEN_SAVED", message: `GitHub connected as ${login}` });
   };
 
-  // Show onboarding when no workspaces exist
+  // Until the first workspace load settles, hold a calm themed shell — never the
+  // onboarding screen — so a returning user doesn't flash "no workspaces" for a
+  // frame on every cold start. (Load is local/fast; this is just the seam.)
+  if (!workspacesLoaded) {
+    return (
+      <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)" }}>
+        {/* titleBarStyle: Overlay removes the native title bar, so keep a drag
+            handle even while hydrating. */}
+        <div
+          data-tauri-drag-region
+          style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
+        />
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
+  // Loaded and genuinely empty → the onboarding screen.
   if (workspaces.length === 0) {
     return (
       <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)", color: "var(--fg)" }}>
@@ -512,7 +586,7 @@ export default function App() {
           data-tauri-drag-region
           style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
         />
-        {toast && <Toast toast={toast} onDismiss={dismissToast} />}
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
         <Onboarding />
       </div>
     );
@@ -534,7 +608,7 @@ export default function App() {
         color: "var(--fg)",
       }}
     >
-      {toast && <Toast toast={toast} onDismiss={dismissToast} />}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
       <AppBar onOpenSettings={() => setShowSettings(true)} />
       <TerminalArea
         panes={activePanes}

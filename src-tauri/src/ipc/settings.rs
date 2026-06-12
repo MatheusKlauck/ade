@@ -4,9 +4,13 @@ use sqlx::Row;
 use std::sync::Arc;
 use tauri::State;
 
+/// Default background sync interval. Single source for the settings default
+/// and the worker-spawn fallback in lib.rs.
+pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 30;
+
 fn default_setting(key: &str) -> Option<String> {
     match key {
-        "sync_interval_secs" => Some("30".into()),
+        "sync_interval_secs" => Some(DEFAULT_SYNC_INTERVAL_SECS.to_string()),
         "auto_branch" => Some("true".into()),
         "theme" => Some("dark".into()),
         "startup_command_global" => Some("".into()),

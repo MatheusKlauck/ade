@@ -8,6 +8,7 @@ mod gitlocal;
 mod ipc;
 mod models;
 mod pty;
+mod repo;
 mod sync;
 mod term_monitor;
 pub mod tmux;
@@ -57,13 +58,7 @@ async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeEr
     .await
     .map_err(crate::error::AdeError::Db)?;
 
-    let _ws: crate::models::Workspace = sqlx::query_as::<_, crate::models::Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-    )
-    .bind(&ws_id)
-    .fetch_one(pool)
-    .await
-    .map_err(crate::error::AdeError::Db)?;
+    let _ws: crate::models::Workspace = repo::workspace_by_id(pool, &ws_id).await?;
 
     let col_names = ["Backlog", "Doing", "Paused", "PR", "Done"];
     for (i, name) in col_names.iter().enumerate() {
@@ -103,7 +98,7 @@ pub async fn spawn_worker_for_workspace(
     drop(map);
 
     let gh = Arc::new(crate::gh::client::GitHubClient::new(
-        "https://api.github.com".to_string(),
+        crate::gh::client::GITHUB_API_BASE.to_string(),
         token,
     ));
     let notify = Arc::new(tokio::sync::Notify::new());
@@ -115,7 +110,7 @@ pub async fn spawn_worker_for_workspace(
         crate::ipc::settings::workspace_setting_value(&pool, &workspace_id, "sync_interval_secs")
             .await
             .and_then(|v| v.parse().ok())
-            .unwrap_or(30);
+            .unwrap_or(crate::ipc::settings::DEFAULT_SYNC_INTERVAL_SECS);
 
     let db = pool.clone();
     let app_clone = app.clone();
@@ -140,7 +135,7 @@ async fn spawn_sync_workers(
     workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 ) {
     let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL",
+        concat!("SELECT ", crate::repo::workspace_cols!(), " FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL"),
     )
     .fetch_all(&pool)
     .await

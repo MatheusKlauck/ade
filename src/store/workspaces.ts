@@ -16,6 +16,10 @@ export interface TerminalAlerts {
 interface WorkspacesState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
+  // False until the first load() settles. The shell uses this to tell "still
+  // hydrating" apart from "genuinely no workspaces", so a returning user never
+  // flashes the onboarding screen on cold start.
+  loaded: boolean;
   syncStatus: Record<string, SyncStatusEntry>;
   terminalAlerts: Record<string, TerminalAlerts>;
   load: () => Promise<void>;
@@ -32,17 +36,29 @@ const MAX_ALERT_MESSAGES = 20;
 export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
+  loaded: false,
   syncStatus: {},
   terminalAlerts: {},
 
   load: async () => {
-    const workspaces = await workspaceList();
-    set({ workspaces });
-    // If there's an active workspace from a previous session, restore it.
-    // Otherwise default to the first workspace.
-    const current = get().activeWorkspaceId;
-    if (!current && workspaces.length > 0) {
-      set({ activeWorkspaceId: workspaces[0].id });
+    try {
+      const workspaces = await workspaceList();
+      set({ workspaces });
+      // If there's an active workspace from a previous session, restore it.
+      // Otherwise default to the first workspace.
+      const current = get().activeWorkspaceId;
+      if (!current && workspaces.length > 0) {
+        set({ activeWorkspaceId: workspaces[0].id });
+      }
+    } catch (e) {
+      // Never reject — callers fire-and-forget this, so a thrown error would
+      // surface as an unhandled rejection. Log and fall through to `loaded`.
+      console.error("workspace list failed", e);
+    } finally {
+      // Always settle: even if the list fails, mark hydrated so the shell can
+      // fall through to the onboarding screen (its folder-open path is the
+      // recovery) instead of hanging on the loading shell forever.
+      set({ loaded: true });
     }
   },
 

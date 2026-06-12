@@ -18,13 +18,7 @@ async fn lookup_workspace(
     workspace_id: &str,
     db: &sqlx::SqlitePool,
 ) -> Result<Workspace, AdeError> {
-    sqlx::query_as::<_, Workspace>(
-        "SELECT id, name, slug, root_path, github_owner, github_repo, startup_command, created_at FROM workspace WHERE id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_one(db)
-    .await
-    .map_err(AdeError::Db)
+    crate::repo::workspace_by_id(db, workspace_id).await
 }
 
 #[tauri::command]
@@ -35,27 +29,36 @@ pub async fn terminal_open(
     app: tauri::AppHandle,
     state: State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<TerminalOpenResult, AdeError> {
-    tmux::check_version()?;
-
     let ws = lookup_workspace(&workspace_id, &state.db).await?;
+
+    // The tmux helpers spawn subprocesses synchronously; run the whole chain
+    // in spawn_blocking so a slow tmux/git environment can't stall the tokio
+    // workers that also serve keystrokes (terminal_write) and PTY output.
+    let window_id = {
+        let slug = ws.slug.clone();
+        let root_path = ws.root_path.clone();
+        tokio::task::spawn_blocking(move || -> Result<String, AdeError> {
+            tmux::check_version()?;
+            tmux::ensure_base_session(&slug, &root_path)?;
+            match window_id {
+                Some(w) => {
+                    // Reattach: verify window is still alive
+                    if !tmux::window_alive(&slug, &w)? {
+                        return Err(AdeError::Pty(format!(
+                            "tmux window {} no longer exists in session {}",
+                            w, slug
+                        )));
+                    }
+                    Ok(w)
+                }
+                None => tmux::new_app_window(&slug, &root_path),
+            }
+        })
+        .await
+        .map_err(|e| AdeError::Tmux(e.to_string()))??
+    };
     let slug = &ws.slug;
     let root_path = &ws.root_path;
-
-    tmux::ensure_base_session(slug, root_path)?;
-
-    let window_id = match window_id {
-        Some(w) => {
-            // Reattach: verify window is still alive
-            if !tmux::window_alive(slug, &w)? {
-                return Err(AdeError::Pty(format!(
-                    "tmux window {} no longer exists in session {}",
-                    w, slug
-                )));
-            }
-            w
-        }
-        None => tmux::new_app_window(slug, root_path)?,
-    };
 
     // Start (or keep) a completion monitor for this window. Idempotent per
     // window id, so reattaches don't stack monitors; the monitor outlives the
@@ -106,7 +109,12 @@ pub async fn terminal_open(
 
     {
         let mut reg = state.pty.lock().map_err(|e| AdeError::Pty(e.to_string()))?;
-        reg.insert(pane_id.clone(), pane);
+        // A duplicate open for the same window (e.g. a terminal_focus event
+        // racing the reattach loop) must close the pane it replaces, or its
+        // tmux viewer session and child process leak until the next app start.
+        if let Some(old) = reg.insert(pane_id.clone(), pane) {
+            let _ = old.close();
+        }
     }
 
     Ok(TerminalOpenResult { pane_id, window_id })

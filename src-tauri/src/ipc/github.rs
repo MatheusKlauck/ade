@@ -73,7 +73,7 @@ pub async fn github_set_token(
 ) -> Result<serde_json::Value, crate::error::AdeError> {
     let client = reqwest::Client::new();
     let response = client
-        .get("https://api.github.com/user")
+        .get(format!("{}/user", crate::gh::client::GITHUB_API_BASE))
         .header("Authorization", format!("Bearer {}", token))
         .header("User-Agent", "ade")
         .send()

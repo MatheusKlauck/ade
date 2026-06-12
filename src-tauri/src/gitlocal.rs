@@ -161,7 +161,10 @@ pub fn prepare_branch(repo_path: &str, issue_number: u64) -> Result<BranchOutcom
 
     // Create a new branch from HEAD and checkout.
     let head = repo.head()?;
-    let commit = repo.find_commit(head.target().expect("HEAD should have a target"))?;
+    let target = head.target().ok_or_else(|| {
+        AdeError::Other("HEAD has no direct target (symbolic or unborn branch)".into())
+    })?;
+    let commit = repo.find_commit(target)?;
     repo.branch(&branch_name, &commit, false)?;
     let refname = format!("refs/heads/{branch_name}");
     repo.set_head(&refname)?;
