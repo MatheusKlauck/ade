@@ -18,6 +18,7 @@ import AppBar from "./components/AppBar";
 import Settings from "./components/Settings";
 import TerminalArea from "./components/TerminalArea";
 import KanbanDock from "./components/KanbanDock";
+import SkillsSidebar from "./components/SkillsSidebar";
 import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useWorkspacesStore } from "./store/workspaces";
@@ -610,13 +611,16 @@ export default function App() {
     >
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
       <AppBar onOpenSettings={() => setShowSettings(true)} />
-      <TerminalArea
-        panes={activePanes}
-        onNewTerminal={handleNewTerminal}
-        onRemovePane={handleRemove}
-        highlightedWindowId={highlightedWindowId}
-        onHighlightDone={clearHighlight}
-      />
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <SkillsSidebar workspaceId={activeWorkspaceId} />
+        <TerminalArea
+          panes={activePanes}
+          onNewTerminal={handleNewTerminal}
+          onRemovePane={handleRemove}
+          highlightedWindowId={highlightedWindowId}
+          onHighlightDone={clearHighlight}
+        />
+      </div>
       <KanbanDock workspaceId={activeWorkspaceId} />
       {showSettings && (
         <Settings

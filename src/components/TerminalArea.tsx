@@ -9,6 +9,7 @@ import {
 } from "react";
 import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import TerminalPane from "./TerminalPane";
+import { terminalWrite } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
@@ -208,6 +209,8 @@ function TerminalTile({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [edge, setEdge] = useState<"before" | "after" | null>(null);
+  // True while a skill from the SkillsSidebar is dragged over this tile.
+  const [skillOver, setSkillOver] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -215,9 +218,14 @@ function TerminalTile({
     return dropTargetForElements({
       element: el,
       canDrop: ({ source }) =>
-        typeof source.data.termWindowId === "string" &&
-        source.data.termWindowId !== pane.windowId,
-      onDrag: ({ location }) => {
+        (typeof source.data.termWindowId === "string" &&
+          source.data.termWindowId !== pane.windowId) ||
+        typeof source.data.skillCommand === "string",
+      onDrag: ({ source, location }) => {
+        if (typeof source.data.skillCommand === "string") {
+          setSkillOver(true);
+          return;
+        }
         const rect = el.getBoundingClientRect();
         setEdge(
           location.current.input.clientX < rect.left + rect.width / 2
@@ -225,8 +233,18 @@ function TerminalTile({
             : "after"
         );
       },
-      onDragLeave: () => setEdge(null),
+      onDragLeave: () => {
+        setEdge(null);
+        setSkillOver(false);
+      },
       onDrop: ({ source, location }) => {
+        if (typeof source.data.skillCommand === "string") {
+          setSkillOver(false);
+          // Type the slash command into the pane, no Enter — the user can add
+          // arguments and submit it themselves.
+          terminalWrite(pane.paneId, source.data.skillCommand).catch(() => {});
+          return;
+        }
         const rect = el.getBoundingClientRect();
         const e =
           location.current.input.clientX < rect.left + rect.width / 2
@@ -236,7 +254,7 @@ function TerminalTile({
         onReorder(source.data.termWindowId as string, pane.windowId, e);
       },
     });
-  }, [pane.windowId, onReorder]);
+  }, [pane.windowId, pane.paneId, onReorder]);
 
   return (
     <div
@@ -250,6 +268,18 @@ function TerminalTile({
         if (e.target === e.currentTarget) onEntered();
       }}
     >
+      {skillOver && !hidden && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            border: "2px solid var(--accent)",
+            borderRadius: 4,
+            zIndex: 25,
+            pointerEvents: "none",
+          }}
+        />
+      )}
       {edge && !hidden && (
         <div
           style={{
