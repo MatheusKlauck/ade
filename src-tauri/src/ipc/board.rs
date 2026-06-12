@@ -372,6 +372,51 @@ pub async fn card_move(
     // the frontend to remove the pane.
     if col_name == "Done" {
         if let Some(window_id) = card.terminal_window_id.clone() {
+            // Run the default preset's close commands into the still-live tmux
+            // window before we tear it down. Best-effort: any failure (no default
+            // preset, malformed JSON, tmux gone) just skips to the kill below.
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct PresetClose {
+                id: String,
+                #[serde(default)]
+                close_commands: Vec<String>,
+            }
+            let default_id = crate::ipc::settings::workspace_setting_value(
+                &state.db,
+                &card.workspace_id,
+                "default_preset_id",
+            )
+            .await
+            .unwrap_or_default();
+            if !default_id.is_empty() {
+                let raw = crate::ipc::settings::workspace_setting_value(
+                    &state.db,
+                    &card.workspace_id,
+                    "terminal_presets",
+                )
+                .await
+                .unwrap_or_default();
+                if let Ok(list) = serde_json::from_str::<Vec<PresetClose>>(&raw) {
+                    if let Some(p) = list.into_iter().find(|p| p.id == default_id) {
+                        let cmds: Vec<String> = p
+                            .close_commands
+                            .into_iter()
+                            .map(|c| c.trim().to_string())
+                            .filter(|c| !c.is_empty())
+                            .collect();
+                        if !cmds.is_empty() {
+                            for c in &cmds {
+                                let _ = tmux::send_keys(&window_id, c);
+                            }
+                            // Give the commands a moment to start before the kill.
+                            tokio::time::sleep(std::time::Duration::from_millis(400))
+                                .await;
+                        }
+                    }
+                }
+            }
+
             // Drop PTY panes for this window first (kills each viewer process).
             // Scope the lock so it's released before the awaits below.
             {

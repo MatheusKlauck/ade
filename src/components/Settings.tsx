@@ -4,14 +4,44 @@ import {
   useCallback,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
+  type CSSProperties,
 } from "react";
-import { useSettingsStore } from "../store/settings";
+import { useSettingsStore, type TerminalPreset } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
 
 interface SettingsProps {
   onClose: () => void;
   onSaved: (login: string) => void;
 }
+
+/** Shared input styling for the terminal-preset editor rows. */
+const presetInputStyle: CSSProperties = {
+  boxSizing: "border-box",
+  padding: "6px 10px",
+  fontSize: 13,
+  background: "var(--input-bg)",
+  border: "1px solid var(--input-border)",
+  borderRadius: 4,
+  color: "var(--fg)",
+};
+
+/** Multi-line command list inside a preset row. */
+const presetTextareaStyle: CSSProperties = {
+  ...presetInputStyle,
+  width: "100%",
+  minHeight: 52,
+  resize: "vertical",
+  fontFamily: "var(--font-mono)",
+};
+
+/** Label wrapping a preset command textarea. */
+const presetFieldLabelStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  fontSize: 12,
+  color: "var(--muted)",
+};
 
 /** Normalize anything thrown across the IPC boundary into a readable string.
  * Tauri rejects with the serialized `AdeError` (`{ code, message }`), a plain
@@ -35,20 +65,19 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
     workspaces.find((w) => w.id === activeWorkspaceId)?.name ?? "";
   const theme = useSettingsStore((s) => s.theme);
   const accent = useSettingsStore((s) => s.accent);
-  const startupCommand = useSettingsStore((s) => s.startupCommand);
-  const startupDelay = useSettingsStore((s) => s.startupDelay);
   const syncInterval = useSettingsStore((s) => s.syncInterval);
+  const presets = useSettingsStore((s) => s.presets);
+  const defaultPresetId = useSettingsStore((s) => s.defaultPresetId);
   const ghTokenDisplay = useSettingsStore((s) => s.ghTokenDisplay);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setAccent = useSettingsStore((s) => s.setAccent);
-  const setStartupCommand = useSettingsStore((s) => s.setStartupCommand);
-  const setStartupDelay = useSettingsStore((s) => s.setStartupDelay);
   const setSyncInterval = useSettingsStore((s) => s.setSyncInterval);
+  const setPresets = useSettingsStore((s) => s.setPresets);
+  const setDefaultPreset = useSettingsStore((s) => s.setDefaultPreset);
   const setGhToken = useSettingsStore((s) => s.setGhToken);
 
-  const [localStartupCommand, setLocalStartupCommand] = useState(startupCommand);
-  const [localStartupDelay, setLocalStartupDelay] = useState(startupDelay);
   const [localSyncInterval, setLocalSyncInterval] = useState(syncInterval);
+  const [localPresets, setLocalPresets] = useState<TerminalPreset[]>(presets);
   const [newToken, setNewToken] = useState("");
   const [showTokenInput, setShowTokenInput] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -100,10 +129,9 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
 
   // Sync local state from store on mount
   useEffect(() => {
-    setLocalStartupCommand(startupCommand);
-    setLocalStartupDelay(startupDelay);
     setLocalSyncInterval(syncInterval);
-  }, [startupCommand, startupDelay, syncInterval]);
+    setLocalPresets(presets);
+  }, [syncInterval, presets]);
 
   const handleThemeChange = useCallback(
     async (newTheme: string) => {
@@ -127,28 +155,6 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
     [setAccent]
   );
 
-  const handleStartupCommandBlur = useCallback(async () => {
-    try {
-      await setStartupCommand(localStartupCommand);
-    } catch {
-      // IPC failure in dev mode is non-fatal
-    }
-  }, [localStartupCommand, setStartupCommand]);
-
-  const handleStartupDelayBlur = useCallback(async () => {
-    const val = parseInt(localStartupDelay, 10);
-    if (isNaN(val) || val < 0) {
-      setError("Startup delay must be a non-negative integer");
-      return;
-    }
-    setError(null);
-    try {
-      await setStartupDelay(String(val));
-    } catch {
-      // IPC failure in dev mode is non-fatal
-    }
-  }, [localStartupDelay, setStartupDelay]);
-
   const handleSyncIntervalBlur = useCallback(async () => {
     const val = parseInt(localSyncInterval, 10);
     if (isNaN(val) || val < 10) {
@@ -162,6 +168,51 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
       // IPC failure in dev mode is non-fatal
     }
   }, [localSyncInterval, setSyncInterval]);
+
+  // Persist the given preset list (and mirror it locally). Best-effort: an IPC
+  // failure in dev mode is non-fatal, matching the other setting handlers.
+  const commitPresets = useCallback(
+    async (next: TerminalPreset[]) => {
+      setLocalPresets(next);
+      try {
+        await setPresets(next);
+      } catch {
+        // non-fatal
+      }
+    },
+    [setPresets]
+  );
+
+  // Edit a field locally while typing (persisted on blur via commitPresets).
+  const editPreset = useCallback(
+    (id: string, patch: Partial<TerminalPreset>) => {
+      setLocalPresets((list) =>
+        list.map((p) => (p.id === id ? { ...p, ...patch } : p))
+      );
+    },
+    []
+  );
+
+  const addPreset = useCallback(() => {
+    const preset: TerminalPreset = {
+      id: crypto.randomUUID(),
+      name: "",
+      openCommands: [],
+      closeCommands: [],
+      delaySecs: 0,
+      injectTask: false,
+    };
+    commitPresets([...localPresets, preset]);
+  }, [localPresets, commitPresets]);
+
+  const removePreset = useCallback(
+    (id: string) => {
+      commitPresets(localPresets.filter((p) => p.id !== id));
+      // Drop the default pointer if it referenced the removed preset.
+      if (id === defaultPresetId) setDefaultPreset(null);
+    },
+    [localPresets, commitPresets, defaultPresetId, setDefaultPreset]
+  );
 
   // The token input is shown either on first-time setup (no stored token yet)
   // or when the user clicks "Replace". The Save button follows the same rule.
@@ -331,7 +382,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
           </div>
         </div>
 
-        {/* Global startup command */}
+        {/* Terminal presets */}
         <div style={{ marginBottom: 20 }}>
           <label
             style={{
@@ -341,62 +392,207 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
               marginBottom: 8,
             }}
           >
-            Global Startup Command
+            Terminal Presets
           </label>
-          <input
-            type="text"
-            value={localStartupCommand}
-            onChange={(e) => setLocalStartupCommand(e.target.value)}
-            onBlur={handleStartupCommandBlur}
-            placeholder="e.g. nvim"
+          <p
             style={{
-              width: "100%",
-              boxSizing: "border-box",
-              padding: "8px 12px",
-              fontSize: 13,
-              background: "var(--input-bg)",
-              border: "1px solid var(--input-border)",
-              borderRadius: 4,
-              color: "var(--fg)",
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleStartupCommandBlur();
-            }}
-          />
-        </div>
-
-        {/* Startup delay */}
-        <div style={{ marginBottom: 20 }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: 13,
+              margin: "0 0 8px",
+              fontSize: 11,
               color: "var(--muted)",
-              marginBottom: 8,
             }}
           >
-            Startup Command Delay (seconds)
-          </label>
-          <input
-            type="number"
-            min={0}
-            value={localStartupDelay}
-            onChange={(e) => setLocalStartupDelay(e.target.value)}
-            onBlur={handleStartupDelayBlur}
+            Named launch configs in the “New terminal” dropdown. Each runs its
+            open commands (in order) after its own delay, and its close commands
+            when the terminal is closed. The default preset is used for
+            card-driven terminals: its open commands run when a card moves to
+            Doing, its close commands when it moves to Done.
+          </p>
+          {localPresets.length === 0 && (
+            <p
+              style={{
+                margin: "0 0 8px",
+                fontSize: 12,
+                color: "var(--muted)",
+              }}
+            >
+              No presets yet.
+            </p>
+          )}
+          {localPresets.map((preset) => (
+            <div
+              key={preset.id}
+              style={{
+                border: "1px solid var(--input-border)",
+                borderRadius: 4,
+                padding: 10,
+                marginBottom: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="text"
+                  value={preset.name}
+                  onChange={(e) =>
+                    editPreset(preset.id, { name: e.target.value })
+                  }
+                  onBlur={() => commitPresets(localPresets)}
+                  placeholder="Name (e.g. claude)"
+                  style={{ ...presetInputStyle, flex: 1 }}
+                />
+                <button
+                  onClick={() => removePreset(preset.id)}
+                  title="Remove preset"
+                  style={{
+                    padding: "0 10px",
+                    fontSize: 13,
+                    background: "var(--input-bg)",
+                    border: "1px solid var(--input-border)",
+                    borderRadius: 4,
+                    color: "var(--status-error)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+              <label style={presetFieldLabelStyle}>
+                Open commands (one per line)
+                <textarea
+                  value={preset.openCommands.join("\n")}
+                  onChange={(e) =>
+                    editPreset(preset.id, {
+                      openCommands: e.target.value.split("\n"),
+                    })
+                  }
+                  onBlur={() => commitPresets(localPresets)}
+                  placeholder={"e.g.\nnvm use 20\nnpm run dev"}
+                  rows={2}
+                  style={presetTextareaStyle}
+                />
+              </label>
+              <label style={presetFieldLabelStyle}>
+                Close commands (one per line)
+                <textarea
+                  value={preset.closeCommands.join("\n")}
+                  onChange={(e) =>
+                    editPreset(preset.id, {
+                      closeCommands: e.target.value.split("\n"),
+                    })
+                  }
+                  onBlur={() => commitPresets(localPresets)}
+                  placeholder={"e.g.\ngit stash"}
+                  rows={2}
+                  style={presetTextareaStyle}
+                />
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--muted)",
+                  }}
+                >
+                  Delay
+                  <input
+                    type="number"
+                    min={0}
+                    value={preset.delaySecs}
+                    onChange={(e) =>
+                      editPreset(preset.id, {
+                        delaySecs: Math.max(
+                          0,
+                          parseInt(e.target.value, 10) || 0
+                        ),
+                      })
+                    }
+                    onBlur={() => commitPresets(localPresets)}
+                    style={{ ...presetInputStyle, width: 70 }}
+                  />
+                  s
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={preset.injectTask}
+                    onChange={(e) =>
+                      commitPresets(
+                        localPresets.map((p) =>
+                          p.id === preset.id
+                            ? { ...p, injectTask: e.target.checked }
+                            : p
+                        )
+                      )
+                    }
+                  />
+                  Inject task prompt
+                </label>
+              </div>
+            </div>
+          ))}
+          <button
+            onClick={addPreset}
             style={{
-              width: 120,
-              padding: "8px 12px",
+              padding: "6px 14px",
               fontSize: 13,
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
               borderRadius: 4,
               color: "var(--fg)",
-              boxSizing: "border-box",
+              cursor: "pointer",
             }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleStartupDelayBlur();
-            }}
-          />
+          >
+            + Add preset
+          </button>
+          {localPresets.length > 0 && (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 12,
+                fontSize: 12,
+                color: "var(--muted)",
+              }}
+            >
+              Default preset
+              <select
+                value={defaultPresetId ?? ""}
+                onChange={(e) => setDefaultPreset(e.target.value || null)}
+                style={{ ...presetInputStyle, flex: 1 }}
+              >
+                <option value="">None</option>
+                {localPresets
+                  .filter((p) => p.name.trim())
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
         </div>
 
         {/* Sync interval */}

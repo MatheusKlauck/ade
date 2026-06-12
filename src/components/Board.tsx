@@ -4,7 +4,9 @@ import {
   dropTargetForElements,
 } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import type { ElementDropTargetEventBasePayload } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
-import { boardGet, cardCreate, cardMove, subscribeBoard } from "../lib/ipc";
+import { boardGet, cardCreate, cardMove, subscribeBoard, terminalWrite } from "../lib/ipc";
+import type { Card as CardType } from "../lib/ipc";
+import type { TerminalPreset } from "../store/settings";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
@@ -152,6 +154,49 @@ export default function Board({ workspaceId }: BoardProps) {
     });
   };
 
+  // Right-click → "Run with {preset}": launch this card's task with a chosen
+  // preset instead of the workspace default.
+  const handleRunWithPreset = useCallback(
+    (card: CardType, preset: TerminalPreset) => {
+      if (!workspaceId) return;
+      const board = useBoardStore.getState().boards[workspaceId];
+      if (!board) return;
+      const doingCol = board.columns.find((c) => c.name === "Doing");
+      if (!doingCol) return;
+
+      // If the card already has a live terminal, run the preset's open commands
+      // straight into it — moving it to Doing again only re-focuses (the backend
+      // won't re-emit a launch event), so a direct write is the only way to act
+      // on an already-running session.
+      const pane = card.terminal_window_id
+        ? useTerminalsStore
+            .getState()
+            .panes.find((p) => p.windowId === card.terminal_window_id)
+        : undefined;
+      if (pane) {
+        const payload = preset.openCommands
+          .map((c) => c.trim())
+          .filter(Boolean)
+          .join("\n");
+        if (payload) terminalWrite(pane.paneId, payload + "\n").catch(() => {});
+        return;
+      }
+
+      // Otherwise stash the preset and move the card to Doing — same path as a
+      // drag-drop onto the column. The backend spawns the terminal and emits
+      // terminal_focus(card_id), which App pairs with this pending preset to run
+      // its open commands and inject the task prompt.
+      useTerminalsStore.getState().setPendingPreset(card.id, preset);
+      const doingCards = board.cardsByColumn[doingCol.id] || [];
+      const lastCard = doingCards[doingCards.length - 1];
+      optimisticMove(workspaceId, card.id, doingCol.id, undefined, lastCard?.id);
+      cardMove(card.id, doingCol.id, undefined, lastCard?.id).catch((e) => {
+        console.error("card_move (run with preset) failed", e);
+      });
+    },
+    [workspaceId, optimisticMove]
+  );
+
   const sortedColumns = [...columns].sort(
     (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
   );
@@ -239,6 +284,7 @@ export default function Board({ workspaceId }: BoardProps) {
             setNewTitle={setNewTitle}
             onCreateCard={handleCreateCard}
             onCardDoubleClick={setSelectedCardId}
+            onRunWithPreset={handleRunWithPreset}
             page={pages[col.id] || 0}
             onPageChange={(p) =>
               setPages((prev) => ({ ...prev, [col.id]: p }))
@@ -297,6 +343,7 @@ function Column({
   setNewTitle,
   onCreateCard,
   onCardDoubleClick,
+  onRunWithPreset,
   page,
   onPageChange,
 }: {
@@ -309,6 +356,7 @@ function Column({
   setNewTitle: (s: string) => void;
   onCreateCard: () => void;
   onCardDoubleClick: (cardId: string) => void;
+  onRunWithPreset: (card: CardType, preset: TerminalPreset) => void;
   page: number;
   onPageChange: (page: number) => void;
 }) {
@@ -436,6 +484,7 @@ function Column({
             card={card}
             onDropBefore={onDropBeforeCard}
             onDoubleClick={() => onCardDoubleClick(card.id)}
+            onRunWithPreset={onRunWithPreset}
           />
         ))}
       </div>

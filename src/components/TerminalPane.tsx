@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import {
+  draggable,
+  dropTargetForElements,
+} from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import {
   cardMove,
   terminalClose,
@@ -13,14 +16,16 @@ import { useBoardStore } from "../store/board";
 import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
-import { LockIcon, LockOpenIcon } from "./icons";
+import { LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
 
 interface TerminalPaneProps {
   pane: OpenTerminal;
   title: string;
   maximized?: boolean;
   locked?: boolean;
+  hasCustomName?: boolean;
   onToggleLock?: () => void;
+  onRename?: (name: string) => void;
   onRemove: () => void;
   onToggleMinimize?: () => void;
   onToggleMaximize?: () => void;
@@ -64,7 +69,9 @@ export default function TerminalPane({
   title,
   maximized,
   locked,
+  hasCustomName,
   onToggleLock,
+  onRename,
   onRemove,
   onToggleMinimize,
   onToggleMaximize,
@@ -73,7 +80,18 @@ export default function TerminalPane({
 }: TerminalPaneProps) {
   // Position of the header context menu (right-click), or null when closed.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Draft custom name while the header title is being edited, or null when not.
+  const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // True while this pane's header is being dragged to a new position, used to
+  // dim the pane so the drop target stands out.
+  const [reordering, setReordering] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors `renameDraft != null` so the drag adapter's canDrag (registered
+  // once) can read the latest editing state without re-registering on keystroke.
+  const editingRef = useRef(false);
+  editingRef.current = renameDraft != null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -260,6 +278,39 @@ export default function TerminalPane({
     });
   }, [pane.paneId]);
 
+  // Header is the drag handle for rearranging panes: it carries the stable
+  // windowId so the terminal area can move this tile next to a drop target.
+  // Disabled while renaming so text selection in the input isn't hijacked.
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    return draggable({
+      element: el,
+      canDrag: () => !editingRef.current,
+      getInitialData: () => ({ termWindowId: pane.windowId }),
+      onDragStart: () => setReordering(true),
+      onDrop: () => setReordering(false),
+    });
+  }, [pane.windowId]);
+
+  // Focus and select the rename input when editing begins.
+  useEffect(() => {
+    if (renameDraft != null) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renameDraft != null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startRename = () => {
+    // Seed the draft with the current title so it can be edited in place.
+    setRenameDraft(title);
+    setMenu(null);
+  };
+  const commitRename = () => {
+    if (renameDraft != null) onRename?.(renameDraft);
+    setRenameDraft(null);
+  };
+
   // Dismiss the header context menu on Escape.
   useEffect(() => {
     if (!menu) return;
@@ -273,9 +324,15 @@ export default function TerminalPane({
   return (
     <div
       className={highlighted ? "terminal-pane-highlight" : undefined}
-      style={{ display: "flex", flexDirection: "column", height: "100%" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        opacity: reordering ? 0.5 : 1,
+      }}
     >
       <div
+        ref={headerRef}
         onContextMenu={(e) => {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY });
@@ -287,25 +344,60 @@ export default function TerminalPane({
           padding: "4px 8px",
           borderBottom: "1px solid var(--border)",
           background: "var(--panel)",
+          // The header doubles as the drag handle for rearranging panes.
+          cursor: renameDraft != null ? "default" : "grab",
         }}
       >
         {locked && (
           <LockIcon size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
         )}
-        <span
-          title={title}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: 12,
-            color: "var(--fg)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {title}
-        </span>
+        {renameDraft != null ? (
+          <input
+            ref={renameInputRef}
+            value={renameDraft}
+            placeholder={title}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitRename();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setRenameDraft(null);
+              }
+            }}
+            // Stop the right-click handler / drag adapter on the header from
+            // hijacking interaction with the input.
+            onContextMenu={(e) => e.stopPropagation()}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 12,
+              color: "var(--fg)",
+              background: "var(--input-bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 4,
+              padding: "1px 4px",
+            }}
+          />
+        ) : (
+          <span
+            title={title}
+            onDoubleClick={() => onRename && startRename()}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 12,
+              color: "var(--fg)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {title}
+          </span>
+        )}
         <button
           style={iconBtnStyle}
           title="Minimize"
@@ -363,6 +455,38 @@ export default function TerminalPane({
               boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
             }}
           >
+            <button
+              style={menuItemStyle}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--panel)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+              onClick={startRename}
+            >
+              <PencilIcon size={14} />
+              <span>Rename</span>
+            </button>
+            {hasCustomName && (
+              <button
+                style={menuItemStyle}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--panel)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                }}
+                onClick={() => {
+                  // An empty name clears the override; title reverts to the card.
+                  onRename?.("");
+                  setMenu(null);
+                }}
+              >
+                <RefreshIcon size={14} />
+                <span>Reset name</span>
+              </button>
+            )}
             <button
               style={menuItemStyle}
               onMouseEnter={(e) => {
