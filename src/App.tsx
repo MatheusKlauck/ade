@@ -14,9 +14,11 @@ import {
   uiStateGet,
   uiStateSet,
 } from "./lib/ipc";
-import AppBar from "./components/AppBar";
+import AppBar, { type ViewMode } from "./components/AppBar";
 import Settings from "./components/Settings";
 import Ledger from "./components/Ledger";
+import TerminalArea from "./components/TerminalArea";
+import KanbanDock from "./components/KanbanDock";
 import SkillsSidebar from "./components/SkillsSidebar";
 import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
@@ -161,6 +163,9 @@ function formatTerminalAlert(p: TerminalAlertPayload): string {
  * NotificationCenter), so they're kept even past the cap. */
 const MAX_TOASTS = 3;
 
+/** ui_state key for the persisted main-view choice (app-global, not per-workspace). */
+const VIEW_MODE_KEY = "view-mode";
+
 function capToasts(list: ToastItem[]): ToastItem[] {
   if (list.length <= MAX_TOASTS) return list;
   let toDrop = list.length - MAX_TOASTS;
@@ -176,6 +181,9 @@ function capToasts(list: ToastItem[]): ToastItem[] {
 export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  // Which main GUI is shown: "ledger" (dense issue table, default) or "classic"
+  // (terminal grid + bottom Kanban dock). Persisted globally to ui_state.
+  const [viewMode, setViewMode] = useState<ViewMode>("ledger");
   const toastIdRef = useRef(0);
 
   // Append a toast to the stack (capped; errors never silently dropped).
@@ -230,6 +238,7 @@ export default function App() {
   const loadLocked = useTerminalsStore((s) => s.loadLocked);
   const loadNames = useTerminalsStore((s) => s.loadNames);
   const loadPresetWindows = useTerminalsStore((s) => s.loadPresetWindows);
+  const loadLayout = useTerminalsStore((s) => s.loadLayout);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const workspacesLoaded = useWorkspacesStore((s) => s.loaded);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
@@ -239,6 +248,9 @@ export default function App() {
 
   // Track previous workspace to detect tab switches
   const prevWorkspaceRef = useRef<string | null>(null);
+  // Guards the view-toggle rebuild so a double-click mid-rebuild can't fire a
+  // second teardown/reattach over the first.
+  const toggleViewBusy = useRef(false);
 
   // Persist window IDs to ui_state for a workspace
   const persistWindowIds = useCallback(
@@ -269,6 +281,15 @@ export default function App() {
   useEffect(() => {
     loadWorkspaces();
   }, [loadWorkspaces]);
+
+  // Restore the persisted main-view choice once on mount (defaults to ledger).
+  useEffect(() => {
+    uiStateGet(VIEW_MODE_KEY)
+      .then((stored) => {
+        if (stored === "classic" || stored === "ledger") setViewMode(stored);
+      })
+      .catch(() => {});
+  }, []);
 
   // Subscribe to board events (keyed by workspace_id)
   useEffect(() => {
@@ -342,8 +363,9 @@ export default function App() {
       loadLocked(activeWorkspaceId);
       loadNames(activeWorkspaceId);
       loadPresetWindows(activeWorkspaceId);
+      loadLayout(activeWorkspaceId);
     }
-  }, [activeWorkspaceId, loadLocked, loadNames, loadPresetWindows]);
+  }, [activeWorkspaceId, loadLocked, loadNames, loadPresetWindows, loadLayout]);
 
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {
@@ -557,6 +579,64 @@ export default function App() {
     }
   };
 
+  // Switch between the ledger and classic GUIs. Both GUIs mount their own
+  // TerminalPane instances, so a plain React swap would unmount every pane —
+  // each schedules a deferred terminalClose that kills its viewer ~100ms later
+  // — while the new GUI mounts fresh panes against the SAME (deterministic)
+  // paneIds, so the terminals would die moments after the switch. We instead do
+  // it deliberately, exactly like a workspace switch: flip the GUI, tear the
+  // viewers down, then reattach fresh viewers once the deferred closes settle.
+  // The tmux windows (and their agents) survive throughout; only the on-screen
+  // viewers rebuild — the "terminais reanexam" behaviour.
+  const handleToggleView = () => {
+    if (toggleViewBusy.current) return;
+    const ws = activeWorkspaceId;
+    const next: ViewMode = viewMode === "ledger" ? "classic" : "ledger";
+
+    // Flip + persist immediately so the chrome responds even with no terminals.
+    setViewMode(next);
+    uiStateSet(VIEW_MODE_KEY, next).catch(() => {});
+    if (!ws) return;
+
+    const windowIds = getPanesForWorkspace(ws).map((p) => p.windowId);
+    if (windowIds.length === 0) return; // no viewers to rebuild
+
+    toggleViewBusy.current = true;
+    // Tear down the current viewers (unmount → deferred terminalClose). The
+    // lock/name/preset associations are keyed by windowId and left intact.
+    removePanesForWorkspace(ws);
+
+    // Reattach after the ~100ms deferred closes have fired, so a reopened
+    // (deterministic) paneId can't be killed by a still-pending close.
+    window.setTimeout(async () => {
+      try {
+        const results = await Promise.allSettled(
+          windowIds.map(async (wid) => {
+            const result = await terminalOpen(ws, wid);
+            addPane({
+              paneId: result.paneId,
+              windowId: result.windowId,
+              workspaceId: ws,
+              channel: result.channel,
+            });
+          })
+        );
+        const failed = results.filter((r) => r.status === "rejected").length;
+        if (failed > 0) {
+          // Same surfacing as the workspace-switch reattach: no CONTRACTS code
+          // for reattach loss, so toast rather than the history store.
+          pushToast({
+            level: "warn",
+            code: "TERMINALS_NOT_RESTORED",
+            message: `${failed} terminal${failed > 1 ? "s" : ""} couldn't be restored — the tmux window${failed > 1 ? "s are" : " is"} gone.`,
+          });
+        }
+      } finally {
+        toggleViewBusy.current = false;
+      }
+    }, 260);
+  };
+
   // Manual close (× button): run the window's preset closeCommands into the
   // surviving tmux window before dropping the pane, then clear the association.
   const handleRemove = (paneId: string) => {
@@ -632,18 +712,35 @@ export default function App() {
       }}
     >
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
-      <AppBar onOpenSettings={() => setShowSettings(true)} />
+      <AppBar
+        onOpenSettings={() => setShowSettings(true)}
+        viewMode={viewMode}
+        onToggleView={handleToggleView}
+      />
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <SkillsSidebar workspaceId={activeWorkspaceId} />
-        <Ledger
-          workspaceId={activeWorkspaceId}
-          panes={activePanes}
-          onNewTerminal={handleNewTerminal}
-          onRemovePane={handleRemove}
-          highlightedWindowId={highlightedWindowId}
-          onHighlightDone={clearHighlight}
-        />
+        {viewMode === "ledger" ? (
+          <Ledger
+            workspaceId={activeWorkspaceId}
+            panes={activePanes}
+            onNewTerminal={handleNewTerminal}
+            onRemovePane={handleRemove}
+            highlightedWindowId={highlightedWindowId}
+            onHighlightDone={clearHighlight}
+          />
+        ) : (
+          <TerminalArea
+            panes={activePanes}
+            onNewTerminal={handleNewTerminal}
+            onRemovePane={handleRemove}
+            highlightedWindowId={highlightedWindowId}
+            onHighlightDone={clearHighlight}
+          />
+        )}
       </div>
+      {viewMode === "classic" && (
+        <KanbanDock workspaceId={activeWorkspaceId} />
+      )}
       {showSettings && (
         <Settings
           onClose={() => setShowSettings(false)}
