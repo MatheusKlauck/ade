@@ -1,7 +1,6 @@
 import type { CSSProperties } from "react";
 import Tabs from "./Tabs";
 import NotificationCenter from "./NotificationCenter";
-import AggregateSyncStatus from "./AggregateSyncStatus";
 import { GearIcon, RowsIcon, ColumnsIcon } from "./icons";
 
 export type ViewMode = "ledger" | "classic";
@@ -80,7 +79,6 @@ export default function AppBar({
         style={{ flex: 1, alignSelf: "stretch", minWidth: "var(--space-md)" }}
       />
 
-      <AggregateSyncStatus />
       {/* View switcher: ledger (issue table) ⇄ classic (terminal grid + dock). */}
       <button
         onClick={onToggleView}

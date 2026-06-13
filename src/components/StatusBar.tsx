@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { COL_DOING } from "../lib/columns";
-import { BranchIcon, ChevronIcon, ColumnsIcon } from "./icons";
+import { syncNow } from "../lib/ipc";
+import { BranchIcon, ChevronIcon, ColumnsIcon, RefreshIcon } from "./icons";
 
 // Relative "Nm ago" / "Nh ago" formatter for the last-sync timestamp. Accepts
 // the ISO string the backend stamps on sync events; returns "" when unparseable.
@@ -51,6 +53,7 @@ export default function StatusBar({
   const syncStatus = useWorkspacesStore((s) => s.syncStatus);
   const boards = useBoardStore((s) => s.boards);
   const panes = useTerminalsStore((s) => s.panes);
+  const [syncHovered, setSyncHovered] = useState(false);
 
   const ws = workspaceId ? workspaces.find((w) => w.id === workspaceId) ?? null : null;
   const board = workspaceId ? boards[workspaceId] : undefined;
@@ -88,19 +91,68 @@ export default function StatusBar({
         background: "var(--panel)",
       }}
     >
-      {/* Sync state — colour dot + label. */}
-      <span style={itemStyle}>
-        <span
-          aria-hidden
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: "50%",
-            background: sync.color,
+      {/* Sync state — colour dot + label, doubling as a re-sync trigger for
+          GitHub-backed workspaces. Hover reveals the affordance (refresh glyph
+          in place of the dot); clicking notifies the worker, which flips this
+          into "syncing…". Local-only workspaces stay a plain, inert label. */}
+      {isTracked ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (workspaceId) syncNow(workspaceId).catch(() => {});
           }}
-        />
-        <span style={{ color: "var(--fg)" }}>{sync.label}</span>
-      </span>
+          onMouseEnter={() => setSyncHovered(true)}
+          onMouseLeave={() => setSyncHovered(false)}
+          title="Re-sync this workspace"
+          aria-label="Re-sync this workspace"
+          style={{
+            ...itemStyle,
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+          }}
+        >
+          {/* Fixed-width leading slot so the dot → ⟳ swap never nudges the label. */}
+          <span
+            aria-hidden
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 11,
+              height: 11,
+            }}
+          >
+            {syncHovered ? (
+              <RefreshIcon size={11} />
+            ) : (
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: sync.color,
+                }}
+              />
+            )}
+          </span>
+          <span style={{ color: "var(--fg)" }}>{sync.label}</span>
+        </button>
+      ) : (
+        <span style={itemStyle}>
+          <span
+            aria-hidden
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: sync.color,
+            }}
+          />
+          <span style={{ color: "var(--fg)" }}>{sync.label}</span>
+        </span>
+      )}
 
       {/* Branch (best-effort: the workspace slug — no git branch over IPC yet). */}
       {ws?.slug && (

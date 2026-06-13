@@ -578,6 +578,7 @@ textarea:focus-visible {
 .md-body pre {
   background: var(--bg);
   border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
   border-radius: var(--radius-sm);
   padding: var(--space-md);
   margin: 12px 0;
@@ -623,4 +624,60 @@ textarea:focus-visible {
 }
 .md-body th {
   background: var(--surface-input);
+}
+
+/* ── Issue dossier (CardDetail — "Hairline Dossier" direction) ───────────
+   Skeleton shimmer + loading spinner + the comment-thread connector line.
+   Kept in CSS (not inline) because they need keyframes / pseudo-elements.
+   All colours are theme tokens so they read in dark and light. */
+.cd-thread {
+  position: relative;
+}
+.cd-thread::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 6px;
+  bottom: 14px;
+  width: 1px;
+  background: var(--border);
+}
+.cd-skel {
+  background: linear-gradient(
+    90deg,
+    var(--surface-input) 25%,
+    var(--surface-raised) 37%,
+    var(--surface-input) 63%
+  );
+  background-size: 400% 100%;
+  animation: cd-shimmer 1.4s ease infinite;
+  border-radius: var(--radius-sm);
+  height: 11px;
+}
+@keyframes cd-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+.cd-spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: cd-spin 0.8s linear infinite;
+}
+@keyframes cd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cd-skel,
+  .cd-spin {
+    animation: none;
+  }
 }

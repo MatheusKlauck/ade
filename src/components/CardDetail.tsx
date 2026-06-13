@@ -13,6 +13,10 @@ interface CardDetailProps {
   onClose: () => void;
   onDeleted: () => void;
   modal?: boolean;
+  /** Optional: hand this issue to an agent terminal. When provided, the action
+   * bar shows a "Hand to agent →" button; when omitted the button is hidden
+   * (no dead control). Wire this from a mount site that can spawn a terminal. */
+  onHandToAgent?: (card: CardType) => void;
 }
 
 /** Render a GitHub markdown body safely: GFM (task lists, tables) + sanitize
@@ -115,6 +119,43 @@ function LabelChip({ name, color }: { name: string; color: string | null }) {
   );
 }
 
+/** OPEN / CLOSED status pill for a GitHub issue. Green = open, purple = closed
+ * (mirrors GitHub's own state colours, using theme tokens). */
+function StatePill({ closed }: { closed: boolean }) {
+  const color = closed ? "var(--source-github)" : "var(--status-success)";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        letterSpacing: "0.06em",
+        color: closed ? "color-mix(in srgb, var(--source-github) 70%, #fff)" : "var(--status-success)",
+        padding: "2px 8px",
+        borderRadius: "var(--radius-pill)",
+        border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+        background: `color-mix(in srgb, ${color} 10%, transparent)`,
+      }}
+    >
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: color }} />
+      {closed ? "CLOSED" : "OPEN"}
+    </span>
+  );
+}
+
+/** A row of shimmering skeleton bars used while issue detail loads. */
+function Skeleton({ widths }: { widths: string[] }) {
+  return (
+    <>
+      {widths.map((w, i) => (
+        <div key={i} className="cd-skel" style={{ width: w, marginBottom: 9 }} />
+      ))}
+    </>
+  );
+}
+
 /** Full-screen image preview, click anywhere to dismiss. */
 function Lightbox({
   img,
@@ -158,14 +199,107 @@ function Lightbox({
   );
 }
 
+// The panel is a flex column with a fixed header and a fixed action bar; only
+// the middle region scrolls. Padding lives on the regions, not the panel.
 const panelStyle: CSSProperties = {
   background: "var(--panel)",
   color: "var(--fg)",
-  padding: "var(--space-lg)",
+  padding: 0,
   display: "flex",
   flexDirection: "column",
-  overflowY: "auto",
+  overflow: "hidden",
   position: "relative",
+};
+
+const headerStyle: CSSProperties = {
+  background: "var(--surface-raised)",
+  borderBottom: "1px solid var(--border)",
+  padding: "var(--space-md) var(--space-lg) var(--space-sm)",
+  flexShrink: 0,
+};
+
+const scrollStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflowY: "auto",
+  padding: "var(--space-md) var(--space-lg)",
+  display: "flex",
+  flexDirection: "column",
+};
+
+// A hairline-separated content block (the look that defines this direction).
+const sectionStyle: CSSProperties = {
+  borderBottom: "1px solid var(--border)",
+  paddingBottom: "var(--space-md)",
+  marginBottom: "var(--space-md)",
+};
+
+const actionBarStyle: CSSProperties = {
+  background: "var(--surface-raised)",
+  borderTop: "1px solid var(--border)",
+  padding: "var(--space-sm) var(--space-lg)",
+  display: "flex",
+  alignItems: "center",
+  gap: "var(--space-sm)",
+  flexWrap: "wrap",
+  flexShrink: 0,
+};
+
+// Left mono "spine" label for body sections.
+const spineLabelStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  color: "var(--muted)",
+  flex: "0 0 56px",
+  paddingTop: 2,
+};
+
+const btnPrimaryStyle: CSSProperties = {
+  background: "var(--accent)",
+  color: "var(--accent-ink)",
+  border: "1px solid transparent",
+  borderRadius: "var(--radius-sm)",
+  padding: "6px 12px",
+  fontFamily: "var(--font-sans)",
+  fontSize: 12.5,
+  fontWeight: 600,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const btnGhostStyle: CSSProperties = {
+  background: "none",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  padding: "6px 12px",
+  color: "var(--muted)",
+  fontFamily: "var(--font-sans)",
+  fontSize: 12.5,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const btnCyanStyle: CSSProperties = {
+  background: "color-mix(in srgb, var(--accent-cyan) 12%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--accent-cyan) 40%, transparent)",
+  borderRadius: "var(--radius-sm)",
+  padding: "6px 12px",
+  color: "var(--accent-cyan)",
+  fontFamily: "var(--font-sans)",
+  fontSize: 12.5,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const metaTextStyle: CSSProperties = {
+  marginLeft: "auto",
+  fontFamily: "var(--font-mono)",
+  fontSize: 10.5,
+  color: "var(--muted)",
+  textAlign: "right",
+  lineHeight: 1.5,
 };
 
 const closeButtonStyle: CSSProperties = {
@@ -192,7 +326,7 @@ const toastStyle: CSSProperties = {
   zIndex: "var(--z-toast)",
 };
 
-export default function CardDetail({ card, workspace, onClose, onDeleted, modal }: CardDetailProps) {
+export default function CardDetail({ card, workspace, onClose, onDeleted, modal, onHandToAgent }: CardDetailProps) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [promoting, setPromoting] = useState(false);
@@ -211,7 +345,9 @@ export default function CardDetail({ card, workspace, onClose, onDeleted, modal 
   const isGithubCard = card?.source === "github";
 
   const containerStyle: CSSProperties = modal
-    ? { ...panelStyle, borderRadius: "var(--radius-md)" }
+    ? // Bounded height so the header/action bar stay pinned and only the middle
+      // region scrolls (the modal wrapper otherwise lets the whole card scroll).
+      { ...panelStyle, borderRadius: "var(--radius-md)", maxHeight: "85vh" }
     : { ...panelStyle, width: 400, minWidth: 400, flexShrink: 0, alignSelf: "stretch", borderLeft: "1px solid var(--border)" };
 
   useEffect(() => {
@@ -361,70 +497,78 @@ export default function CardDetail({ card, workspace, onClose, onDeleted, modal 
         : parseLabels(card.labels_json).map((name) => ({ name, color: null }));
     const assigneeAvatar = detail?.assignee_avatar_url ?? null;
     const onImageClick = (src: string, alt: string) => setLightbox({ src, alt });
+    const closed = card.github_state === "closed";
 
     return (
       <div style={containerStyle}>
-        <div style={{ display: "contents" }}>
-          {toast && <div style={toastStyle}>{toast}</div>}
+        {toast && <div style={toastStyle}>{toast}</div>}
 
-          {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "var(--space-sm)", marginBottom: "var(--space-sm)" }}>
-            <div style={{ display: "flex", alignItems: editing ? "center" : "baseline", gap: "var(--space-sm)", flex: 1, minWidth: 0 }}>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--accent-cyan)", flexShrink: 0 }}>
-                #{card.github_issue_number}
+        {/* Header (fixed) */}
+        <div style={headerStyle}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: editing ? "center" : "baseline",
+              gap: "var(--space-sm)",
+              marginBottom: "var(--space-sm)",
+            }}
+          >
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--accent-cyan)", flexShrink: 0 }}>
+              #{card.github_issue_number}
+            </span>
+            {editing ? (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 10,
+                  letterSpacing: "0.06em",
+                  color: "var(--accent)",
+                  padding: "2px 8px",
+                  borderRadius: "var(--radius-pill)",
+                  border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
+                  background: "color-mix(in srgb, var(--accent) 8%, transparent)",
+                }}
+              >
+                EDITING
               </span>
-              {editing ? (
-                <input
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  autoFocus
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    background: "var(--input-bg)",
-                    border: "1px solid var(--input-border)",
-                    borderRadius: "var(--radius-sm)",
-                    color: "var(--fg)",
-                    padding: "var(--space-xs) var(--space-sm)",
-                    fontFamily: "var(--font-sans)",
-                    fontSize: 16,
-                    fontWeight: 600,
-                  }}
-                />
-              ) : (
-                <span style={{ fontFamily: "var(--font-sans)", fontSize: 16, fontWeight: 600, lineHeight: 1.3 }}>
-                  {card.title}
-                </span>
-              )}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", flexShrink: 0 }}>
-              {!editing && detail && (
-                <button
-                  onClick={startEdit}
-                  title="Edit issue title and body"
-                  style={{
-                    background: "none",
-                    border: "1px solid var(--border)",
-                    borderRadius: "var(--radius-sm)",
-                    color: "var(--muted)",
-                    cursor: "pointer",
-                    padding: "2px 10px",
-                    fontFamily: "var(--font-sans)",
-                    fontSize: 12,
-                  }}
-                >
-                  Edit
-                </button>
-              )}
-              <button onClick={onClose} style={closeButtonStyle}>
-                ✕
-              </button>
-            </div>
+            ) : (
+              <StatePill closed={closed} />
+            )}
+            <span style={{ flex: 1 }} />
+            <button onClick={onClose} style={closeButtonStyle}>
+              ✕
+            </button>
           </div>
+          {editing ? (
+            <input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              autoFocus
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                background: "var(--input-bg)",
+                border: "1px solid var(--input-border)",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--fg)",
+                padding: "var(--space-xs) var(--space-sm)",
+                fontFamily: "var(--font-sans)",
+                fontSize: 16,
+                fontWeight: 600,
+              }}
+            />
+          ) : (
+            <div style={{ fontFamily: "var(--font-sans)", fontSize: 16, fontWeight: 600, lineHeight: 1.3 }}>
+              {card.title}
+            </div>
+          )}
+        </div>
 
+        {/* Scrollable body */}
+        <div style={scrollStyle}>
           {/* Labels + assignee */}
           {(labelChips.length > 0 || card.assignee) && (
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-md)", flexWrap: "wrap", marginBottom: "var(--space-md)" }}>
+            <div style={{ ...sectionStyle, display: "flex", alignItems: "center", gap: "var(--space-md)", flexWrap: "wrap" }}>
               {labelChips.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-xs)" }}>
                   {labelChips.map((l, i) => (
@@ -445,235 +589,217 @@ export default function CardDetail({ card, workspace, onClose, onDeleted, modal 
             </div>
           )}
 
-          {detailLoading && (
-            <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
-              Loading details…
-            </div>
-          )}
-
-          {/* Body — editor (edit mode) or rendered markdown */}
           {editing ? (
-            <div style={{ marginBottom: "var(--space-md)" }}>
-              <textarea
-                value={editBody}
-                onChange={(e) => setEditBody(e.target.value)}
-                placeholder="Issue body (Markdown)…"
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  minHeight: 180,
-                  resize: "vertical",
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                  borderRadius: "var(--radius-sm)",
-                  color: "var(--fg)",
-                  padding: "var(--space-sm)",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 13,
-                  lineHeight: 1.55,
-                }}
-              />
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginTop: "var(--space-sm)" }}>
-                <button
-                  onClick={handleSaveGithubEdit}
-                  disabled={savingEdit}
-                  style={{
-                    padding: "var(--space-xs) var(--space-md)",
-                    background: "var(--accent)",
-                    border: "none",
-                    borderRadius: "var(--radius-sm)",
-                    color: "var(--on-accent)",
-                    fontFamily: "var(--font-sans)",
-                    fontSize: 13,
-                    cursor: savingEdit ? "wait" : "pointer",
-                  }}
-                >
-                  {savingEdit ? "Saving…" : "Save to GitHub"}
-                </button>
-                <button
-                  onClick={() => setEditing(false)}
-                  disabled={savingEdit}
-                  style={{
-                    padding: "var(--space-xs) var(--space-md)",
-                    background: "none",
-                    border: "1px solid var(--border)",
-                    borderRadius: "var(--radius-sm)",
-                    color: "var(--muted)",
-                    fontFamily: "var(--font-sans)",
-                    fontSize: 13,
-                    cursor: savingEdit ? "default" : "pointer",
-                  }}
-                >
-                  Cancel
-                </button>
-                <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--font-mono)" }}>
-                  Markdown · pushes to GitHub
-                </span>
+            <textarea
+              value={editBody}
+              onChange={(e) => setEditBody(e.target.value)}
+              placeholder="Issue body (Markdown)…"
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                flex: 1,
+                minHeight: 220,
+                resize: "vertical",
+                background: "var(--input-bg)",
+                border: "1px solid var(--input-border)",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--fg)",
+                padding: "var(--space-sm)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+                lineHeight: 1.55,
+              }}
+            />
+          ) : detailLoading && !detail ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginBottom: "var(--space-md)", fontSize: 12.5, color: "var(--muted)" }}>
+                <span className="cd-spin" /> Loading details…
+              </div>
+              <div style={{ ...sectionStyle, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-md)" }}>
+                <Skeleton widths={["92%", "88%", "60%"]} />
+                <div style={{ height: 6 }} />
+                <Skeleton widths={["72%", "82%"]} />
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
+                Comments
+              </div>
+              {[0, 1].map((i) => (
+                <div key={i} style={{ display: "flex", gap: "var(--space-sm)", marginBottom: "var(--space-md)" }}>
+                  <div style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, background: "var(--surface-input)" }} />
+                  <div style={{ flex: 1 }}>
+                    <Skeleton widths={["38%", "90%", "64%"]} />
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <div style={sectionStyle}>
+              <div style={{ display: "flex", gap: "var(--space-md)" }}>
+                <span style={spineLabelStyle}>Body</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {detail && detail.body ? (
+                    <MarkdownBody onImageClick={onImageClick}>{detail.body}</MarkdownBody>
+                  ) : (
+                    <span style={{ fontSize: 13, fontStyle: "italic", color: "var(--muted)" }}>No description.</span>
+                  )}
+                </div>
               </div>
             </div>
-          ) : (
-            detail &&
-            detail.body && (
-              <div
-                style={{
-                  padding: "var(--space-md)",
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  marginBottom: "var(--space-md)",
-                  flex: "0 1 auto",
-                }}
-              >
-                <MarkdownBody onImageClick={onImageClick}>{detail.body}</MarkdownBody>
-              </div>
-            )
           )}
 
           {/* Comments */}
-          {detail && detail.comments.length > 0 && (
-            <div style={{ marginBottom: "var(--space-md)" }}>
-              <div style={{ fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
+          {!editing && detail && (
+            <div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)", marginBottom: "var(--space-sm)" }}>
                 Comments · {detail.comments.length}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-sm)" }}>
-                {detail.comments.map((c) => (
-                  <div key={c.id} style={{ display: "flex", gap: "var(--space-sm)" }}>
-                    {c.user_avatar_url ? (
-                      <img
-                        src={c.user_avatar_url}
-                        width={26}
-                        height={26}
-                        alt=""
-                        style={{ borderRadius: "50%", flexShrink: 0, alignSelf: "flex-start" }}
-                      />
-                    ) : (
-                      <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--surface-input)", flexShrink: 0 }} />
-                    )}
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-sm)",
-                        background: "var(--bg)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "var(--space-sm)",
-                          padding: "6px 10px",
-                          borderBottom: "1px solid var(--border)",
-                          background: "var(--surface-input)",
-                          borderRadius: "var(--radius-sm) var(--radius-sm) 0 0",
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, fontSize: 12.5 }}>{c.user_login}</span>
-                        <span style={{ color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                          {formatDate(c.created_at)}
-                        </span>
-                      </div>
-                      <div style={{ padding: "4px 10px 8px" }}>
-                        <MarkdownBody onImageClick={onImageClick}>{c.body}</MarkdownBody>
+              {detail.comments.length === 0 ? (
+                <div style={{ border: "1px dashed var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-lg)", textAlign: "center", color: "var(--muted)", fontSize: 12.5 }}>
+                  No comments yet.
+                </div>
+              ) : (
+                <div className="cd-thread" style={{ paddingLeft: 14 }}>
+                  {detail.comments.map((c) => (
+                    <div key={c.id} style={{ display: "flex", gap: "var(--space-sm)", marginBottom: "var(--space-md)", position: "relative" }}>
+                      {c.user_avatar_url ? (
+                        <img src={c.user_avatar_url} width={26} height={26} alt="" style={{ borderRadius: "50%", flexShrink: 0, alignSelf: "flex-start", zIndex: 1 }} />
+                      ) : (
+                        <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--surface-input)", flexShrink: 0, zIndex: 1 }} />
+                      )}
+                      <div style={{ flex: 1, minWidth: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", padding: "6px 10px", borderBottom: "1px solid var(--border)", background: "var(--surface-input)", borderRadius: "var(--radius-sm) var(--radius-sm) 0 0" }}>
+                          <span style={{ fontWeight: 600, fontSize: 12.5 }}>{c.user_login}</span>
+                          <span style={{ color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                            {formatDate(c.created_at)}
+                          </span>
+                        </div>
+                        <div style={{ padding: "4px 10px 8px" }}>
+                          <MarkdownBody onImageClick={onImageClick}>{c.body}</MarkdownBody>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                  {closed && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", position: "relative" }}>
+                      <span
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: "50%",
+                          flexShrink: 0,
+                          zIndex: 1,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 13,
+                          color: "color-mix(in srgb, var(--source-github) 70%, #fff)",
+                          background: "color-mix(in srgb, var(--source-github) 18%, transparent)",
+                          border: "1px solid color-mix(in srgb, var(--source-github) 50%, transparent)",
+                        }}
+                      >
+                        ✓
+                      </span>
+                      <span style={{ fontSize: 12.5, color: "var(--muted)" }}>This issue is closed.</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
+        </div>
 
-          {/* Open on GitHub */}
-          {githubUrl && (
-            <button
-              onClick={() => openUrl(githubUrl).catch(() => {})}
-              style={{
-                alignSelf: "flex-start",
-                marginTop: "var(--space-xs)",
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                color: "var(--accent)",
-                fontFamily: "var(--font-sans)",
-                fontSize: 12,
-              }}
-            >
-              Open on GitHub ↗
-            </button>
+        {/* Action bar (fixed) */}
+        <div style={actionBarStyle}>
+          {editing ? (
+            <>
+              <button onClick={handleSaveGithubEdit} disabled={savingEdit} style={{ ...btnPrimaryStyle, cursor: savingEdit ? "wait" : "pointer" }}>
+                {savingEdit ? "Saving…" : "Save to GitHub"}
+              </button>
+              <button onClick={() => setEditing(false)} disabled={savingEdit} style={btnGhostStyle}>
+                Cancel
+              </button>
+              <span style={{ ...metaTextStyle, fontSize: 10.5 }}>Markdown · pushes to GitHub</span>
+            </>
+          ) : (
+            <>
+              {detail && (
+                <button onClick={startEdit} style={btnPrimaryStyle}>
+                  Edit
+                </button>
+              )}
+              {onHandToAgent && (
+                <button onClick={() => onHandToAgent(card)} style={btnCyanStyle}>
+                  Hand to agent →
+                </button>
+              )}
+              {githubUrl && (
+                <button onClick={() => openUrl(githubUrl).catch(() => {})} style={btnGhostStyle}>
+                  Open on GitHub ↗
+                </button>
+              )}
+              <span style={metaTextStyle}>
+                Created {formatDate(card.created_at)}
+                <br />
+                {closed ? "Closed" : "Updated"} {formatDate(card.updated_at)}
+              </span>
+            </>
           )}
-
-          {/* Meta info */}
-          <div
-            style={{
-              marginTop: "auto",
-              paddingTop: "var(--space-md)",
-              borderTop: "1px solid var(--border)",
-              fontFamily: "var(--font-sans)",
-              fontSize: 11,
-              color: "var(--muted)",
-            }}
-          >
-            <div style={{ marginBottom: "var(--space-xs)" }}>
-              Created: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.created_at)}</span>
-            </div>
-            <div>
-              Updated: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.updated_at)}</span>
-            </div>
-          </div>
         </div>
         {lightbox && <Lightbox img={lightbox} onClose={() => setLightbox(null)} />}
       </div>
     );
   }
 
+
   // ---- Local card (in linked or local workspace) ----
   return (
     <div style={containerStyle}>
-      <div style={{ display: "contents" }}>
-        {toast && <div style={toastStyle}>{toast}</div>}
+      {toast && <div style={toastStyle}>{toast}</div>}
 
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-md)" }}>
-          <input
-            value={title}
-            onChange={(e) => handleTitleChange(e.target.value)}
-            style={{
-              flex: 1,
-              background: "var(--input-bg)",
-              border: "1px solid var(--input-border)",
-              borderRadius: "var(--radius-sm)",
-              color: "var(--fg)",
-              padding: "var(--space-sm) var(--space-md)",
-              fontFamily: "var(--font-sans)",
-              fontSize: 14,
-              fontWeight: 600,
-            }}
-          />
-          <button onClick={onClose} style={closeButtonStyle}>
-            ✕
-          </button>
-        </div>
-
-        {/* Source badge */}
-        <div style={{ marginBottom: "var(--space-md)" }}>
+      {/* Header (fixed): local badge + editable title */}
+      <div style={headerStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginBottom: "var(--space-sm)" }}>
           <span
             style={{
+              fontFamily: "var(--font-mono)",
               fontSize: 10,
               fontWeight: 500,
               padding: "2px 8px",
               borderRadius: "var(--radius-pill)",
               background: "var(--source-local)",
               color: "var(--on-accent)",
-              fontFamily: "var(--font-mono)",
             }}
           >
             local
           </span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={closeButtonStyle}>
+            ✕
+          </button>
         </div>
+        <input
+          value={title}
+          onChange={(e) => handleTitleChange(e.target.value)}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            background: "var(--input-bg)",
+            border: "1px solid var(--input-border)",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--fg)",
+            padding: "var(--space-xs) var(--space-sm)",
+            fontFamily: "var(--font-sans)",
+            fontSize: 15,
+            fontWeight: 600,
+          }}
+        />
+      </div>
 
-        {/* Body textarea */}
+      {/* Scrollable body: editable description */}
+      <div style={scrollStyle}>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: "var(--space-xs)" }}>
+          Description
+        </div>
         <textarea
           value={body}
           onChange={(e) => handleBodyChange(e.target.value)}
@@ -681,6 +807,9 @@ export default function CardDetail({ card, workspace, onClose, onDeleted, modal 
           placeholder="Add a description…"
           style={{
             flex: 1,
+            minHeight: 160,
+            width: "100%",
+            boxSizing: "border-box",
             background: "var(--input-bg)",
             border: "1px solid var(--input-border)",
             borderRadius: "var(--radius-sm)",
@@ -690,67 +819,44 @@ export default function CardDetail({ card, workspace, onClose, onDeleted, modal 
             fontSize: 13,
             lineHeight: 1.5,
             resize: "vertical",
-            minHeight: 100,
           }}
         />
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--muted)", marginTop: "var(--space-xs)" }}>
+          Auto-save · local card until promoted to a GitHub issue
+        </div>
+      </div>
 
-        {/* Promote button for cards in linked workspaces */}
+      {/* Action bar (fixed): promote + delete */}
+      <div style={actionBarStyle}>
         {isLinkedWorkspace && (
           <button
             onClick={handlePromote}
             disabled={promoting}
             style={{
-              marginTop: "var(--space-md)",
-              padding: "var(--space-sm) var(--space-md)",
+              ...btnPrimaryStyle,
               background: "var(--source-github)",
-              border: "none",
-              borderRadius: "var(--radius-sm)",
               color: "var(--on-accent)",
-              fontFamily: "var(--font-sans)",
-              fontSize: 13,
               cursor: promoting ? "wait" : "pointer",
             }}
           >
             {promoting ? "Creating issue…" : "Create GitHub issue"}
           </button>
         )}
-
-        {/* Meta info */}
-        <div
-          style={{
-            marginTop: "var(--space-lg)",
-            paddingTop: "var(--space-md)",
-            borderTop: "1px solid var(--border)",
-            fontFamily: "var(--font-sans)",
-            fontSize: 11,
-            color: "var(--muted)",
-          }}
-        >
-          <div style={{ marginBottom: "var(--space-xs)" }}>
-            Created: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.created_at)}</span>
-          </div>
-          <div style={{ marginBottom: "var(--space-sm)" }}>
-            Updated: <span style={{ fontFamily: "var(--font-mono)" }}>{formatDate(card.updated_at)}</span>
-          </div>
-        </div>
-
-        {/* Delete button */}
         <button
           onClick={handleDelete}
           style={{
-            marginTop: "var(--space-sm)",
-            padding: "var(--space-sm) var(--space-md)",
-            background: "var(--status-error-deep)",
-            border: "none",
-            borderRadius: "var(--radius-sm)",
-            color: "var(--on-accent)",
-            fontFamily: "var(--font-sans)",
-            fontSize: 13,
-            cursor: "pointer",
+            ...btnGhostStyle,
+            borderColor: "color-mix(in srgb, var(--status-error-deep) 50%, transparent)",
+            color: "var(--status-error-text)",
           }}
         >
           Delete card
         </button>
+        <span style={metaTextStyle}>
+          Created {formatDate(card.created_at)}
+          <br />
+          Updated {formatDate(card.updated_at)}
+        </span>
       </div>
     </div>
   );

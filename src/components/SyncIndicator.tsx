@@ -52,7 +52,7 @@ export default function SyncIndicator({ workspaceId }: { workspaceId: string }) 
   }
 
   // status === "idle": the "✓ Synced just now" pill was visual noise beside the
-  // tab title. The AppBar's AggregateSyncStatus already reports the all-quiet
-  // state globally, so per-tab we surface only the in-flight / error signal.
+  // tab title. The StatusBar's footer reports the all-quiet state (and doubles
+  // as the re-sync trigger), so per-tab we surface only the in-flight / error signal.
   return null;
 }
