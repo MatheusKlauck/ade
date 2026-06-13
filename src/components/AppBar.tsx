@@ -2,7 +2,9 @@ import type { CSSProperties } from "react";
 import Tabs from "./Tabs";
 import NotificationCenter from "./NotificationCenter";
 import AggregateSyncStatus from "./AggregateSyncStatus";
-import { GearIcon } from "./icons";
+import { GearIcon, RowsIcon, ColumnsIcon } from "./icons";
+
+export type ViewMode = "ledger" | "classic";
 
 // macOS uses titleBarStyle: Overlay, so the native traffic lights sit on the
 // left of our bar — inset the content past them. Other platforms keep native
@@ -13,6 +15,8 @@ const TRAFFIC_INSET = isMac ? 84 : 12;
 
 interface AppBarProps {
   onOpenSettings: () => void;
+  viewMode: ViewMode;
+  onToggleView: () => void;
 }
 
 const barStyle: CSSProperties = {
@@ -42,7 +46,14 @@ const iconBtnStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-export default function AppBar({ onOpenSettings }: AppBarProps) {
+export default function AppBar({
+  onOpenSettings,
+  viewMode,
+  onToggleView,
+}: AppBarProps) {
+  // The button shows the CURRENT view; clicking switches to the other one.
+  const isLedger = viewMode === "ledger";
+  const nextLabel = isLedger ? "board" : "ledger";
   return (
     // The whole bar is the window drag handle. Tauri starts a native window drag
     // only when the mousedown target itself carries data-tauri-drag-region, so
@@ -70,6 +81,24 @@ export default function AppBar({ onOpenSettings }: AppBarProps) {
       />
 
       <AggregateSyncStatus />
+      {/* View switcher: ledger (issue table) ⇄ classic (terminal grid + dock). */}
+      <button
+        onClick={onToggleView}
+        title={`Switch to ${nextLabel} view`}
+        aria-label={`Switch to ${nextLabel} view`}
+        style={{
+          ...iconBtnStyle,
+          width: "auto",
+          gap: 6,
+          padding: "0 9px",
+          fontSize: 11,
+          fontFamily: "var(--font-sans)",
+          color: "var(--fg)",
+        }}
+      >
+        {isLedger ? <RowsIcon size={14} /> : <ColumnsIcon size={14} />}
+        <span>{isLedger ? "Ledger" : "Board"}</span>
+      </button>
       <NotificationCenter />
       <button
         onClick={onOpenSettings}

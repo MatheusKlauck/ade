@@ -200,6 +200,17 @@ export function workspaceClose(workspaceId: string): Promise<void> {
   return invoke("workspace_close", { workspaceId });
 }
 
+// ---- skills ----
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+
+// Scan the workspace root for skills (`.claude/skills/*/SKILL.md`, `skills/*/SKILL.md`).
+export function skillsList(workspaceId: string): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("skills_list", { workspaceId });
+}
+
 // Kick an immediate sync cycle for a workspace's GitHub worker (the backend
 // `notify`s the running worker; it's a no-op for local-only workspaces).
 export function syncNow(workspaceId: string): Promise<void> {

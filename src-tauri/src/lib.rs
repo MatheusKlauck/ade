@@ -265,6 +265,7 @@ pub fn run() {
             ipc::terminal::terminal_close,
             ipc::terminal::terminal_kill_window,
             ipc::sync::sync_now,
+            ipc::skills::skills_list,
         ])
         .build(tauri::generate_context!());
 

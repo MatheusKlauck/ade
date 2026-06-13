@@ -151,6 +151,23 @@ interface TerminalsState {
   setTerminalName: (workspaceId: string, windowId: string, name: string) => void;
   // Load persisted custom names for a workspace from ui_state.
   loadNames: (workspaceId: string) => Promise<void>;
+  // Split layout per workspace: how the open terminals are arranged into rows
+  // and columns plus their drag-resized weights. Keyed by the stable windowId
+  // (like locks) and persisted to ui_state so the arrangement survives workspace
+  // switches and restarts. `undefined` means "not loaded yet" — the render path
+  // shows a default arrangement but won't persist over it until loadLayout runs.
+  layoutByWorkspace: Record<string, TerminalLayout | undefined>;
+  // Replace a workspace's layout. `persist` defaults to true; pass false for the
+  // transient frames emitted while a divider is being dragged, then persist once
+  // on pointer-up so a drag is a single write, not hundreds.
+  setLayout: (
+    workspaceId: string,
+    layout: TerminalLayout,
+    persist?: boolean
+  ) => void;
+  // Load persisted layout for a workspace from ui_state. Always records an entry
+  // (possibly []) so the render path can tell "loaded, empty" from "not loaded".
+  loadLayout: (workspaceId: string) => Promise<void>;
   // Preset that launched each terminal window, keyed by workspace → windowId →
   // presetId. Used on manual close (×) to run that preset's closeCommands.
   // Keyed by the stable windowId and persisted per-workspace to ui_state so the
@@ -170,23 +187,6 @@ interface TerminalsState {
   ) => string | undefined;
   // Load persisted window→preset associations for a workspace from ui_state.
   loadPresetWindows: (workspaceId: string) => Promise<void>;
-  // Split layout per workspace: how the open terminals are arranged into rows
-  // and columns plus their drag-resized weights. Keyed by the stable windowId
-  // (like locks) and persisted to ui_state so the arrangement survives workspace
-  // switches and restarts. `undefined` means "not loaded yet" — the render path
-  // shows a default arrangement but won't persist over it until loadLayout runs.
-  layoutByWorkspace: Record<string, TerminalLayout | undefined>;
-  // Replace a workspace's layout. `persist` defaults to true; pass false for the
-  // transient frames emitted while a divider is being dragged, then persist once
-  // on pointer-up so a drag is a single write, not hundreds.
-  setLayout: (
-    workspaceId: string,
-    layout: TerminalLayout,
-    persist?: boolean
-  ) => void;
-  // Load persisted layout for a workspace from ui_state. Always records an entry
-  // (possibly []) so the render path can tell "loaded, empty" from "not loaded".
-  loadLayout: (workspaceId: string) => Promise<void>;
   // Preset chosen via a card's "Run with…" menu, held by card id until the
   // matching terminal_focus event fires so the launch sequence can pick it up.
   // In-memory only: a launch that never happens just leaves a harmless stale
@@ -210,8 +210,8 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
   focusedWindowId: null,
   lockedByWorkspace: {},
   namesByWorkspace: {},
-  presetByWorkspace: {},
   layoutByWorkspace: {},
+  presetByWorkspace: {},
   pendingPresetByCardId: {},
   addPane: (pane) => set((s) => ({ panes: [...s.panes, pane] })),
   removePane: (paneId) =>

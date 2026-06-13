@@ -58,6 +58,28 @@ export function PlusIcon({ size = 16, style }: IconProps) {
   );
 }
 
+// Horizontal rows — the ledger (dense issue-table) view glyph.
+export function RowsIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <rect x="3" y="4" width="18" height="5" rx="1" />
+      <rect x="3" y="11" width="18" height="5" rx="1" />
+      <path d="M3 19h18" />
+    </svg>
+  );
+}
+
+// Vertical columns — the classic Kanban board view glyph.
+export function ColumnsIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <rect x="3" y="4" width="5" height="16" rx="1" />
+      <rect x="10" y="4" width="5" height="11" rx="1" />
+      <rect x="17" y="4" width="4" height="14" rx="1" />
+    </svg>
+  );
+}
+
 // Down-chevron at rest; rotate via the parent's `style.transform` to point in
 // any direction (board toggle, tray restore) so disclosure glyphs share the
 // same stroke family as the rest of the chrome instead of text triangles.
