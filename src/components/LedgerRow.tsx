@@ -279,6 +279,7 @@ export default function LedgerRow({
     <>
       <div
         ref={ref}
+        data-ledger-row={card.terminal_window_id ?? card.id}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => {

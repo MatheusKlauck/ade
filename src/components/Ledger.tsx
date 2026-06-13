@@ -379,6 +379,7 @@ export default function Ledger({
     : null;
 
   // ---- keyboard nav (↑/↓ move cursor, ↩ expand) ----
+  const listRef = useRef<HTMLDivElement | null>(null);
   const visibleRef = useRef<LedgerRowModel[]>(visibleRows);
   visibleRef.current = visibleRows;
   const cursorRef = useRef(cursorIdx);
@@ -389,6 +390,21 @@ export default function Ledger({
   }, [visibleRows.length, cursorIdx]);
 
   useEffect(() => {
+    const moveCursor = (delta: number) => {
+      const rows = visibleRef.current;
+      if (rows.length === 0) return;
+      const cur = cursorRef.current;
+      const ni = cur < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, cur + delta));
+      cursorRef.current = ni;
+      setCursorIdx(ni);
+      const row = rows[ni];
+      const rowKey = row?.card.terminal_window_id ?? row?.card.id;
+      if (rowKey && listRef.current) {
+        listRef.current
+          .querySelector(`[data-ledger-row="${CSS.escape(rowKey)}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      }
+    };
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null;
       if (
@@ -400,18 +416,17 @@ export default function Ledger({
         return; // typing somewhere (incl. a terminal's hidden textarea)
       if (useTerminalsStore.getState().focusedWindowId) return; // terminal owns keys
       if (selectedCardId) return; // modal open
-      const rows = visibleRef.current;
-      if (rows.length === 0) return;
+      if (visibleRef.current.length === 0) return;
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setCursorIdx((i) => Math.min(rows.length - 1, i + 1));
+        moveCursor(1);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setCursorIdx((i) => (i < 0 ? 0 : Math.max(0, i - 1)));
+        moveCursor(-1);
       } else if (e.key === "Enter") {
         const i = cursorRef.current;
-        const row = i >= 0 ? rows[i] : undefined;
+        const row = i >= 0 ? visibleRef.current[i] : undefined;
         const wid = row?.card.terminal_window_id;
         if (wid && workspaceId && paneByWin.has(wid)) {
           e.preventDefault();
@@ -541,6 +556,7 @@ export default function Ledger({
       {/* Rows list — the single PTY container. Every TerminalPane lives here,
           keyed by stable id; collapse only toggles its wrapper height. */}
       <div
+        ref={listRef}
         style={{
           flex: 1,
           minHeight: 0,
