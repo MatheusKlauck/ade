@@ -1,212 +1,85 @@
 import { describe, it, expect } from "vitest";
 import {
-  normalizeStage,
-  activateTab,
-  moveTabToPanel,
-  splitOut,
-  locateTab,
+  normalizeExpanded,
+  toggleExpanded,
+  withExpanded,
+  sanitizeExpanded,
   sortRows,
   filterRows,
   rowCounts,
   useLedgerStore,
-  MAX_PANELS,
-  type StageState,
+  DEFAULT_ACCORDION_HEIGHT,
   type LedgerRowModel,
 } from "./ledger";
 import type { Card } from "../lib/ipc";
 
-const stage = (panels: StageState["panels"]): StageState => ({ panels });
-
-describe("normalizeStage", () => {
-  it("places all windows into one panel when stage is empty", () => {
-    const out = normalizeStage(stage([]), ["a", "b"]);
-    expect(out.panels).toHaveLength(1);
-    expect(out.panels[0].tabs).toEqual(["a", "b"]);
-    // The last appended window becomes active so a fresh terminal is visible.
-    expect(out.panels[0].active).toBe("b");
+describe("normalizeExpanded", () => {
+  it("drops windowIds that are no longer open", () => {
+    const out = normalizeExpanded(new Set(["a", "b", "gone"]), ["a", "b"]);
+    expect([...out].sort()).toEqual(["a", "b"]);
   });
 
-  it("returns zero panels when there are no windows", () => {
-    const out = normalizeStage(
-      stage([{ tabs: ["a"], active: "a" }]),
-      []
-    );
-    expect(out.panels).toEqual([]);
-  });
-
-  it("drops stale tabs and emptied panels", () => {
-    const out = normalizeStage(
-      stage([
-        { tabs: ["gone"], active: "gone" },
-        { tabs: ["a"], active: "a" },
-      ]),
-      ["a"]
-    );
-    expect(out.panels).toEqual([{ tabs: ["a"], active: "a" }]);
-  });
-
-  it("dedupes a window that appears in two panels (first wins)", () => {
-    const out = normalizeStage(
-      stage([
-        { tabs: ["a"], active: "a" },
-        { tabs: ["a", "b"], active: "b" },
-      ]),
-      ["a", "b"]
-    );
-    expect(out.panels[0].tabs).toEqual(["a"]);
-    expect(out.panels[1].tabs).toEqual(["b"]);
-  });
-
-  it("caps panels at MAX_PANELS, merging overflow into the last", () => {
-    const out = normalizeStage(
-      stage([
-        { tabs: ["a"], active: "a" },
-        { tabs: ["b"], active: "b" },
-        { tabs: ["c"], active: "c" },
-      ]),
-      ["a", "b", "c"]
-    );
-    expect(out.panels).toHaveLength(MAX_PANELS);
-    expect(out.panels[1].tabs).toEqual(["b", "c"]);
-  });
-
-  it("repairs an active that is not in tabs", () => {
-    const out = normalizeStage(
-      stage([{ tabs: ["a", "b"], active: "zzz" }]),
-      ["a", "b"]
-    );
-    expect(out.panels[0].active).toBe("a");
-  });
-
-  it("appends unknown windows to the smaller panel and activates them", () => {
-    const out = normalizeStage(
-      stage([
-        { tabs: ["a", "b"], active: "a" },
-        { tabs: ["c"], active: "c" },
-      ]),
-      ["a", "b", "c", "new"]
-    );
-    expect(out.panels[1].tabs).toEqual(["c", "new"]);
-    expect(out.panels[1].active).toBe("new");
-    expect(out.panels[0].active).toBe("a");
+  it("keeps every still-live window", () => {
+    const out = normalizeExpanded(new Set(["a", "b"]), ["a", "b", "c"]);
+    expect([...out].sort()).toEqual(["a", "b"]);
   });
 
   it("is idempotent", () => {
-    const once = normalizeStage(stage([{ tabs: ["b", "a"], active: "a" }]), ["a", "b", "c"]);
-    const twice = normalizeStage(once, ["a", "b", "c"]);
-    expect(twice).toEqual(once);
+    const once = normalizeExpanded(new Set(["a", "b"]), ["a", "b"]);
+    const twice = normalizeExpanded(once, ["a", "b"]);
+    expect([...twice]).toEqual([...once]);
   });
 
-  it("survives garbage tab entries", () => {
-    const dirty = {
-      panels: [{ tabs: ["a", 42 as unknown as string, null as unknown as string], active: "a" }],
-    };
-    const out = normalizeStage(dirty, ["a"]);
-    expect(out.panels).toEqual([{ tabs: ["a"], active: "a" }]);
+  it("returns a new Set (never mutates its input)", () => {
+    const src = new Set(["a"]);
+    expect(normalizeExpanded(src, ["a"])).not.toBe(src);
   });
 });
 
-describe("activateTab", () => {
-  it("activates a tab within its panel", () => {
-    const out = activateTab(stage([{ tabs: ["a", "b"], active: "a" }]), "b");
-    expect(out.panels[0].active).toBe("b");
+describe("toggleExpanded", () => {
+  it("adds when absent", () => {
+    expect([...toggleExpanded(new Set(["a"]), "b")].sort()).toEqual(["a", "b"]);
   });
 
-  it("is a no-op for unknown windows and already-active tabs", () => {
-    const s = stage([{ tabs: ["a"], active: "a" }]);
-    expect(activateTab(s, "zzz")).toBe(s);
-    expect(activateTab(s, "a")).toBe(s);
-  });
-});
-
-describe("moveTabToPanel", () => {
-  it("creates the second panel when targeting the next slot", () => {
-    const out = moveTabToPanel(stage([{ tabs: ["a", "b"], active: "a" }]), "b", 1);
-    expect(out.panels).toHaveLength(2);
-    expect(out.panels[0]).toEqual({ tabs: ["a"], active: "a" });
-    expect(out.panels[1]).toEqual({ tabs: ["b"], active: "b" });
+  it("removes when present", () => {
+    expect([...toggleExpanded(new Set(["a", "b"]), "b")]).toEqual(["a"]);
   });
 
-  it("moves across panels and fixes the source active", () => {
-    const out = moveTabToPanel(
-      stage([
-        { tabs: ["a", "b"], active: "b" },
-        { tabs: ["c"], active: "c" },
-      ]),
-      "b",
-      1
-    );
-    expect(out.panels[0]).toEqual({ tabs: ["a"], active: "a" });
-    expect(out.panels[1]).toEqual({ tabs: ["c", "b"], active: "b" });
-  });
-
-  it("collapses to one panel when the source empties", () => {
-    const out = moveTabToPanel(
-      stage([
-        { tabs: ["a"], active: "a" },
-        { tabs: ["b"], active: "b" },
-      ]),
-      "a",
-      1
-    );
-    expect(out.panels).toHaveLength(1);
-    expect(out.panels[0].tabs).toEqual(["b", "a"]);
-    expect(out.panels[0].active).toBe("a");
-  });
-
-  it("same-panel move just activates", () => {
-    const out = moveTabToPanel(stage([{ tabs: ["a", "b"], active: "a" }]), "b", 0);
-    expect(out.panels[0]).toEqual({ tabs: ["a", "b"], active: "b" });
-  });
-
-  it("clamps the target index to MAX_PANELS", () => {
-    const out = moveTabToPanel(stage([{ tabs: ["a", "b"], active: "a" }]), "b", 99);
-    expect(out.panels).toHaveLength(2);
-    expect(out.panels[1].tabs).toEqual(["b"]);
+  it("returns a new Set", () => {
+    const s = new Set(["a"]);
+    expect(toggleExpanded(s, "b")).not.toBe(s);
   });
 });
 
-describe("splitOut", () => {
-  it("opens the second panel from a single panel", () => {
-    const out = splitOut(stage([{ tabs: ["a", "b"], active: "a" }]), "b");
-    expect(out.panels).toHaveLength(2);
-    expect(out.panels[1]).toEqual({ tabs: ["b"], active: "b" });
+describe("withExpanded", () => {
+  it("adds when absent", () => {
+    expect([...withExpanded(new Set(["a"]), "b")].sort()).toEqual(["a", "b"]);
   });
 
-  it("a lone tab cannot split (round-trips to one panel)", () => {
-    const out = splitOut(stage([{ tabs: ["a"], active: "a" }]), "a");
-    expect(out.panels).toHaveLength(1);
-    expect(out.panels[0].tabs).toEqual(["a"]);
-  });
-
-  it("crosses over when two panels exist", () => {
-    const out = splitOut(
-      stage([
-        { tabs: ["a", "b"], active: "a" },
-        { tabs: ["c"], active: "c" },
-      ]),
-      "c"
-    );
-    expect(out.panels).toHaveLength(1);
-    expect(out.panels[0].tabs).toEqual(["a", "b", "c"]);
-    expect(out.panels[0].active).toBe("c");
-  });
-
-  it("is a no-op for unknown windows", () => {
-    const s = stage([{ tabs: ["a"], active: "a" }]);
-    expect(splitOut(s, "zzz")).toBe(s);
+  it("is identity-stable when already present (no render churn)", () => {
+    const s = new Set(["a"]);
+    expect(withExpanded(s, "a")).toBe(s);
   });
 });
 
-describe("locateTab", () => {
-  it("finds panel and active flag", () => {
-    const s = stage([
-      { tabs: ["a"], active: "a" },
-      { tabs: ["b", "c"], active: "c" },
-    ]);
-    expect(locateTab(s, "b")).toEqual({ panelIdx: 1, isActive: false });
-    expect(locateTab(s, "c")).toEqual({ panelIdx: 1, isActive: true });
-    expect(locateTab(s, "zzz")).toBeNull();
+describe("sanitizeExpanded", () => {
+  it("falls back on garbage", () => {
+    expect(sanitizeExpanded("nope")).toEqual({
+      expanded: [],
+      accordionHeight: DEFAULT_ACCORDION_HEIGHT,
+    });
+  });
+
+  it("filters non-string entries and clamps a bad height", () => {
+    expect(
+      sanitizeExpanded({ expanded: ["a", 7, null], accordionHeight: -5 })
+    ).toEqual({ expanded: ["a"], accordionHeight: DEFAULT_ACCORDION_HEIGHT });
+  });
+
+  it("passes through a well-formed payload", () => {
+    expect(
+      sanitizeExpanded({ expanded: ["a", "b"], accordionHeight: 300 })
+    ).toEqual({ expanded: ["a", "b"], accordionHeight: 300 });
   });
 });
 
@@ -346,5 +219,39 @@ describe("attention store", () => {
     st.setAttention("w9", "done");
     st.setAttention("w9", "input");
     expect(useLedgerStore.getState().attentionByWindow.w9.kind).toBe("input");
+  });
+});
+
+// ---- expansion store actions ----
+
+describe("expansion store", () => {
+  it("toggles, expands idempotently, and persists height in state", () => {
+    const st = useLedgerStore.getState();
+    st.setExpanded("ws-x", new Set(), false);
+
+    st.toggleExpandedWindow("ws-x", "w1");
+    expect([...useLedgerStore.getState().expandedByWorkspace["ws-x"]!]).toEqual([
+      "w1",
+    ]);
+
+    st.expandWindow("ws-x", "w1"); // already there — stays a single entry
+    expect([...useLedgerStore.getState().expandedByWorkspace["ws-x"]!]).toEqual([
+      "w1",
+    ]);
+
+    st.expandWindow("ws-x", "w2");
+    expect(
+      [...useLedgerStore.getState().expandedByWorkspace["ws-x"]!].sort()
+    ).toEqual(["w1", "w2"]);
+
+    st.toggleExpandedWindow("ws-x", "w1");
+    expect([...useLedgerStore.getState().expandedByWorkspace["ws-x"]!]).toEqual([
+      "w2",
+    ]);
+
+    st.setAccordionHeight("ws-x", 420);
+    expect(useLedgerStore.getState().accordionHeightByWorkspace["ws-x"]).toBe(
+      420
+    );
   });
 });

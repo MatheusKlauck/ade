@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -7,7 +8,6 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import {
   boardGet,
   cardCreate,
@@ -21,16 +21,17 @@ import { useWorkspacesStore } from "../store/workspaces";
 import { type TerminalPreset } from "../store/settings";
 import {
   useLedgerStore,
-  normalizeStage,
+  normalizeExpanded,
   filterRows,
   sortRows,
   rowCounts,
+  DEFAULT_ACCORDION_HEIGHT,
   type LedgerFilter,
   type LedgerRowModel,
 } from "../store/ledger";
 import { COL_BACKLOG, COL_DOING, COL_DONE } from "../lib/columns";
-import Stage from "./Stage";
 import LedgerRow from "./LedgerRow";
+import ExpandedTerminal from "./ExpandedTerminal";
 import NewTerminalButton from "./NewTerminalButton";
 import CardDetail from "./CardDetail";
 
@@ -43,9 +44,9 @@ interface LedgerProps {
   onHighlightDone: () => void;
 }
 
-const MIN_ROWS_H = 80;
-// Each filter pill, in display order. `input` is rendered with the accent
-// treatment; the rest are neutral until selected.
+const MIN_ACCORDION_H = 140;
+const MAX_ACCORDION_H = 900;
+
 const PILLS: { key: LedgerFilter; label: string }[] = [
   { key: "all", label: "all" },
   { key: "input", label: "needs input" },
@@ -74,35 +75,40 @@ export default function Ledger({
   const setTerminalName = useTerminalsStore((s) => s.setTerminalName);
   const focusedWindowId = useTerminalsStore((s) => s.focusedWindowId);
 
-  const stageByWorkspace = useLedgerStore((s) => s.stageByWorkspace);
-  const rowsHeightByWorkspace = useLedgerStore((s) => s.rowsHeightByWorkspace);
+  const expandedByWorkspace = useLedgerStore((s) => s.expandedByWorkspace);
+  const accordionHeightByWorkspace = useLedgerStore(
+    (s) => s.accordionHeightByWorkspace
+  );
   const attentionByWindow = useLedgerStore((s) => s.attentionByWindow);
   const filter = useLedgerStore((s) => s.filter);
+  const fullscreenWindowId = useLedgerStore((s) => s.fullscreenWindowId);
   const setFilter = useLedgerStore((s) => s.setFilter);
-  const setStage = useLedgerStore((s) => s.setStage);
-  const loadStage = useLedgerStore((s) => s.loadStage);
-  const setRowsHeight = useLedgerStore((s) => s.setRowsHeight);
+  const setExpanded = useLedgerStore((s) => s.setExpanded);
+  const loadExpanded = useLedgerStore((s) => s.loadExpanded);
+  const toggleExpandedWindow = useLedgerStore((s) => s.toggleExpandedWindow);
+  const setAccordionHeight = useLedgerStore((s) => s.setAccordionHeight);
+  const setFullscreen = useLedgerStore((s) => s.setFullscreen);
   const clearAttention = useLedgerStore((s) => s.clearAttention);
 
   const workspaces = useWorkspacesStore((s) => s.workspaces);
+  const syncStatus = useWorkspacesStore((s) => s.syncStatus);
   const activeWorkspace = workspaceId
     ? workspaces.find((w) => w.id === workspaceId) ?? null
     : null;
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  // Live divider height while dragging (committed to the store on pointer-up so
-  // a drag is one persisted write, not hundreds).
-  const [dragRowsH, setDragRowsH] = useState<number | null>(null);
+  const [dragH, setDragH] = useState<number | null>(null);
+  const [cursorIdx, setCursorIdx] = useState(-1); // keyboard cursor row
 
   const board = workspaceId ? boards[workspaceId] : undefined;
   const columns = useMemo(() => board?.columns ?? [], [board]);
   const cardsByColumn = board?.cardsByColumn;
 
-  // Load the persisted stage + rows height when the workspace changes.
+  // Load persisted expansion + height on workspace change.
   useEffect(() => {
-    if (workspaceId) loadStage(workspaceId);
-  }, [workspaceId, loadStage]);
+    if (workspaceId) loadExpanded(workspaceId);
+  }, [workspaceId, loadExpanded]);
 
   // Escape closes the card-detail modal.
   useEffect(() => {
@@ -114,41 +120,46 @@ export default function Ledger({
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedCardId]);
 
-  // ---- stage (terminal panels) ----
-  const paneWins = panes.map((p) => p.windowId);
-  const winKey = paneWins.join("|");
-  const rawStage = workspaceId ? stageByWorkspace[workspaceId] : undefined;
-  // Always render from a normalised stage so a freshly-opened terminal shows up
-  // immediately, even before the persistence effect below writes it back.
-  const stage = normalizeStage(rawStage ?? { panels: [] }, paneWins);
-
-  // Persist the normalised stage whenever it diverges from what's stored — a
-  // terminal opened (placed) or closed (dropped). Gated on rawStage being
-  // defined so we never clobber persisted state with the default before
-  // loadStage has run.
-  useEffect(() => {
-    if (!workspaceId || rawStage === undefined) return;
-    const norm = normalizeStage(rawStage, paneWins);
-    if (JSON.stringify(norm) !== JSON.stringify(rawStage)) {
-      setStage(workspaceId, norm, true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, rawStage, winKey]);
-
-  // Clear the attention flag for whichever terminal you're actively watching —
-  // you've seen it, so it shouldn't keep pulling at the row order.
+  // Clear the attention flag for whichever terminal you're actively watching.
   useEffect(() => {
     if (focusedWindowId) clearAttention(focusedWindowId);
   }, [focusedWindowId, clearAttention]);
 
-  const onStageChange = useCallback(
-    (next: typeof stage) => {
-      if (workspaceId) setStage(workspaceId, next, true);
-    },
-    [workspaceId, setStage]
+  // ---- expansion ----
+  const paneWins = panes.map((p) => p.windowId);
+  const winKey = paneWins.join("|");
+  // paneSig also tracks paneId so a reattached window (same windowId, fresh
+  // paneId/channel) rebuilds the map instead of serving the dead pane.
+  const paneSig = panes.map((p) => `${p.windowId}:${p.paneId}`).join("|");
+  const paneByWin = useMemo(
+    () => new Map(panes.map((p) => [p.windowId, p])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [paneSig]
+  );
+  const rawExpanded = workspaceId ? expandedByWorkspace[workspaceId] : undefined;
+  const expandedSet = useMemo(
+    () => normalizeExpanded(rawExpanded ?? new Set<string>(), paneWins),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawExpanded, winKey]
   );
 
-  // ---- terminal title / lock / name helpers (mirrors the old TerminalArea) ----
+  // Prune expanded entries for closed windows (gate on loaded so we never
+  // clobber persisted state before loadExpanded ran).
+  useEffect(() => {
+    if (!workspaceId || rawExpanded === undefined) return;
+    const norm = normalizeExpanded(rawExpanded, paneWins);
+    if (norm.size !== rawExpanded.size) {
+      setExpanded(workspaceId, norm, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, rawExpanded, winKey]);
+
+  const accordionH =
+    dragH ??
+    (workspaceId ? accordionHeightByWorkspace[workspaceId] : undefined) ??
+    DEFAULT_ACCORDION_HEIGHT;
+
+  // ---- terminal helpers ----
   const customNameFor = (pane: OpenTerminal): string | undefined =>
     namesByWorkspace[pane.workspaceId]?.[pane.windowId];
 
@@ -176,19 +187,16 @@ export default function Ledger({
 
   const handleRemovePane = useCallback(
     (pane: OpenTerminal) => {
-      // Locked terminals can't be closed — guard every path into removal.
       const st = useTerminalsStore.getState();
       if ((st.lockedByWorkspace[pane.workspaceId] ?? []).includes(pane.windowId)) {
-        return;
+        return; // locked — can't close
       }
       onRemovePane(pane.paneId);
     },
     [onRemovePane]
   );
 
-  // ---- card moves (single helper; consolidates the old duplicated logic) ----
-  // Move a card to a column, optimistically; closing its terminal when the
-  // target is Done (the backend kills the tmux window; drop the pane too).
+  // ---- card moves (single helper; Done closes the terminal) ----
   const moveCard = useCallback(
     (card: CardType, toColumnId: string) => {
       if (!workspaceId) return;
@@ -198,7 +206,6 @@ export default function Ledger({
       optimisticMove(workspaceId, card.id, toColumnId);
       cardMove(card.id, toColumnId).catch((e) => {
         console.error("card_move failed", e);
-        // Re-fetch so a rejected move doesn't strand the optimistic state.
         boardGet(workspaceId)
           .then((res) => setBoard(workspaceId, res.columns, res.cards))
           .catch(() => {});
@@ -213,7 +220,6 @@ export default function Ledger({
     [workspaceId, optimisticMove, setBoard, onRemovePane]
   );
 
-  // Right-click → "Run with {preset}": same path as the old Board.
   const handleRunWithPreset = useCallback(
     (card: CardType, preset: TerminalPreset) => {
       if (!workspaceId) return;
@@ -222,8 +228,6 @@ export default function Ledger({
       const doingCol = b.columns.find((c) => c.name === COL_DOING);
       if (!doingCol) return;
 
-      // Already-running session: run the preset's open commands straight into it
-      // (a re-move to Doing only re-focuses; it won't re-emit a launch event).
       const pane = card.terminal_window_id
         ? useTerminalsStore
             .getState()
@@ -249,6 +253,46 @@ export default function Ledger({
     [workspaceId, optimisticMove]
   );
 
+  // Drop a card onto another row's terminal: inject the dropped card's task and
+  // start it (move to Doing). Works whether the target terminal is expanded or
+  // collapsed — the row, not the hidden pane, is the drop target.
+  const handleCardDrop = useCallback(
+    (
+      dragged: {
+        cardId: string;
+        columnId: string;
+        cardTitle: string;
+        cardBodyPreview: string | null;
+      },
+      targetWindowId: string
+    ) => {
+      if (!workspaceId) return;
+      const pane = useTerminalsStore
+        .getState()
+        .panes.find((p) => p.windowId === targetWindowId);
+      if (!pane) return;
+      const lines = [`# ${dragged.cardTitle}`];
+      if (dragged.cardBodyPreview) {
+        for (const l of dragged.cardBodyPreview.split("\n")) {
+          if (l.trim()) lines.push(`# ${l.trim()}`);
+        }
+      }
+      terminalWrite(pane.paneId, lines.join("\r") + "\r").catch(() => {});
+      useLedgerStore.getState().expandWindow(workspaceId, targetWindowId);
+      const b = useBoardStore.getState().boards[workspaceId];
+      const doingCol = b?.columns.find((c) => c.name === COL_DOING);
+      const draggedCard = b
+        ? Object.values(b.cardsByColumn)
+            .flat()
+            .find((c) => c.id === dragged.cardId)
+        : undefined;
+      if (doingCol && draggedCard && draggedCard.column_id !== doingCol.id) {
+        moveCard(draggedCard, doingCol.id);
+      }
+    },
+    [workspaceId, moveCard]
+  );
+
   const handleCreateCard = () => {
     if (!workspaceId || !newTitle.trim()) return;
     const backlog = columns.find((c) => c.name === COL_BACKLOG);
@@ -268,7 +312,7 @@ export default function Ledger({
     return m;
   }, [columns]);
 
-  const allRows: LedgerRowModel[] = useMemo(() => {
+  const cardRows: LedgerRowModel[] = useMemo(() => {
     if (!cardsByColumn) return [];
     const out: LedgerRowModel[] = [];
     for (const colId of Object.keys(cardsByColumn)) {
@@ -283,53 +327,120 @@ export default function Ledger({
     return out;
   }, [cardsByColumn, colNameById, attentionByWindow]);
 
-  const counts = useMemo(() => rowCounts(allRows), [allRows]);
+  // Ad-hoc shells: panes whose window backs no card become synthetic rows so a
+  // plain "New terminal" is visible and expandable like everything else.
+  const cardWins = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of cardRows)
+      if (r.card.terminal_window_id) s.add(r.card.terminal_window_id);
+    return s;
+  }, [cardRows]);
+
+  const shellRows: LedgerRowModel[] = useMemo(() => {
+    const out: LedgerRowModel[] = [];
+    for (const p of panes) {
+      if (cardWins.has(p.windowId)) continue;
+      const shellCard: CardType = {
+        id: `shell:${p.windowId}`,
+        workspace_id: p.workspaceId,
+        column_id: "",
+        title: titleFor(p),
+        body_preview: null,
+        position: -1, // sort shells ahead of issues within "doing"
+        source: "local",
+        github_issue_number: null,
+        github_state: null,
+        assignee: null,
+        labels_json: null,
+        remote_updated_at: null,
+        terminal_window_id: p.windowId,
+        created_at: "",
+        updated_at: "",
+      };
+      out.push({
+        card: shellCard,
+        columnName: COL_DOING,
+        attention: attentionByWindow[p.windowId],
+        isAdHocShell: true,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [winKey, cardWins, attentionByWindow, namesByWorkspace]);
+
+  const counts = useMemo(() => rowCounts(cardRows), [cardRows]);
   const visibleRows = useMemo(
-    () => sortRows(filterRows(allRows, filter)),
-    [allRows, filter]
+    () => sortRows(filterRows([...shellRows, ...cardRows], filter)),
+    [shellRows, cardRows, filter]
   );
 
-  // Window IDs currently shown as the active tab somewhere on the stage — their
-  // rows get the accent rail so the table and the terminals read as connected.
-  const activeWins = useMemo(() => {
-    const s = new Set<string>();
-    for (const panel of stage.panels) if (panel.active) s.add(panel.active);
-    return s;
-  }, [stage]);
-
-  const liveWins = useMemo(() => new Set(paneWins), [winKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const selectedCard = selectedCardId
-    ? allRows.find((r) => r.card.id === selectedCardId)?.card ?? null
+    ? cardRows.find((r) => r.card.id === selectedCardId)?.card ?? null
     : null;
 
-  // ---- divider drag (resizes the rows region) ----
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const storedRowsH = workspaceId ? rowsHeightByWorkspace[workspaceId] : undefined;
-  const rowsH = dragRowsH ?? storedRowsH ?? 240;
+  // ---- keyboard nav (↑/↓ move cursor, ↩ expand) ----
+  const visibleRef = useRef<LedgerRowModel[]>(visibleRows);
+  visibleRef.current = visibleRows;
+  const cursorRef = useRef(cursorIdx);
+  cursorRef.current = cursorIdx;
+  // Keep the cursor in range as the list changes.
+  useEffect(() => {
+    if (cursorIdx >= visibleRows.length) setCursorIdx(visibleRows.length - 1);
+  }, [visibleRows.length, cursorIdx]);
 
-  const beginDividerDrag = (e: ReactPointerEvent) => {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const ae = document.activeElement as HTMLElement | null;
+      if (
+        ae &&
+        (ae.tagName === "INPUT" ||
+          ae.tagName === "TEXTAREA" ||
+          ae.isContentEditable)
+      )
+        return; // typing somewhere (incl. a terminal's hidden textarea)
+      if (useTerminalsStore.getState().focusedWindowId) return; // terminal owns keys
+      if (selectedCardId) return; // modal open
+      const rows = visibleRef.current;
+      if (rows.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCursorIdx((i) => Math.min(rows.length - 1, i + 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCursorIdx((i) => (i < 0 ? 0 : Math.max(0, i - 1)));
+      } else if (e.key === "Enter") {
+        const i = cursorRef.current;
+        const row = i >= 0 ? rows[i] : undefined;
+        const wid = row?.card.terminal_window_id;
+        if (wid && workspaceId && paneByWin.has(wid)) {
+          e.preventDefault();
+          toggleExpandedWindow(workspaceId, wid);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCardId, workspaceId, toggleExpandedWindow, paneByWin]);
+
+  // ---- accordion height resize ----
+  const beginResize = (e: ReactPointerEvent) => {
     e.preventDefault();
     if (!workspaceId) return;
-    const cont = rootRef.current;
-    const maxH = cont
-      ? cont.getBoundingClientRect().height - 200
-      : window.innerHeight - 300;
     const startY = e.clientY;
-    const startH = rowsH;
+    const startH = accordionH;
     const onMove = (ev: PointerEvent) => {
-      // Drag up (smaller clientY) grows the rows region.
       const next = Math.max(
-        MIN_ROWS_H,
-        Math.min(Math.max(MIN_ROWS_H, maxH), startH + (startY - ev.clientY))
+        MIN_ACCORDION_H,
+        Math.min(MAX_ACCORDION_H, startH + (ev.clientY - startY))
       );
-      setDragRowsH(next);
+      setDragH(next);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      setDragRowsH((h) => {
-        if (h != null && workspaceId) setRowsHeight(workspaceId, h);
+      setDragH((h) => {
+        if (h != null && workspaceId) setAccordionHeight(workspaceId, h);
         return null;
       });
     };
@@ -337,50 +448,30 @@ export default function Ledger({
     window.addEventListener("pointerup", onUp);
   };
 
-  // ---- empty-stage dropzone: dropping a backlog/paused card here starts it ----
-  const dropRef = useRef<HTMLDivElement | null>(null);
-  const [dropOver, setDropOver] = useState(false);
-  useEffect(() => {
-    const el = dropRef.current;
-    if (!el || panes.length > 0) return;
-    return dropTargetForElements({
-      element: el,
-      canDrop: ({ source }) => typeof source.data.cardId === "string",
-      onDragEnter: () => setDropOver(true),
-      onDragLeave: () => setDropOver(false),
-      onDrop: ({ source }) => {
-        setDropOver(false);
-        if (!workspaceId) return;
-        const cardId = source.data.cardId as string;
-        const b = useBoardStore.getState().boards[workspaceId];
-        const doingCol = b?.columns.find((c) => c.name === COL_DOING);
-        const card = b
-          ? Object.values(b.cardsByColumn).flat().find((c) => c.id === cardId)
-          : undefined;
-        if (doingCol && card && card.column_id !== doingCol.id) {
-          moveCard(card, doingCol.id);
-        }
-      },
-    });
-  }, [panes.length, workspaceId, moveCard]);
-
   // ---- status bar figures ----
   const agentsRunning = panes.length;
   const prOpen = counts.pr;
+  const sync = workspaceId ? syncStatus[workspaceId] : undefined;
 
   const pill = (key: LedgerFilter, label: string) => {
     const n = counts[key];
     if (key !== "all" && n === 0) return null;
     const on = filter === key;
     const isInput = key === "input";
+    const accent = on || (isInput && n > 0);
     const style: CSSProperties = {
-      border: `1px solid ${on || (isInput && n > 0) ? "var(--accent)" : "var(--border)"}`,
-      borderRadius: 10,
+      border: `1px solid ${accent ? "var(--accent)" : "var(--border)"}`,
+      borderRadius: "var(--radius-pill)",
       padding: "1px 10px",
       fontSize: 11,
       cursor: "pointer",
-      background: isInput && n > 0 ? "color-mix(in srgb, var(--accent) 10%, transparent)" : on ? "var(--surface-input)" : "transparent",
-      color: on || (isInput && n > 0) ? "var(--accent)" : "var(--muted)",
+      background:
+        isInput && n > 0
+          ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+          : on
+          ? "var(--surface-input)"
+          : "transparent",
+      color: accent ? "var(--accent)" : "var(--muted)",
       whiteSpace: "nowrap",
     };
     return (
@@ -392,7 +483,6 @@ export default function Ledger({
 
   return (
     <div
-      ref={rootRef}
       style={{
         flex: 1,
         minWidth: 0,
@@ -401,7 +491,7 @@ export default function Ledger({
         flexDirection: "column",
       }}
     >
-      {/* Toolbar: filter pills + new card + new terminal */}
+      {/* Toolbar */}
       <div
         style={{
           display: "flex",
@@ -416,6 +506,16 @@ export default function Ledger({
           {PILLS.map((p) => pill(p.key, p.label))}
         </div>
         <div style={{ flex: 1 }} />
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+            color: "var(--muted)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          sort: attention · ↕ move · ↩ expand
+        </span>
         <input
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
@@ -424,7 +524,7 @@ export default function Ledger({
           }}
           placeholder="New card…"
           style={{
-            width: 150,
+            width: 140,
             boxSizing: "border-box",
             padding: "4px 10px",
             borderRadius: 4,
@@ -438,78 +538,12 @@ export default function Ledger({
         <NewTerminalButton onNewTerminal={onNewTerminal} />
       </div>
 
-      {/* Stage (terminals) */}
-      {panes.length > 0 ? (
-        <Stage
-          panes={panes}
-          stage={stage}
-          onStageChange={onStageChange}
-          titleFor={titleFor}
-          lockedFor={lockedFor}
-          hasCustomName={(p) => customNameFor(p) != null}
-          attentionByWindow={attentionByWindow}
-          onToggleLock={(p) => toggleLock(p.workspaceId, p.windowId)}
-          onRename={(p, name) => setTerminalName(p.workspaceId, p.windowId, name)}
-          onRemove={handleRemovePane}
-          highlightedWindowId={highlightedWindowId}
-          onHighlightDone={onHighlightDone}
-        />
-      ) : (
-        <div
-          ref={dropRef}
-          style={{
-            flex: 1,
-            minHeight: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 12,
-            color: "var(--muted)",
-            background: dropOver ? "var(--drop-target)" : "var(--panel)",
-            boxShadow: dropOver ? "inset 0 0 0 2px var(--accent)" : "none",
-            transition: "background var(--dur-instant) var(--ease-out-quart)",
-          }}
-        >
-          <span style={{ fontSize: 13 }}>No terminals open</span>
-          <span style={{ fontSize: 12 }}>
-            Drag an issue here to start it, or
-          </span>
-          <button
-            onClick={() => onNewTerminal()}
-            style={{
-              padding: "8px 20px",
-              background: "var(--accent)",
-              color: "var(--accent-ink)",
-              border: "none",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontSize: 14,
-            }}
-          >
-            Open terminal
-          </button>
-        </div>
-      )}
-
-      {/* Divider between the stage and the issue rows */}
-      <div
-        onPointerDown={beginDividerDrag}
-        title="Drag to resize"
-        style={{
-          height: 7,
-          flexShrink: 0,
-          cursor: "row-resize",
-          borderTop: "1px solid var(--border)",
-          background: "var(--bg)",
-        }}
-      />
-
-      {/* Rows: the dense issue table */}
+      {/* Rows list — the single PTY container. Every TerminalPane lives here,
+          keyed by stable id; collapse only toggles its wrapper height. */}
       <div
         style={{
-          height: rowsH,
-          flexShrink: 0,
+          flex: 1,
+          minHeight: 0,
           overflowY: "auto",
           background: "var(--bg)",
         }}
@@ -517,37 +551,103 @@ export default function Ledger({
         {visibleRows.length === 0 ? (
           <div
             style={{
-              padding: "16px",
+              padding: 16,
               fontSize: 12,
               color: "var(--muted)",
               textAlign: "center",
             }}
           >
-            {allRows.length === 0 ? "No issues yet" : "Nothing matches this filter"}
+            {cardRows.length === 0 && shellRows.length === 0
+              ? "No issues yet — add one above, or open a terminal"
+              : "Nothing matches this filter"}
           </div>
         ) : (
-          visibleRows.map((r) => (
-            <LedgerRow
-              key={r.card.id}
-              card={r.card}
-              columnName={r.columnName}
-              attention={r.attention}
-              hasPane={
-                r.card.terminal_window_id
-                  ? liveWins.has(r.card.terminal_window_id)
-                  : false
-              }
-              active={
-                r.card.terminal_window_id
-                  ? activeWins.has(r.card.terminal_window_id)
-                  : false
-              }
-              columns={columns}
-              onOpenDetail={setSelectedCardId}
-              onMove={moveCard}
-              onRunWithPreset={handleRunWithPreset}
-            />
-          ))
+          visibleRows.map((r, idx) => {
+            const wid = r.card.terminal_window_id;
+            const pane = wid ? paneByWin.get(wid) : undefined;
+            const isExpanded = !!wid && expandedSet.has(wid);
+            const isFs = !!wid && fullscreenWindowId === wid;
+            // Key by windowId whenever one exists: it's stable even if a window
+            // ever transitions shell→card-backed (the card.id would differ and
+            // remount the pane → PTY death). Terminal-less cards fall back to id.
+            const key = wid ?? r.card.id;
+            // Collapsed → display:none (NOT height:0). A 0-height-but-laid-out
+            // xterm container makes the FitAddon/ResizeObserver propose ~1 row
+            // and thrash the PTY size; display:none gives the observer a clean
+            // 0×0 so no resize fires — the same proven pattern the old grid used
+            // for hidden panes. The pane stays MOUNTED either way (PTY intact).
+            const wrapperStyle: CSSProperties = isFs
+              ? {
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: "var(--z-modal)" as unknown as number,
+                  background: "var(--bg)",
+                }
+              : isExpanded
+              ? { height: accordionH, overflow: "hidden" }
+              : { display: "none" };
+            return (
+              <Fragment key={key}>
+                <LedgerRow
+                  card={r.card}
+                  columnName={r.columnName}
+                  attention={r.attention}
+                  hasPane={!!pane}
+                  isExpanded={isExpanded}
+                  isAdHocShell={r.isAdHocShell}
+                  selected={idx === cursorIdx}
+                  columns={columns}
+                  onToggleExpand={() => {
+                    if (wid && workspaceId) toggleExpandedWindow(workspaceId, wid);
+                  }}
+                  onOpenDetail={setSelectedCardId}
+                  onMove={moveCard}
+                  onRunWithPreset={handleRunWithPreset}
+                  onCardDrop={handleCardDrop}
+                />
+                {pane && (
+                  <div style={wrapperStyle}>
+                    <ExpandedTerminal
+                      pane={pane}
+                      title={titleFor(pane)}
+                      locked={lockedFor(pane)}
+                      hasCustomName={customNameFor(pane) != null}
+                      attention={attentionByWindow[pane.windowId]}
+                      fullscreen={isFs}
+                      onToggleLock={() => toggleLock(pane.workspaceId, pane.windowId)}
+                      onRename={(name) =>
+                        setTerminalName(pane.workspaceId, pane.windowId, name)
+                      }
+                      onRemove={() => handleRemovePane(pane)}
+                      onToggleFullscreen={() =>
+                        setFullscreen(isFs ? null : wid!)
+                      }
+                      onCollapse={() => {
+                        if (isFs) setFullscreen(null);
+                        if (wid && workspaceId)
+                          toggleExpandedWindow(workspaceId, wid);
+                      }}
+                      highlighted={highlightedWindowId === wid}
+                      onHighlightDone={onHighlightDone}
+                    />
+                  </div>
+                )}
+                {/* Drag grip to resize the expanded terminals (shared height). */}
+                {pane && isExpanded && !isFs && (
+                  <div
+                    onPointerDown={beginResize}
+                    title="Drag to resize terminals"
+                    style={{
+                      height: 6,
+                      margin: "-8px 12px 6px",
+                      cursor: "row-resize",
+                      borderRadius: 3,
+                    }}
+                  />
+                )}
+              </Fragment>
+            );
+          })
         )}
       </div>
 
@@ -586,6 +686,28 @@ export default function Ledger({
               }}
             />
             {counts.input} needs input
+          </span>
+        )}
+        {sync?.lastSync && (
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              aria-hidden
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background:
+                  sync.status === "error"
+                    ? "var(--status-error)"
+                    : "var(--status-success)",
+              }}
+            />
+            {sync.status === "syncing" ? "syncing…" : "synced"}
+          </span>
+        )}
+        {activeWorkspace?.github_repo && (
+          <span style={{ fontFamily: "var(--font-mono)" }}>
+            ⎇ {activeWorkspace.github_repo}
           </span>
         )}
         <span style={{ flex: 1 }} />

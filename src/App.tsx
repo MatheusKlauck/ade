@@ -20,7 +20,7 @@ import Ledger from "./components/Ledger";
 import SkillsSidebar from "./components/SkillsSidebar";
 import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
-import { useLedgerStore, activateTab } from "./store/ledger";
+import { useLedgerStore } from "./store/ledger";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
 import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
@@ -374,11 +374,10 @@ export default function App() {
         .getState()
         .panes.find((p) => p.windowId === window_id);
       if (existing) {
-        // Pane exists — highlight it, make its tab the visible one on the stage,
-        // and clear any pending attention now that the user is looking at it.
+        // Pane exists — highlight it, expand its terminal inline, and clear any
+        // pending attention now that the user is looking at it.
         const ls = useLedgerStore.getState();
-        const cur = ls.stageByWorkspace[workspace_id];
-        if (cur) ls.setStage(workspace_id, activateTab(cur, window_id), true);
+        ls.expandWindow(workspace_id, window_id);
         ls.clearAttention(window_id);
         focusWindow(window_id);
       } else {
@@ -410,6 +409,8 @@ export default function App() {
             preset,
             injectCardId: payload.card_id,
           });
+          // Expand the freshly-opened terminal inline so it's immediately visible.
+          useLedgerStore.getState().expandWindow(workspace_id, result.windowId);
           focusWindow(window_id);
         } catch {
           // The tmux window is gone (died/killed since the focus event was
@@ -548,6 +549,8 @@ export default function App() {
           .getState()
           .setPresetForWindow(activeWorkspaceId, result.windowId, preset.id);
       }
+      // Expand the new terminal inline so it shows up right away.
+      useLedgerStore.getState().expandWindow(activeWorkspaceId, result.windowId);
       scheduleStartupSequence(pane.paneId, { preset });
     } catch (e) {
       console.error(e);

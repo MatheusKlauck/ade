@@ -34,6 +34,11 @@ interface TerminalPaneProps {
   onToggleMaximize?: () => void;
   highlighted?: boolean;
   onHighlightDone?: () => void;
+  // Render only the terminal body (no built-in header/controls). The inline
+  // accordion supplies its own minimal panel header instead, but the xterm host,
+  // its PTY wiring, the card-drop target and focus tracking are unchanged — so
+  // the pane is the same mounted instance either way (PTY invariant intact).
+  chromeless?: boolean;
 }
 
 const iconBtnStyle: React.CSSProperties = {
@@ -65,6 +70,7 @@ function TerminalPane({
   onToggleMaximize,
   highlighted,
   onHighlightDone,
+  chromeless,
 }: TerminalPaneProps) {
   // Header context menu (right-click); Escape-to-dismiss is built in.
   const { menu, open: openMenu, close: closeMenu } = useContextMenu();
@@ -329,6 +335,7 @@ function TerminalPane({
         transition: "opacity var(--dur-instant) var(--ease-out-quart)",
       }}
     >
+      {!chromeless && (
       <div
         ref={headerRef}
         onContextMenu={(e) => {
@@ -426,8 +433,9 @@ function TerminalPane({
           ×
         </button>
       </div>
+      )}
 
-      {menu && (
+      {!chromeless && menu && (
         <ContextMenu position={menu} onClose={closeMenu} minWidth={150}>
             <button
               style={menuItemStyle}
