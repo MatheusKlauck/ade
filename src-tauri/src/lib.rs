@@ -253,6 +253,7 @@ pub fn run() {
             ipc::board::card_delete,
             ipc::board::card_move,
             ipc::board::card_promote,
+            ipc::board::card_update_github,
             ipc::card::card_detail,
             ipc::github::github_set_token,
             ipc::settings::setting_get,

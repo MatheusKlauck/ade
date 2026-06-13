@@ -1,5 +1,14 @@
 // M2-T7: Core types for the GitHub client and sync engine.
 
+/// A GitHub label with its display colour. Used by the card detail view to
+/// render coloured chips; the board/ledger only needs names (see
+/// `RemoteIssue.labels`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Label {
+    pub name: String,
+    pub color: String, // 6-digit hex, no leading '#'
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteIssue {
     pub number: u64,
@@ -12,12 +21,19 @@ pub struct RemoteIssue {
     pub is_pull_request: bool, // true if raw JSON has "pull_request" key
     pub body_preview: Option<String>, // first 280 chars of body
     pub body: Option<String>,  // full body text (for card detail view)
+    // Enrichment for the detail view (not persisted; only the live fetch in
+    // card_detail surfaces these). `labels` above stays the names-only list the
+    // sync engine reads.
+    pub labels_detailed: Vec<Label>,
+    pub assignee_avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncAction {
     CreateCard {
-        issue: RemoteIssue,
+        // Boxed: RemoteIssue is by far the largest variant payload (full issue
+        // + detail enrichment), so boxing keeps SyncAction small.
+        issue: Box<RemoteIssue>,
         column: ColumnName,
     },
     MoveCard {
@@ -38,6 +54,7 @@ pub enum SyncAction {
 pub struct IssueComment {
     pub id: u64,
     pub user_login: String,
+    pub user_avatar_url: Option<String>,
     pub body: String,
     pub created_at: String,
     pub updated_at: String,

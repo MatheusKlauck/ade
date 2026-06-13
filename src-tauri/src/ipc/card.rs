@@ -1,6 +1,6 @@
 use crate::error::AdeError;
 use crate::gh::client::GitHubClient;
-use crate::gh::types::IssueComment;
+use crate::gh::types::{IssueComment, Label};
 use crate::models::Card;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -12,6 +12,11 @@ pub struct CardDetail {
     pub card: Card,
     pub body: Option<String>,
     pub comments: Vec<IssueComment>,
+    // Detail-view enrichment from the live issue fetch. Empty/None for local
+    // cards or when the live fetch is skipped (the frontend falls back to the
+    // names-only labels cached on `card.labels_json`).
+    pub labels: Vec<Label>,
+    pub assignee_avatar_url: Option<String>,
 }
 
 #[tauri::command]
@@ -29,6 +34,8 @@ pub async fn card_detail(
         return Ok(CardDetail {
             body: card.body_preview.clone(),
             comments: vec![],
+            labels: vec![],
+            assignee_avatar_url: None,
             card,
         });
     }
@@ -55,6 +62,8 @@ pub async fn card_detail(
                     return Ok(CardDetail {
                         body: card.body_preview.clone(),
                         comments: vec![],
+                        labels: vec![],
+                        assignee_avatar_url: None,
                         card,
                     });
                 }
@@ -64,6 +73,8 @@ pub async fn card_detail(
             return Ok(CardDetail {
                 body: card.body_preview.clone(),
                 comments: vec![],
+                labels: vec![],
+                assignee_avatar_url: None,
                 card,
             });
         }
@@ -88,11 +99,13 @@ pub async fn card_detail(
         .await
         .map_err(|e| AdeError::GitHub(format!("failed to fetch comments: {e}")))?;
 
-    // 8. Return CardDetail with full body
+    // 8. Return CardDetail with full body + detail-view enrichment
     Ok(CardDetail {
-        card,
         body: issue.body,
         comments,
+        labels: issue.labels_detailed,
+        assignee_avatar_url: issue.assignee_avatar_url,
+        card,
     })
 }
 
@@ -432,6 +445,112 @@ mod tests {
             "Full body text that is longer than any preview"
                 .chars()
                 .count()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_issue_extracts_label_colors_and_assignee_avatar() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        let issue_resp = serde_json::json!({
+            "number": 7,
+            "title": "Coloured issue",
+            "state": "open",
+            "updated_at": "2025-06-10T12:00:00Z",
+            "assignee": { "login": "matheus", "avatar_url": "https://avatars.example/mk.png" },
+            "labels": [
+                { "name": "bug", "color": "d73a4a" },
+                { "name": "p1", "color": "b60205" },
+            ],
+            "html_url": "https://github.com/testowner/testrepo/issues/7",
+            "pull_request": null,
+            "body": "body",
+        });
+        Mock::given(method("GET"))
+            .and(path("/repos/testowner/testrepo/issues/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&issue_resp))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
+        let issue = gh.get_issue("testowner", "testrepo", 7).await.unwrap();
+
+        // names-only list (sync engine) still populated
+        assert_eq!(issue.labels, vec!["bug".to_string(), "p1".to_string()]);
+        // detailed list carries colours for the detail view
+        assert_eq!(issue.labels_detailed.len(), 2);
+        assert_eq!(issue.labels_detailed[0].name, "bug");
+        assert_eq!(issue.labels_detailed[0].color, "d73a4a");
+        assert_eq!(
+            issue.assignee_avatar_url,
+            Some("https://avatars.example/mk.png".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_issue_patches_title_and_body() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let updated = serde_json::json!({
+            "number": 5,
+            "title": "New title",
+            "state": "open",
+            "updated_at": "2025-06-12T00:00:00Z",
+            "assignee": null,
+            "labels": [],
+            "html_url": "https://github.com/testowner/testrepo/issues/5",
+            "pull_request": null,
+            "body": "New body",
+        });
+        Mock::given(method("PATCH"))
+            .and(path("/repos/testowner/testrepo/issues/5"))
+            .and(body_partial_json(
+                serde_json::json!({ "title": "New title", "body": "New body" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&updated))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
+        let issue = gh
+            .update_issue("testowner", "testrepo", 5, Some("New title"), Some("New body"))
+            .await
+            .expect("update_issue should succeed");
+        assert_eq!(issue.title, "New title");
+        assert_eq!(issue.body, Some("New body".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_issue_comments_extract_avatar() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let comments = serde_json::json!([{
+            "id": 9,
+            "user": { "login": "alice", "avatar_url": "https://avatars.example/alice.png" },
+            "body": "hi",
+            "created_at": "2025-06-10T10:00:00Z",
+            "updated_at": "2025-06-10T10:00:00Z",
+        }]);
+        Mock::given(method("GET"))
+            .and(path("/repos/testowner/testrepo/issues/9/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&comments))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
+        let result = gh.get_issue_comments("testowner", "testrepo", 9).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].user_login, "alice");
+        assert_eq!(
+            result[0].user_avatar_url,
+            Some("https://avatars.example/alice.png".to_string())
         );
     }
 

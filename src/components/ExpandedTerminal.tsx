@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import TerminalPane from "./TerminalPane";
 import { terminalWrite } from "../lib/ipc";
-import type { OpenTerminal } from "../store/terminals";
+import { useTerminalsStore, type OpenTerminal } from "../store/terminals";
 import type { Attention } from "../store/ledger";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
 import { LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
@@ -89,6 +89,13 @@ export default function ExpandedTerminal({
   onHighlightDone,
 }: ExpandedTerminalProps) {
   const needsInput = attention?.kind === "input";
+  // When several terminals are expanded at once, only one owns the keyboard.
+  // Highlight it with a glow ring so it's obvious where keys are going. A
+  // border-colour change alone wouldn't read (--accent and --focus-ring are the
+  // same pink, so it'd clash with the needsInput border).
+  const isFocused = useTerminalsStore(
+    (s) => s.focusedWindowId === pane.windowId
+  );
   const { menu, open: openMenu, close: closeMenu } = useContextMenu();
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
@@ -122,10 +129,17 @@ export default function ExpandedTerminal({
         height: "100%",
         minHeight: 0,
         margin: "0 12px 10px",
-        border: `1px solid ${needsInput ? "var(--accent)" : "var(--border)"}`,
+        border: `1px solid ${
+          isFocused || needsInput ? "var(--focus-ring)" : "var(--border)"
+        }`,
         borderRadius: "0 var(--radius-lg) var(--radius-lg) var(--radius-lg)",
         overflow: "hidden",
         background: "var(--bg)",
+        boxShadow: isFocused
+          ? "0 0 0 1px var(--focus-ring), 0 0 16px -2px rgba(240, 47, 194, 0.45)"
+          : "none",
+        transition:
+          "box-shadow var(--dur-state) var(--ease-out-quart), border-color var(--dur-state) var(--ease-out-quart)",
       }}
     >
       {/* Panel header bar: ● terminal — live  ····  ↗ full screen  collapse ▴ */}

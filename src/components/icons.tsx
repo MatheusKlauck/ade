@@ -100,6 +100,30 @@ export function CheckIcon({ size = 16, style }: IconProps) {
   );
 }
 
+// Git-branch glyph — the small marker before a branch name in terminal headers,
+// board cards (e.g. "issue-42") and the status bar.
+export function BranchIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="6" cy="18" r="2.5" />
+      <circle cx="18" cy="8" r="2.5" />
+      <path d="M6 8.5v7" />
+      <path d="M18 10.5a6 6 0 0 1-6 6H6" />
+    </svg>
+  );
+}
+
+// Up-right arrow — the "open PR" marker on a board card in the PR column.
+export function ArrowUpRightIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg aria-hidden {...COMMON} style={svgStyle(size, style)}>
+      <path d="M7 17 17 7" />
+      <path d="M8 7h9v9" />
+    </svg>
+  );
+}
+
 // Closed padlock — marks a locked terminal (can't be closed until unlocked).
 export function LockIcon({ size = 16, style }: IconProps) {
   return (

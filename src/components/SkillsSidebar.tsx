@@ -35,7 +35,7 @@ function SkillRow({ skill }: { skill: SkillInfo }) {
         background: "var(--surface-raised)",
         cursor: "grab",
         opacity: dragging ? 0.5 : 1,
-        overflow: "hidden",
+        minWidth: 0,
       }}
     >
       <span
@@ -44,7 +44,8 @@ function SkillRow({ skill }: { skill: SkillInfo }) {
           fontSize: 12,
           fontWeight: 600,
           color: "var(--accent)",
-          whiteSpace: "nowrap",
+          display: "block",
+          overflowWrap: "anywhere",
         }}
       >
         /{skill.name}
@@ -56,9 +57,7 @@ function SkillRow({ skill }: { skill: SkillInfo }) {
             fontSize: 11,
             color: "var(--muted)",
             display: "block",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            overflowWrap: "anywhere",
           }}
         >
           {skill.description}

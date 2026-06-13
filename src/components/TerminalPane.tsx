@@ -19,7 +19,7 @@ import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
-import { LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
+import { BranchIcon, LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
 
 interface TerminalPaneProps {
   pane: OpenTerminal;
@@ -39,6 +39,18 @@ interface TerminalPaneProps {
   // its PTY wiring, the card-drop target and focus tracking are unchanged — so
   // the pane is the same mounted instance either way (PTY invariant intact).
   chromeless?: boolean;
+  // "board" renders the compact stage header from the board mockup: a status
+  // dot + title + branch chip + a lone close button (minimize/maximize move into
+  // the right-click menu). "default" keeps the full inline button row.
+  headerVariant?: "default" | "board";
+  // Branch label shown beside the title in the board header (e.g. "issue-42").
+  branch?: string | null;
+  // Colour of the status dot in the board header (defaults to the muted hue).
+  dotColor?: string;
+  // When true, the activity comet orbits just OUTSIDE the border (the tiling
+  // grid gives it room); otherwise it hugs the inner edge (the inline ledger
+  // accordion, where there's no surrounding gap to orbit into).
+  cometOutside?: boolean;
 }
 
 const iconBtnStyle: React.CSSProperties = {
@@ -71,7 +83,12 @@ function TerminalPane({
   highlighted,
   onHighlightDone,
   chromeless,
+  headerVariant = "default",
+  branch,
+  dotColor,
+  cometOutside,
 }: TerminalPaneProps) {
+  const isBoard = headerVariant === "board";
   // Header context menu (right-click); Escape-to-dismiss is built in.
   const { menu, open: openMenu, close: closeMenu } = useContextMenu();
   // Draft custom name while the header title is being edited, or null when not.
@@ -94,6 +111,28 @@ function TerminalPane({
   const chunkBufRef = useRef<Uint8Array[]>([]);
   // Pending backend-close timer. See the cleanup below for the StrictMode rationale.
   const closeTimerRef = useRef<number | null>(null);
+
+  // Output-activity tracking → the "agent working" affordances, kept in the
+  // shared store (keyed by windowId) so a minimized terminal's tray chip mirrors
+  // them while this pane is display:none. `working` drives the orbiting comet
+  // while output is actively arriving; `veil` is a counter bumped when a burst
+  // ends, replaying the attention sweep. workingRef is the local transition guard
+  // so the channel handler (registered once) only writes the store on an actual
+  // edge, not on every chunk.
+  const activity = useTerminalsStore((s) => s.activityByWindow[pane.windowId]);
+  const working = activity?.working ?? false;
+  const veilKey = activity?.veil ?? 0;
+  const workingRef = useRef(false);
+  const burstActiveRef = useRef(false);
+  const burstStartRef = useRef(0);
+  // Stops the comet once output has gone quiet. Refreshed on every chunk; when it
+  // fires the terminal is idle (agent done / sitting at a prompt), so the orbit
+  // halts even though the user hasn't typed yet. See markActivity below.
+  const idleTimerRef = useRef<number | null>(null);
+  // Timestamp of the user's last keystroke. Output arriving right after a key is
+  // just the shell echoing what was typed, not the agent producing — so it must
+  // not drive the comet/veil. See markActivity below.
+  const lastInputRef = useRef(0);
 
   useEffect(() => {
     // React.StrictMode (dev only) double-invokes effects on mount:
@@ -134,16 +173,75 @@ function TerminalPane({
       term.focus();
     }
 
+    const windowId = pane.windowId;
+    const acts = useTerminalsStore.getState;
+
     // Data from user typing
     term.onData((data) => {
+      lastInputRef.current = Date.now();
+      // The user is typing again, so the terminal is back to awaiting input.
+      // Stop the comet now (no veil — the burst was interrupted, not finished).
+      burstActiveRef.current = false;
+      if (idleTimerRef.current != null) {
+        clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      if (workingRef.current) {
+        workingRef.current = false;
+        acts().setTerminalWorking(windowId, false);
+      }
       terminalWrite(pane.paneId, data).catch(() => {});
     });
+
+    // Activity heuristic: sustained output = read mode (the agent is producing).
+    // A short ramp keeps trivial blips from flashing the border. The comet spins
+    // only while output keeps arriving: every chunk refreshes an idle timer, and
+    // once output stays quiet for IDLE_OFF_MS the comet stops — so an agent that
+    // has finished (sitting idle at a prompt) no longer orbits. Typing also stops
+    // it immediately via the read→write handoff in term.onData.
+    const RAMP_MS = 150;
+    // Output landing within this window of a keystroke is treated as the echo of
+    // the user's own typing and never starts a burst. Each keystroke refreshes
+    // the window, so continuous typing stays animation-free.
+    const INPUT_ECHO_MS = 250;
+    // How long output must stay quiet before the comet halts. Generous enough to
+    // ride out natural pauses within a single response (tool calls, thinking)
+    // without flickering off, short enough that a stopped terminal settles fast.
+    const IDLE_OFF_MS = 1200;
+    const markActivity = () => {
+      const now = Date.now();
+      // Ignore keystroke echo: while the user is typing, neither the comet nor
+      // the veil should fire — they mark agent output only.
+      if (now - lastInputRef.current < INPUT_ECHO_MS) return;
+      if (!burstActiveRef.current) {
+        burstActiveRef.current = true;
+        burstStartRef.current = now;
+      }
+      if (!workingRef.current && now - burstStartRef.current >= RAMP_MS) {
+        workingRef.current = true;
+        acts().setTerminalWorking(windowId, true);
+      }
+      // Refresh the idle-off timer: the comet keeps spinning while chunks flow
+      // and stops once they stop. A fresh burst re-ramps from scratch.
+      if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = window.setTimeout(() => {
+        idleTimerRef.current = null;
+        burstActiveRef.current = false;
+        if (workingRef.current) {
+          workingRef.current = false;
+          acts().setTerminalWorking(windowId, false);
+          // Burst finished — sweep the attention veil once to mark "done".
+          acts().bumpTerminalVeil(windowId);
+        }
+      }, IDLE_OFF_MS);
+    };
 
     // Wire channel
     pane.channel.onmessage = (msg: unknown) => {
       const buf = msg as ArrayBuffer;
       const bytes = new Uint8Array(buf);
       chunkBufRef.current.push(bytes);
+      markActivity();
 
       if (flushRef.current == null) {
         flushRef.current = requestAnimationFrame(() => {
@@ -212,6 +310,14 @@ function TerminalPane({
         cancelAnimationFrame(flushRef.current);
         flushRef.current = null;
       }
+      if (idleTimerRef.current != null) {
+        clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      workingRef.current = false;
+      burstActiveRef.current = false;
+      // Drop this window's activity so a closed terminal leaves no stale comet.
+      useTerminalsStore.getState().clearTerminalActivity(pane.windowId);
       if (webglRef.current) {
         try {
           webglRef.current.dispose();
@@ -326,8 +432,18 @@ function TerminalPane({
 
   return (
     <div
-      className={highlighted ? "terminal-pane-highlight" : undefined}
+      className={[
+        "ade-term-pane",
+        "ade-comet",
+        cometOutside && "ade-comet--outside",
+        working && "ade-term-visible",
+        working && "ade-term-working",
+        highlighted && "terminal-pane-highlight",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         height: "100%",
@@ -335,6 +451,27 @@ function TerminalPane({
         transition: "opacity var(--dur-instant) var(--ease-out-quart)",
       }}
     >
+      {/* Inner clip: rounds + clips the terminal content and the veil so they
+          stay inside the border, while the comet (a pseudo-element on the host
+          above) is free to orbit OUTSIDE it. Without this, a grid wrapper set to
+          overflow:visible (so the comet can escape) would let the square content
+          corners poke past the rounded border. */}
+      <div
+        className="ade-term-clip"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          position: "relative",
+          overflow: "hidden",
+          borderRadius: cometOutside ? 4 : 0,
+        }}
+      >
+      {/* Attention veil — remounted per burst-end (keyed) so the sweep replays. */}
+      {veilKey > 0 && (
+        <div key={veilKey} className="ade-term-done-veil" aria-hidden />
+      )}
       {!chromeless && (
       <div
         ref={headerRef}
@@ -345,17 +482,30 @@ function TerminalPane({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 6,
-          padding: "4px 8px",
+          gap: isBoard ? 8 : 6,
+          padding: isBoard ? "5px 8px 5px 10px" : "4px 8px",
           borderBottom: "1px solid var(--border)",
           background: "var(--panel)",
           // The header doubles as the drag handle for rearranging panes.
           cursor: renameDraft != null ? "default" : "grab",
         }}
       >
-        {locked && (
+        {/* Leading marker: lock takes precedence; otherwise the board variant
+            shows a coloured status dot. */}
+        {locked ? (
           <LockIcon size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
-        )}
+        ) : isBoard ? (
+          <span
+            aria-hidden
+            style={{
+              flexShrink: 0,
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: dotColor ?? "var(--muted)",
+            }}
+          />
+        ) : null}
         {renameDraft != null ? (
           <input
             ref={renameInputRef}
@@ -391,9 +541,11 @@ function TerminalPane({
             title={title}
             onDoubleClick={() => onRename && startRename()}
             style={{
-              flex: 1,
+              flexShrink: isBoard ? 1 : undefined,
+              flex: isBoard ? undefined : 1,
               minWidth: 0,
-              fontSize: 12,
+              fontSize: isBoard ? 12.5 : 12,
+              fontWeight: isBoard ? 600 : 400,
               color: "var(--fg)",
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -403,25 +555,50 @@ function TerminalPane({
             {title}
           </span>
         )}
-        <button
-          style={iconBtnStyle}
-          title="Minimize"
-          aria-label="Minimize terminal"
-          onClick={onToggleMinimize}
-        >
-          —
-        </button>
-        <button
-          style={iconBtnStyle}
-          title={maximized ? "Restore" : "Maximize"}
-          aria-label={maximized ? "Restore terminal" : "Maximize terminal"}
-          onClick={onToggleMaximize}
-        >
-          {maximized ? "❐" : "▢"}
-        </button>
+        {isBoard && branch && renameDraft == null && (
+          <span
+            title={branch}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+              flexShrink: 0,
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              color: "var(--muted)",
+            }}
+          >
+            <BranchIcon size={11} />
+            {branch}
+          </span>
+        )}
+        {/* Spacer pushes the close button to the far right in the board header,
+            where minimize/maximize live in the right-click menu instead. */}
+        {isBoard && <div style={{ flex: 1, minWidth: 8 }} />}
+        {!isBoard && (
+          <>
+            <button
+              style={iconBtnStyle}
+              title="Minimize"
+              aria-label="Minimize terminal"
+              onClick={onToggleMinimize}
+            >
+              —
+            </button>
+            <button
+              style={iconBtnStyle}
+              title={maximized ? "Restore" : "Maximize"}
+              aria-label={maximized ? "Restore terminal" : "Maximize terminal"}
+              onClick={onToggleMaximize}
+            >
+              {maximized ? "❐" : "▢"}
+            </button>
+          </>
+        )}
         <button
           style={{
             ...iconBtnStyle,
+            ...(isBoard ? { border: "none", width: 20, height: 20 } : null),
             opacity: locked ? 0.4 : 1,
             cursor: locked ? "not-allowed" : "pointer",
           }}
@@ -437,6 +614,45 @@ function TerminalPane({
 
       {!chromeless && menu && (
         <ContextMenu position={menu} onClose={closeMenu} minWidth={150}>
+            {/* Board header hides the inline min/max buttons — surface them here. */}
+            {isBoard && (
+              <>
+                <button
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--panel)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                  onClick={() => {
+                    onToggleMinimize?.();
+                    closeMenu();
+                  }}
+                >
+                  <span style={{ width: 14, textAlign: "center" }}>—</span>
+                  <span>Minimize</span>
+                </button>
+                <button
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--panel)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                  onClick={() => {
+                    onToggleMaximize?.();
+                    closeMenu();
+                  }}
+                >
+                  <span style={{ width: 14, textAlign: "center" }}>
+                    {maximized ? "❐" : "▢"}
+                  </span>
+                  <span>{maximized ? "Restore" : "Maximize"}</span>
+                </button>
+              </>
+            )}
             <button
               style={menuItemStyle}
               onMouseEnter={(e) => {
@@ -498,6 +714,7 @@ function TerminalPane({
           outlineOffset: "-2px",
         }}
       />
+      </div>
     </div>
   );
 }

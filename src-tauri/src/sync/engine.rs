@@ -50,7 +50,7 @@ pub fn reconcile(
     // Row 2: create card for open, unknown issues
     if local.is_none() && remote.state == "open" {
         return SyncAction::CreateCard {
-            issue: remote.clone(),
+            issue: Box::new(remote.clone()),
             column: desired_column(remote),
         };
     }
@@ -105,6 +105,8 @@ mod tests {
             is_pull_request: false,
             body_preview: None,
             body: None,
+            labels_detailed: Vec::new(),
+            assignee_avatar_url: None,
         }
     }
 
@@ -187,7 +189,7 @@ mod tests {
         assert_eq!(
             result,
             SyncAction::CreateCard {
-                issue: remote.clone(),
+                issue: Box::new(remote.clone()),
                 column: ColumnName::Backlog,
             }
         );

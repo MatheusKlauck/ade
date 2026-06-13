@@ -1,7 +1,7 @@
 // M2-T7: GitHub client with injectable base URL for wiremock testing.
 
 use crate::error::AdeError;
-use crate::gh::types::{IssueComment, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
+use crate::gh::types::{IssueComment, Label, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
 use std::time::Duration;
 
 /// Production GitHub API base URL (overridable for tests).
@@ -227,19 +227,32 @@ impl GitHubClient {
             .and_then(|l| l.as_str())
             .map(|s| s.to_string());
 
-        let labels = item
+        let assignee_avatar_url = item
+            .get("assignee")
+            .and_then(|a| a.get("avatar_url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+
+        let labels_detailed = item
             .get("labels")
             .and_then(|l| l.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|l| {
-                        l.get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|s| s.to_string())
+                        let name = l.get("name").and_then(|n| n.as_str())?.to_string();
+                        let color = l
+                            .get("color")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        Some(Label { name, color })
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+
+        // Names-only list the sync engine reads (desired_column, change detection).
+        let labels = labels_detailed.iter().map(|l| l.name.clone()).collect();
 
         let html_url = item["html_url"].as_str().unwrap_or("").to_string();
 
@@ -265,6 +278,8 @@ impl GitHubClient {
             is_pull_request,
             body_preview,
             body: raw_body,
+            labels_detailed,
+            assignee_avatar_url,
         })
     }
 
@@ -358,6 +373,37 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Update an existing issue's title and/or body.
+    /// PATCH /repos/{owner}/{repo}/issues/{issue_number}. Only the provided
+    /// fields are sent. Returns the refreshed issue.
+    pub async fn update_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<RemoteIssue, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            self.base_url, owner, repo, issue_number
+        );
+        let mut payload = serde_json::Map::new();
+        if let Some(t) = title {
+            payload.insert("title".to_string(), serde_json::Value::String(t.to_string()));
+        }
+        if let Some(b) = body {
+            payload.insert("body".to_string(), serde_json::Value::String(b.to_string()));
+        }
+        let response =
+            Self::expect_success(self.patch(&url, &serde_json::Value::Object(payload)).await?).await?;
+        let item: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse update_issue response: {e}")))?;
+        self.map_issue(&item)
+    }
+
     /// Create a new issue.
     /// POST /repos/{owner}/{repo}/issues with body { "title": title, "body": body }.
     pub async fn create_issue(
@@ -422,12 +468,16 @@ impl GitHubClient {
                 .as_u64()
                 .ok_or_else(|| AdeError::GitHub("missing comment id".to_string()))?;
             let user_login = item["user"]["login"].as_str().unwrap_or("").to_string();
+            let user_avatar_url = item["user"]["avatar_url"]
+                .as_str()
+                .map(|s| s.to_string());
             let body = item["body"].as_str().unwrap_or("").to_string();
             let created_at = item["created_at"].as_str().unwrap_or("").to_string();
             let updated_at = item["updated_at"].as_str().unwrap_or("").to_string();
             comments.push(IssueComment {
                 id,
                 user_login,
+                user_avatar_url,
                 body,
                 created_at,
                 updated_at,

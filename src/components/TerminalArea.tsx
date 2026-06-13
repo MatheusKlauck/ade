@@ -11,9 +11,10 @@ import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element
 import TerminalPane from "./TerminalPane";
 import { terminalWrite } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
+import { useLedgerStore } from "../store/ledger";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
-import { ChevronIcon, LockIcon } from "./icons";
+import { ChevronIcon, LockIcon, PlusIcon } from "./icons";
 import { useEnterAnimation } from "../lib/useEnterAnimation";
 import { menuItemBlockStyle as menuItemStyle } from "./ContextMenu";
 import type { OpenTerminal, TerminalLayout } from "../store/terminals";
@@ -24,6 +25,10 @@ interface TerminalAreaProps {
   onRemovePane: (paneId: string) => void;
   highlightedWindowId: string | null;
   onHighlightDone: () => void;
+  // "board" drops the top toolbar and renders each pane with the compact stage
+  // header from the board mockup (dot + title + branch + close). "classic" keeps
+  // the toolbar and the full per-pane button row.
+  variant?: "classic" | "board";
 }
 
 /** Split "New terminal" control: the main button opens a plain shell, the caret
@@ -157,7 +162,7 @@ function NewTerminalButton({
 
 // Gap between tiles (px); PAD is half of it, applied as an inset on every side
 // so adjacent tiles and the container edge all show an even gutter.
-const GAP = 6;
+const GAP = 14;
 const PAD = GAP / 2;
 // Smallest a tile may be dragged to, so a divider can't collapse a pane to zero.
 const MIN_ROW_PX = 110;
@@ -299,20 +304,98 @@ function TerminalTile({
   );
 }
 
+// A minimized terminal shown as a tray chip. It mirrors the live pane's comet +
+// veil (read from the store, since the real pane is display:none while
+// minimized) so an agent working in a stashed terminal is still visible. The
+// comet orbits outside the chip; an inner clip keeps the veil and the label
+// ellipsis contained.
+function MinimizedChip({
+  title,
+  locked,
+  working,
+  veilKey,
+  onRestore,
+}: {
+  title: string;
+  locked: boolean;
+  working: boolean;
+  veilKey: number;
+  onRestore: () => void;
+}) {
+  return (
+    <button
+      onClick={onRestore}
+      title="Restore terminal"
+      className={[
+        "ade-comet",
+        "ade-comet--outside",
+        working && "ade-term-visible",
+        working && "ade-term-working",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      style={{
+        position: "relative",
+        maxWidth: 240,
+        padding: 0,
+        background: "var(--panel)",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        cursor: "pointer",
+        overflow: "visible",
+      }}
+    >
+      <span
+        className="ade-term-clip"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: "100%",
+          padding: "4px 10px",
+          fontSize: 12,
+          color: "var(--muted)",
+          borderRadius: 4,
+          overflow: "hidden",
+          position: "relative",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {veilKey > 0 && (
+          <span key={veilKey} className="ade-term-done-veil" aria-hidden />
+        )}
+        <ChevronIcon size={12} style={{ transform: "rotate(-90deg)" }} />
+        {locked && <LockIcon size={12} style={{ color: "var(--accent)" }} />}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+          {title}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export default function TerminalArea({
   panes,
   onNewTerminal,
   onRemovePane,
   highlightedWindowId,
   onHighlightDone,
+  variant = "classic",
 }: TerminalAreaProps) {
+  const isBoard = variant === "board";
   const boards = useBoardStore((s) => s.boards);
+  const attentionByWindow = useLedgerStore((s) => s.attentionByWindow);
   const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
   const namesByWorkspace = useTerminalsStore((s) => s.namesByWorkspace);
   const toggleLock = useTerminalsStore((s) => s.toggleLock);
   const setTerminalName = useTerminalsStore((s) => s.setTerminalName);
   const layoutByWorkspace = useTerminalsStore((s) => s.layoutByWorkspace);
   const setLayout = useTerminalsStore((s) => s.setLayout);
+  // The focused pane gets an accent border (the ADE primary / veil hue).
+  const focusedWindowId = useTerminalsStore((s) => s.focusedWindowId);
+  // Live output-activity per window, mirrored from the panes so minimized chips
+  // can show the same comet + veil.
+  const activityByWindow = useTerminalsStore((s) => s.activityByWindow);
   const [minimized, setMinimized] = useState<Record<string, boolean>>({});
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
 
@@ -403,6 +486,39 @@ export default function TerminalArea({
       }
     }
     return "Terminal";
+  };
+
+  // The card linked to this pane's window, scanned across all columns (a pane
+  // maps to at most one card via terminal_window_id).
+  const cardFor = (pane: OpenTerminal) => {
+    const board = boards[pane.workspaceId];
+    if (!board) return undefined;
+    for (const colId of Object.keys(board.cardsByColumn)) {
+      const card = board.cardsByColumn[colId].find(
+        (c) => c.terminal_window_id === pane.windowId
+      );
+      if (card) return card;
+    }
+    return undefined;
+  };
+
+  // Branch label for the board header: GitHub issues follow the "issue-<n>"
+  // worktree convention; ad-hoc shells (no linked card) show none.
+  const branchFor = (pane: OpenTerminal): string | null => {
+    const card = cardFor(pane);
+    if (card?.github_issue_number != null) return `issue-${card.github_issue_number}`;
+    return null;
+  };
+
+  // Status-dot colour for the board header. Pending attention wins (the agent
+  // needs you / a command failed or finished); otherwise a live card-linked pane
+  // reads as healthy/active (green) and a plain shell stays muted.
+  const dotColorFor = (pane: OpenTerminal): string => {
+    const att = attentionByWindow[pane.windowId];
+    if (att?.kind === "failed") return "var(--status-error)";
+    if (att?.kind === "input") return "var(--status-warning)";
+    if (att?.kind === "done") return "var(--status-success)";
+    return cardFor(pane) ? "var(--status-success)" : "var(--muted)";
   };
 
   // A maximized pane only counts while it is still open.
@@ -654,29 +770,31 @@ export default function TerminalArea({
         flexDirection: "column",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "6px 12px",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <span
+      {!isBoard && (
+        <div
           style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: "var(--muted)",
-            textTransform: "uppercase",
-            letterSpacing: 0.5,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 12px",
+            borderBottom: "1px solid var(--border)",
           }}
         >
-          Terminals{panes.length > 0 ? ` · ${panes.length}` : ""}
-        </span>
-        <div style={{ flex: 1 }} />
-        <NewTerminalButton onNewTerminal={onNewTerminal} />
-      </div>
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--muted)",
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
+            Terminals{panes.length > 0 ? ` · ${panes.length}` : ""}
+          </span>
+          <div style={{ flex: 1 }} />
+          <NewTerminalButton onNewTerminal={onNewTerminal} />
+        </div>
+      )}
       {panes.length === 0 ? (
         <div
           style={{
@@ -725,15 +843,21 @@ export default function TerminalArea({
               const hide = isHidden(pane);
               const rect = rects.get(pane.windowId);
               const locked = isLocked(pane);
+              const isFocusedPane = focusedWindowId === pane.windowId;
               // Locked panes get an accented, ringed border so they stand out
-              // from the freely-closeable ones.
-              const borderColor = locked ? "var(--accent)" : "var(--border)";
+              // from the freely-closeable ones; the focused pane also borders in
+              // the accent (the veil hue) to mark where keystrokes are going.
+              const borderColor =
+                locked || isFocusedPane ? "var(--accent)" : "var(--border)";
               const lockedRing: CSSProperties = locked
                 ? { boxShadow: "0 0 0 1px var(--accent)" }
                 : {};
               // Every pane is absolutely positioned from the computed geometry,
               // so resize/reorder are pure position changes — the pane element
               // is never re-parented, so React never unmounts it (PTY survives).
+              // overflow:visible so the pane's activity comet can orbit just
+              // outside this border; the pane clips its own content internally
+              // (see .ade-term-clip in TerminalPane).
               const wrapperStyle: CSSProperties = isMax
                 ? {
                     position: "absolute",
@@ -742,7 +866,7 @@ export default function TerminalArea({
                     border: `1px solid ${borderColor}`,
                     ...lockedRing,
                     borderRadius: 4,
-                    overflow: "hidden",
+                    overflow: "visible",
                     background: "var(--bg)",
                   }
                 : hide || !rect
@@ -756,7 +880,7 @@ export default function TerminalArea({
                     border: `1px solid ${borderColor}`,
                     ...lockedRing,
                     borderRadius: 4,
-                    overflow: "hidden",
+                    overflow: "visible",
                   };
               return (
                 <TerminalTile
@@ -771,6 +895,10 @@ export default function TerminalArea({
                   <TerminalPane
                     pane={pane}
                     title={titleFor(pane)}
+                    cometOutside
+                    headerVariant={isBoard ? "board" : "default"}
+                    branch={isBoard ? branchFor(pane) : undefined}
+                    dotColor={isBoard ? dotColorFor(pane) : undefined}
                     maximized={isMax}
                     locked={locked}
                     hasCustomName={customNameFor(pane) != null}
@@ -813,6 +941,35 @@ export default function TerminalArea({
                   onPointerDown={(e) => beginColResize(e, d.ri, d.aTi, d.bTi)}
                 />
               ))}
+            {/* Board mode drops the toolbar, so keep a low-profile new-shell
+                control floating in the corner of the stage. */}
+            {isBoard && (
+              <button
+                onClick={() => onNewTerminal()}
+                title="New terminal"
+                aria-label="New terminal"
+                style={{
+                  position: "absolute",
+                  top: PAD + 4,
+                  right: PAD + 4,
+                  zIndex: 30,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 24,
+                  height: 24,
+                  padding: 0,
+                  background: "var(--panel)",
+                  color: "var(--muted)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-sm)",
+                  cursor: "pointer",
+                  opacity: 0.85,
+                }}
+              >
+                <PlusIcon size={14} />
+              </button>
+            )}
           </div>
           {minimizedPanes.length > 0 && (
             <div
@@ -825,38 +982,19 @@ export default function TerminalArea({
                 background: "var(--bg)",
               }}
             >
-              {minimizedPanes.map((pane) => (
-                <button
-                  key={pane.paneId}
-                  onClick={() => restore(pane.paneId)}
-                  title="Restore terminal"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    maxWidth: 240,
-                    padding: "4px 10px",
-                    fontSize: 12,
-                    color: "var(--muted)",
-                    background: "var(--panel)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                  }}
-                >
-                  <ChevronIcon size={12} style={{ transform: "rotate(-90deg)" }} />
-                  {isLocked(pane) && (
-                    <LockIcon size={12} style={{ color: "var(--accent)" }} />
-                  )}
-                  <span
-                    style={{ overflow: "hidden", textOverflow: "ellipsis" }}
-                  >
-                    {titleFor(pane)}
-                  </span>
-                </button>
-              ))}
+              {minimizedPanes.map((pane) => {
+                const act = activityByWindow[pane.windowId];
+                return (
+                  <MinimizedChip
+                    key={pane.paneId}
+                    title={titleFor(pane)}
+                    locked={isLocked(pane)}
+                    working={act?.working ?? false}
+                    veilKey={act?.veil ?? 0}
+                    onRestore={() => restore(pane.paneId)}
+                  />
+                );
+              })}
             </div>
           )}
         </>

@@ -467,6 +467,76 @@ pub async fn card_promote(
     Ok(updated_card)
 }
 
+/// Edit an existing GitHub-linked issue's title and/or body and push it to
+/// GitHub immediately (direct write, like card_promote — the detail view is an
+/// interactive surface that wants instant save feedback, unlike a drag which
+/// goes through the outbox). The local card's title/body_preview are refreshed
+/// from the GitHub response. Returns the updated card.
+#[tauri::command]
+pub async fn card_update_github(
+    card_id: String,
+    title: Option<String>,
+    body: Option<String>,
+    state: State<'_, Arc<crate::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<Card, AdeError> {
+    // 1. Load card
+    let card: Card = crate::repo::card_by_id(&state.db, &card_id)
+        .await?
+        .ok_or_else(|| AdeError::Other("card not found".to_string()))?;
+
+    // 2. Only linked GitHub cards can be edited on GitHub
+    let issue_number = match (card.source.as_str(), card.github_issue_number) {
+        ("github", Some(n)) => n as u64,
+        _ => return Err(AdeError::Other("card is not a GitHub issue".to_string())),
+    };
+
+    // 3. Look up workspace for GitHub owner/repo
+    let ws_row = sqlx::query("SELECT github_owner, github_repo FROM workspace WHERE id = ?")
+        .bind(&card.workspace_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AdeError::Db)?
+        .ok_or_else(|| AdeError::Other("workspace not found".to_string()))?;
+
+    let owner: String = ws_row
+        .get::<Option<String>, _>("github_owner")
+        .ok_or_else(|| AdeError::Other("workspace has no GitHub owner".to_string()))?;
+    let repo: String = ws_row
+        .get::<Option<String>, _>("github_repo")
+        .ok_or_else(|| AdeError::Other("workspace has no GitHub repo".to_string()))?;
+
+    // 4. Get GitHub token from keychain (per-workspace, with legacy global fallback)
+    let token = crate::ipc::github::keychain_get_for_workspace(&card.workspace_id)?
+        .ok_or_else(|| AdeError::Other("GitHub token not found in keychain".to_string()))?;
+
+    // 5. Create GitHubClient and PATCH the issue
+    let gh = GitHubClient::new(crate::gh::client::GITHUB_API_BASE.to_string(), token);
+    let issue = gh
+        .update_issue(&owner, &repo, issue_number, title.as_deref(), body.as_deref())
+        .await
+        .map_err(|e| AdeError::Other(format!("failed to update GitHub issue: {e}")))?;
+
+    // 6. Refresh the local card's cached fields from the GitHub response.
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE card SET title = ?, body_preview = ?, remote_updated_at = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&issue.title)
+    .bind(&issue.body_preview)
+    .bind(&issue.updated_at)
+    .bind(&now)
+    .bind(&card_id)
+    .execute(&state.db)
+    .await
+    .map_err(AdeError::Db)?;
+
+    // 7. Emit board event + return the updated card
+    emit_board(&app, &card.workspace_id, &state.db).await?;
+    let updated_card = crate::repo::card_by_id_required(&state.db, &card_id).await?;
+    Ok(updated_card)
+}
+
 pub(crate) async fn emit_board(
     app: &tauri::AppHandle,
     workspace_id: &str,

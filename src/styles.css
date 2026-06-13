@@ -14,6 +14,126 @@
   border: 1px solid var(--focus-ring);
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Agent activity affordances (TerminalPane)
+   While a terminal is streaming output (an agent producing a response) an orange
+   comet orbits its border; when the burst ends, a veil of the ADE accent sweeps
+   across the pane to pull the eye back. Both are neutralized by the global
+   prefers-reduced-motion rule below.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Animatable angle for the orbiting border (needs @property to interpolate a
+   custom property used inside a conic-gradient). */
+@property --ade-orbit-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* The orbiting orange border: a conic-gradient "comet" masked to a 2px ring so
+   only the perimeter shows, rotated by animating --ade-orbit-angle. The ring is
+   always present but invisible (opacity 0); the `.ade-term-working` modifier
+   fades it in. It fades back out 2.5s AFTER output stops — the delay lives in the
+   resting state's transition, so removing the modifier defers the fade.
+
+   Each comet runs on its OWN continuous timeline — there is deliberately no
+   cross-terminal synchronisation. An idle terminal's comet is never touched by
+   another terminal starting work, so the orbit only ever appears on the terminal
+   actually producing output (the animation is paused + invisible until then). */
+.ade-comet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 28;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--ade-orbit-angle),
+    rgba(255, 138, 0, 0) 0deg,
+    rgba(255, 138, 0, 0) 60deg,
+    #ff8a00 320deg,
+    #ffc061 350deg,
+    rgba(255, 138, 0, 0) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  /* Resting transition = the fade-OUT: hold 2.5s, then dissolve over 0.7s. */
+  transition: opacity 0.7s ease 2.5s;
+  /* Always defined so the comet has a stable, per-element timeline; frozen by
+     default and only un-paused while THIS terminal is receiving output. */
+  animation: ade-term-orbit 9.2s linear infinite;
+  animation-play-state: paused;
+}
+
+/* Outside variant: the ring orbits a few px BEYOND the border instead of hugging
+   its inner edge. Used where the host has room around it (the tiling grid and
+   the minimized tray). Needs an explicit radius since these hosts carry no
+   border-radius of their own to inherit and there's no clipping wrapper to round
+   the square corners. */
+.ade-comet.ade-comet--outside::after {
+  inset: -4px;
+  border-radius: 8px;
+}
+
+/* Visible while the host is focused OR output is streaming; fade-IN immediate. */
+.ade-comet.ade-term-visible::after {
+  opacity: 1;
+  transition: opacity 0.45s ease 0s;
+}
+
+/* Spin only while data is actually being received. */
+.ade-comet.ade-term-working::after {
+  animation-play-state: running;
+}
+
+@keyframes ade-term-orbit {
+  to {
+    --ade-orbit-angle: 360deg;
+  }
+}
+
+/* The "attention" veil: a band of the accent hue sweeps diagonally from the
+   top-left corner to the bottom-right and fades, like a curtain drawn across the
+   window. The element is oversized (200%) and translated so the band travels
+   fully on and off; the pane wrapper's overflow clips the overhang. */
+.ade-term-done-veil {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  z-index: 30;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
+  );
+  animation: ade-term-veil 3s ease-in-out forwards;
+}
+
+@keyframes ade-term-veil {
+  0% {
+    opacity: 0;
+    transform: translate(-65%, -65%);
+  }
+  20% {
+    opacity: 0.3;
+  }
+  80% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(65%, 65%);
+  }
+}
+
 /* Lifecycle entrances — applied only to items that are genuinely NEW since the
    view first painted (see useEnterAnimation), never on initial load. They report
    "this just appeared": a terminal spun up from a card → Doing, a card synced in.
@@ -375,4 +495,132 @@ textarea:focus-visible {
   .ade-resize-grip {
     transition: none;
   }
+}
+
+/* ── Rendered issue markdown (CardDetail) ─────────────────────────────────
+   Scoped block-level styling for react-markdown output. Behaviour overrides
+   (lazy/clickable images, opener links) live in the `components` prop; the
+   look lives here so every element doesn't need an inline style. Uses theme
+   tokens so it reads in both dark and light. */
+.md-body {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 8px 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 18px 0 6px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.md-body h1 {
+  font-size: 17px;
+}
+.md-body h2 {
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.md-body h3,
+.md-body h4 {
+  font-size: 13px;
+}
+.md-body ul,
+.md-body ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+.md-body li {
+  margin: 3px 0;
+}
+.md-body li.task-list-item {
+  list-style: none;
+  margin-left: -22px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.md-body li.task-list-item input[type="checkbox"] {
+  margin-top: 4px;
+  accent-color: var(--status-success);
+}
+.md-body a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.md-body a:hover {
+  text-decoration: underline;
+}
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.md-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  margin: 12px 0;
+  overflow-x: auto;
+}
+.md-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.md-body blockquote {
+  margin: 10px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.md-body img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin: 10px 0;
+  display: block;
+  cursor: zoom-in;
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 12.5px;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md-body th {
+  background: var(--surface-input);
 }

@@ -148,15 +148,28 @@ export function cardDelete(cardId: string): Promise<void> {
 
 export interface IssueComment {
   id: number;
-  user: string;
+  // Matches the Rust serialization (gh::types::IssueComment) — these are the
+  // raw serde field names, not renamed.
+  user_login: string;
+  user_avatar_url: string | null;
   body: string;
   created_at: string;
+  updated_at: string;
+}
+
+// A GitHub label with its colour (6-digit hex, no leading '#'), surfaced by the
+// live card_detail fetch for the detail view's coloured chips.
+export interface Label {
+  name: string;
+  color: string;
 }
 
 export interface CardDetail {
   card: Card;
   body: string | null;
   comments: IssueComment[];
+  labels: Label[];
+  assignee_avatar_url: string | null;
 }
 
 export function cardDetail(cardId: string): Promise<CardDetail> {
@@ -165,6 +178,15 @@ export function cardDetail(cardId: string): Promise<CardDetail> {
 
 export function cardPromote(cardId: string): Promise<Card> {
   return invoke<Card>("card_promote", { cardId });
+}
+
+/** Edit a linked GitHub issue's title/body and push to GitHub (direct write). */
+export function cardUpdateGithub(
+  cardId: string,
+  title: string,
+  body: string
+): Promise<Card> {
+  return invoke<Card>("card_update_github", { cardId, title, body });
 }
 
 export function cardMove(

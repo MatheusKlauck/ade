@@ -119,6 +119,19 @@ interface TerminalsState {
   panes: OpenTerminal[];
   // windowId of the pane that should receive a visual highlight
   highlightedWindowId: string | null;
+  // Live agent-activity per terminal window, driven by output bursts (see
+  // TerminalPane.markActivity). `working` is true while output is actively
+  // arriving — the orbiting comet spins; `veil` is a counter bumped when a burst
+  // finishes, retriggering the attention sweep. Kept in the store (not just the
+  // pane's local state) so a minimized terminal's tray chip can mirror the same
+  // affordances even though its TerminalPane is display:none. In-memory only.
+  activityByWindow: Record<string, { working: boolean; veil: number }>;
+  // Set a window's "agent working" flag (no-op if unchanged, to avoid churn).
+  setTerminalWorking: (windowId: string, working: boolean) => void;
+  // Bump a window's veil counter to replay the attention sweep once.
+  bumpTerminalVeil: (windowId: string) => void;
+  // Drop a window's activity entry (on pane unmount / close).
+  clearTerminalActivity: (windowId: string) => void;
   // windowId of the terminal that currently holds keyboard focus (null if none).
   // Used to suppress completion alerts for the terminal you're actively watching.
   focusedWindowId: string | null;
@@ -207,6 +220,35 @@ const presetWinKey = (workspaceId: string) =>
 export const useTerminalsStore = create<TerminalsState>((set, get) => ({
   panes: [],
   highlightedWindowId: null,
+  activityByWindow: {},
+  setTerminalWorking: (windowId, working) =>
+    set((s) => {
+      const cur = s.activityByWindow[windowId];
+      if ((cur?.working ?? false) === working) return s;
+      return {
+        activityByWindow: {
+          ...s.activityByWindow,
+          [windowId]: { working, veil: cur?.veil ?? 0 },
+        },
+      };
+    }),
+  bumpTerminalVeil: (windowId) =>
+    set((s) => {
+      const cur = s.activityByWindow[windowId];
+      return {
+        activityByWindow: {
+          ...s.activityByWindow,
+          [windowId]: { working: cur?.working ?? false, veil: (cur?.veil ?? 0) + 1 },
+        },
+      };
+    }),
+  clearTerminalActivity: (windowId) =>
+    set((s) => {
+      if (!(windowId in s.activityByWindow)) return s;
+      const next = { ...s.activityByWindow };
+      delete next[windowId];
+      return { activityByWindow: next };
+    }),
   focusedWindowId: null,
   lockedByWorkspace: {},
   namesByWorkspace: {},

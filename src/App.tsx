@@ -17,8 +17,8 @@ import {
 import AppBar, { type ViewMode } from "./components/AppBar";
 import Settings from "./components/Settings";
 import Ledger from "./components/Ledger";
-import TerminalArea from "./components/TerminalArea";
-import KanbanDock from "./components/KanbanDock";
+import BoardView from "./components/BoardView";
+import StatusBar from "./components/StatusBar";
 import SkillsSidebar from "./components/SkillsSidebar";
 import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
@@ -184,6 +184,9 @@ export default function App() {
   // Which main GUI is shown: "ledger" (dense issue table, default) or "classic"
   // (terminal grid + bottom Kanban dock). Persisted globally to ui_state.
   const [viewMode, setViewMode] = useState<ViewMode>("ledger");
+  // Whether the board view's lower Kanban panel is expanded. Collapsing it hands
+  // the whole area to the terminal stage; toggled from the status bar.
+  const [boardOpen, setBoardOpen] = useState(true);
   const toastIdRef = useRef(0);
 
   // Append a toast to the stack (capped; errors never silently dropped).
@@ -729,17 +732,24 @@ export default function App() {
             onHighlightDone={clearHighlight}
           />
         ) : (
-          <TerminalArea
+          <BoardView
+            workspaceId={activeWorkspaceId}
             panes={activePanes}
             onNewTerminal={handleNewTerminal}
             onRemovePane={handleRemove}
             highlightedWindowId={highlightedWindowId}
             onHighlightDone={clearHighlight}
+            open={boardOpen}
           />
         )}
       </div>
+      {/* The board view's footer spans the full width (under the skills rail). */}
       {viewMode === "classic" && (
-        <KanbanDock workspaceId={activeWorkspaceId} />
+        <StatusBar
+          workspaceId={activeWorkspaceId}
+          boardOpen={boardOpen}
+          onToggleBoard={() => setBoardOpen((o) => !o)}
+        />
       )}
       {showSettings && (
         <Settings
