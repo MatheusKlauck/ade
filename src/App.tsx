@@ -16,11 +16,11 @@ import {
 } from "./lib/ipc";
 import AppBar from "./components/AppBar";
 import Settings from "./components/Settings";
-import TerminalArea from "./components/TerminalArea";
-import KanbanDock from "./components/KanbanDock";
+import Ledger from "./components/Ledger";
 import SkillsSidebar from "./components/SkillsSidebar";
 import { ToastStack, type ToastData, type ToastItem } from "./components/Toast";
 import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
+import { useLedgerStore, activateTab } from "./store/ledger";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
 import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
@@ -230,7 +230,6 @@ export default function App() {
   const loadLocked = useTerminalsStore((s) => s.loadLocked);
   const loadNames = useTerminalsStore((s) => s.loadNames);
   const loadPresetWindows = useTerminalsStore((s) => s.loadPresetWindows);
-  const loadLayout = useTerminalsStore((s) => s.loadLayout);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const workspacesLoaded = useWorkspacesStore((s) => s.loaded);
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
@@ -318,6 +317,18 @@ export default function App() {
       useWorkspacesStore
         .getState()
         .pushTerminalAlert(p.workspace_id, formatTerminalAlert(p));
+
+      // Flag the originating terminal so its ledger row surfaces. Heuristic
+      // mapping (no OSC 133 yet): a finished command is done/failed by its exit
+      // code; a bell or app notification most often means the agent is waiting
+      // on the user, so treat it as "input needed".
+      const attentionKind =
+        p.kind === "completed"
+          ? p.detail && p.detail !== "0"
+            ? "failed"
+            : "done"
+          : "input";
+      useLedgerStore.getState().setAttention(p.window_id, attentionKind, p.detail);
     });
     return () => {
       unsub.then((u) => u());
@@ -331,9 +342,8 @@ export default function App() {
       loadLocked(activeWorkspaceId);
       loadNames(activeWorkspaceId);
       loadPresetWindows(activeWorkspaceId);
-      loadLayout(activeWorkspaceId);
     }
-  }, [activeWorkspaceId, loadLocked, loadNames, loadPresetWindows, loadLayout]);
+  }, [activeWorkspaceId, loadLocked, loadNames, loadPresetWindows]);
 
   // When active workspace changes, fetch its board (if not cached)
   useEffect(() => {
@@ -364,7 +374,12 @@ export default function App() {
         .getState()
         .panes.find((p) => p.windowId === window_id);
       if (existing) {
-        // Pane exists — highlight it briefly
+        // Pane exists — highlight it, make its tab the visible one on the stage,
+        // and clear any pending attention now that the user is looking at it.
+        const ls = useLedgerStore.getState();
+        const cur = ls.stageByWorkspace[workspace_id];
+        if (cur) ls.setStage(workspace_id, activateTab(cur, window_id), true);
+        ls.clearAttention(window_id);
         focusWindow(window_id);
       } else {
         // No pane — reattach/create a new one
@@ -424,6 +439,8 @@ export default function App() {
         .getState()
         .panes.find((p) => p.windowId === window_id);
       if (pane) removePane(pane.paneId);
+      // The tmux window is gone for good — drop any attention flag for it.
+      useLedgerStore.getState().clearAttention(window_id);
     });
     return () => {
       unsub.then((u) => u());
@@ -552,6 +569,8 @@ export default function App() {
         if (close) terminalWrite(pane.paneId, close).catch(() => {});
       }
       ts.clearPresetForWindow(pane.workspaceId, pane.windowId);
+      // Manual close is permanent — drop any attention flag for this window.
+      useLedgerStore.getState().clearAttention(pane.windowId);
     }
     removePane(paneId);
   };
@@ -613,7 +632,8 @@ export default function App() {
       <AppBar onOpenSettings={() => setShowSettings(true)} />
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <SkillsSidebar workspaceId={activeWorkspaceId} />
-        <TerminalArea
+        <Ledger
+          workspaceId={activeWorkspaceId}
           panes={activePanes}
           onNewTerminal={handleNewTerminal}
           onRemovePane={handleRemove}
@@ -621,7 +641,6 @@ export default function App() {
           onHighlightDone={clearHighlight}
         />
       </div>
-      <KanbanDock workspaceId={activeWorkspaceId} />
       {showSettings && (
         <Settings
           onClose={() => setShowSettings(false)}
