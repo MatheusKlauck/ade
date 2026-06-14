@@ -338,7 +338,12 @@ export default function App() {
         return;
       }
       if (p.kind === "completed") {
-        useWorkspacesStore.getState().markTerminalDone(p.workspace_id, p.window_id);
+        // Bump the veil only for BACKGROUND completions — on the active tab the
+        // pane shows its own sweep, and bumping would replay it on switch-away.
+        const activeId = useWorkspacesStore.getState().activeWorkspaceId;
+        useWorkspacesStore
+          .getState()
+          .markTerminalDone(p.workspace_id, p.window_id, p.workspace_id !== activeId);
         // fall through to the existing badge + ledger logic
       }
 
@@ -537,17 +542,19 @@ export default function App() {
         // Reattach in parallel — each window is independent, and a serial loop
         // would make restore latency scale with the number of terminals.
         const results = await Promise.allSettled(
-          windowIds.map(async (wid) => {
-            const result = await terminalOpen(activeWorkspaceId, wid);
-            const pane: OpenTerminal = {
-              paneId: result.paneId,
-              windowId: result.windowId,
-              workspaceId: activeWorkspaceId,
-              channel: result.channel,
-            };
-            addPane(pane);
-          })
+          windowIds.map((wid) => terminalOpen(activeWorkspaceId, wid))
         );
+        // Add panes in windowIds order, not Promise-resolution order, so
+        // terminals reappear in their saved layout instead of a race.
+        results.forEach((r) => {
+          if (r.status !== "fulfilled") return;
+          addPane({
+            paneId: r.value.paneId,
+            windowId: r.value.windowId,
+            workspaceId: activeWorkspaceId,
+            channel: r.value.channel,
+          });
+        });
         // A rejection means the tmux window is gone (died/killed since we last
         // saw it). That's silent data loss for the user, so surface it rather
         // than swallow.

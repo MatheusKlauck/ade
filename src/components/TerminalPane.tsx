@@ -188,6 +188,11 @@ function TerminalPane({
   // Accumulates the command line the user is currently typing, so a full line
   // can be recorded into the quick-command frequency store when Enter is hit.
   const cmdLineRef = useRef("");
+  // Only the FIRST command submitted after the terminal opens is captured into
+  // the quick-command store — that's the command that starts work in this
+  // workspace (e.g. `claude`, `npm run dev`). One-way latch per pane: once the
+  // first command is recorded, later commands in the same session are ignored.
+  const firstCommandCapturedRef = useRef(false);
   // Dismisses the quick-command bar for good the moment a command is run (Enter
   // or a chip click). It's a one-way latch — once a command runs in this pane,
   // the bar stays gone for the rest of the pane's life (it comes back only on a
@@ -245,12 +250,14 @@ function TerminalPane({
     // Data from user typing
     term.onData((data) => {
       lastInputRef.current = Date.now();
-      // Reconstruct typed command lines and record each completed one so the
-      // quick-command bar can rank the workspace's most-used commands. The first
-      // submitted command also dismisses the bar for good.
+      // Reconstruct typed command lines. Only the first command submitted after
+      // the terminal opens is recorded into the quick-command store — it's the
+      // one that starts work in this workspace. The first submission also
+      // dismisses the bar for good.
       const submitted = feedCommandBuffer(cmdLineRef, data);
-      for (const cmd of submitted) {
-        useCommandFreqStore.getState().record(workspaceId, cmd);
+      if (submitted.length > 0 && !firstCommandCapturedRef.current) {
+        firstCommandCapturedRef.current = true;
+        useCommandFreqStore.getState().record(workspaceId, submitted[0]);
       }
       if (submitted.length > 0) dismissCommandBarRef.current();
       // The user is typing again, so the terminal is back to awaiting input.
