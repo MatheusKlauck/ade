@@ -1,11 +1,20 @@
 // Browser mock backend — activates when the frontend runs outside Tauri (plain
 // `vite dev`, so `window.__TAURI_INTERNALS__` is absent). It lets the gstack
 // /qa headless browser drive the whole UI at http://localhost:1420 with
-// deterministic, interactive data: reads return seeded fixtures, writes mutate
-// an in-memory board so creating/moving/deleting cards reflects on screen.
+// deterministic, interactive data.
 //
-// ponytail: in-memory only, resets on reload — QA fixtures don't need to persist.
-// Real persistence lives in the Rust/SQLite backend; this never runs there.
+// This mock is intentionally faithful to the backend CONTRACT so /qa exercises
+// the app's *logic*, not just the initial render:
+//   - per-workspace boards (a github workspace and a local-only one);
+//   - the event-driven path (invoke → state → evt:* → store), so optimistic UI
+//     is confirmed by events the way the real Rust/SQLite backend does it;
+//   - a sync state machine (syncing → idle), board updates from a simulated
+//     "remote", local-only sync notifications, and terminal started/completed
+//     alerts that drive the working-comet / badge / ledger logic;
+//   - a terminal channel that echoes keystrokes so the xterm write path runs.
+//
+// ponytail: in-memory only, resets on reload — QA fixtures don't need to
+// persist. Real persistence/PTY live in the Rust backend; this never runs there.
 
 import type {
   BoardColumn,
@@ -27,11 +36,41 @@ export const isTauri =
 
 const NOW = "2026-06-14T12:00:00Z";
 
-// ---- seed state (mutable) ----
-const WS = "ws-mock";
+// ---- event bus ----
+// ipc.ts wraps each subscribe as `listen(event, (ev) => cb(ev.payload))`, so the
+// registered handler expects an object with a `.payload`. emit() mirrors Tauri.
+type Listener = (ev: { payload: unknown }) => void;
+const listeners = new Map<string, Set<Listener>>();
+
+export function mockListen<T>(
+  event: string,
+  handler: (ev: { payload: T }) => void
+): Promise<() => void> {
+  let set = listeners.get(event);
+  if (!set) {
+    set = new Set();
+    listeners.set(event, set);
+  }
+  set.add(handler as Listener);
+  return Promise.resolve(() => set!.delete(handler as Listener));
+}
+
+function emit(event: string, payload: unknown): void {
+  const set = listeners.get(event);
+  if (!set) return;
+  for (const h of set) h({ payload });
+}
+
+const later = (fn: () => void, ms: number) =>
+  (globalThis.setTimeout as typeof setTimeout)(fn, ms);
+
+// ---- seed state (mutable, per workspace) ----
+const WS_GH = "ws-mock"; // github-backed
+const WS_LOCAL = "ws-mock-2"; // local only
+
 const workspaces: Workspace[] = [
   {
-    id: WS,
+    id: WS_GH,
     name: "ade",
     slug: "ade",
     root_path: "/Users/mk/dev/ade",
@@ -41,7 +80,7 @@ const workspaces: Workspace[] = [
     created_at: NOW,
   },
   {
-    id: "ws-mock-2",
+    id: WS_LOCAL,
     name: "gstack",
     slug: "gstack",
     root_path: "/Users/mk/dev/gstack",
@@ -52,20 +91,25 @@ const workspaces: Workspace[] = [
   },
 ];
 
+interface Board {
+  columns: BoardColumn[];
+  cards: Card[];
+}
+
 const COL_NAMES = ["Backlog", "Doing", "Paused", "PR", "Done"];
-const columns: BoardColumn[] = COL_NAMES.map((name, i) => ({
-  id: `col-${i}`,
-  workspace_id: WS,
-  name,
-  position: i,
-}));
+const boards = new Map<string, Board>();
 
 let seq = 0;
-function mkCard(columnId: string, title: string, extra: Partial<Card> = {}): Card {
+function mkCard(
+  wsId: string,
+  columnId: string,
+  title: string,
+  extra: Partial<Card> = {}
+): Card {
   seq += 1;
   return {
     id: `card-${seq}`,
-    workspace_id: WS,
+    workspace_id: wsId,
     column_id: columnId,
     title,
     body_preview: extra.body_preview ?? `Preview for ${title}.`,
@@ -83,54 +127,113 @@ function mkCard(columnId: string, title: string, extra: Partial<Card> = {}): Car
   };
 }
 
-// ~15 cards. Backlog gets 12 so the 10/column pagination is exercised.
-const cards: Card[] = [
-  ...Array.from({ length: 12 }, (_, i) =>
-    mkCard("col-0", `Backlog task #${i + 1}`, {
-      source: i % 2 === 0 ? "github" : "local",
-      github_issue_number: i % 2 === 0 ? 100 + i : null,
-      github_state: i % 2 === 0 ? "open" : null,
-      labels_json: i % 3 === 0 ? JSON.stringify(["bug", "p1"]) : null,
-    })
-  ),
-  mkCard("col-1", "Wire mock IPC for QA", {
-    source: "github",
-    github_issue_number: 42,
-    github_state: "open",
-    assignee: "MatheusKlauck",
-    labels_json: JSON.stringify(["enhancement"]),
-  }),
-  mkCard("col-2", "Paused: flaky sync test"),
-  mkCard("col-3", "PR: terminal order fix", {
-    source: "github",
-    github_issue_number: 7,
-    github_state: "open",
-  }),
-  mkCard("col-4", "Done: per-state brain panel", {
-    github_state: "closed",
-  }),
-];
-
-function boardSnapshot() {
-  return { columns, cards: [...cards] };
+function columnsFor(wsId: string): BoardColumn[] {
+  return COL_NAMES.map((name, i) => ({
+    id: `${wsId}-col-${i}`,
+    workspace_id: wsId,
+    name,
+    position: i,
+  }));
 }
+
+function colId(wsId: string, name: string): string {
+  return `${wsId}-col-${COL_NAMES.indexOf(name)}`;
+}
+
+// ade (github): ~15 cards, 12 in Backlog to exercise pagination.
+{
+  const cols = columnsFor(WS_GH);
+  const cards: Card[] = [
+    ...Array.from({ length: 12 }, (_, i) =>
+      mkCard(WS_GH, colId(WS_GH, "Backlog"), `Backlog task #${i + 1}`, {
+        source: i % 2 === 0 ? "github" : "local",
+        github_issue_number: i % 2 === 0 ? 100 + i : null,
+        github_state: i % 2 === 0 ? "open" : null,
+        labels_json: i % 3 === 0 ? JSON.stringify(["bug", "p1"]) : null,
+      })
+    ),
+    mkCard(WS_GH, colId(WS_GH, "Doing"), "Wire mock IPC for QA", {
+      source: "github",
+      github_issue_number: 42,
+      github_state: "open",
+      assignee: "MatheusKlauck",
+      labels_json: JSON.stringify(["enhancement"]),
+    }),
+    mkCard(WS_GH, colId(WS_GH, "Paused"), "Paused: flaky sync test"),
+    mkCard(WS_GH, colId(WS_GH, "PR"), "PR: terminal order fix", {
+      source: "github",
+      github_issue_number: 7,
+      github_state: "open",
+    }),
+    mkCard(WS_GH, colId(WS_GH, "Done"), "Done: per-state brain panel", {
+      github_state: "closed",
+    }),
+  ];
+  boards.set(WS_GH, { columns: cols, cards });
+}
+
+// gstack (local only): distinct, smaller board, no github issue numbers — so /qa
+// can verify workspace isolation (closes the spirit of the board_get caveat).
+{
+  const cols = columnsFor(WS_LOCAL);
+  const cards: Card[] = [
+    mkCard(WS_LOCAL, colId(WS_LOCAL, "Backlog"), "Configurar CI local"),
+    mkCard(WS_LOCAL, colId(WS_LOCAL, "Backlog"), "Escrever testes do parser"),
+    mkCard(WS_LOCAL, colId(WS_LOCAL, "Doing"), "Refatorar store de ledger"),
+    mkCard(WS_LOCAL, colId(WS_LOCAL, "Done"), "Setup inicial do repo"),
+  ];
+  boards.set(WS_LOCAL, { columns: cols, cards });
+}
+
+function boardOf(wsId: string): Board {
+  return boards.get(wsId) ?? { columns: columnsFor(wsId), cards: [] };
+}
+
+function snapshot(wsId: string) {
+  const b = boardOf(wsId);
+  return { columns: b.columns, cards: [...b.cards] };
+}
+
+function emitBoard(wsId: string) {
+  const b = boardOf(wsId);
+  emit("evt:board", {
+    workspace_id: wsId,
+    columns: b.columns,
+    cards: b.cards,
+  });
+}
+
+function findCard(cardId: string): { wsId: string; board: Board; card: Card } | null {
+  for (const [wsId, board] of boards) {
+    const card = board.cards.find((c) => c.id === cardId);
+    if (card) return { wsId, board, card };
+  }
+  return null;
+}
+
+// ---- terminal channels (for keystroke echo) ----
+const channels = new Map<string, MockChannel<unknown>>();
+const enc = (s: string) => new TextEncoder().encode(s).buffer;
 
 // ---- mock invoke ----
 export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
   const a = args ?? {};
+  const ok = <V>(v: V) => Promise.resolve(v as unknown as T);
+
   switch (cmd) {
-    // reads
+    // ---- reads ----
     case "workspace_list":
-      return Promise.resolve(workspaces as unknown as T);
+      return ok(workspaces);
     case "board_get":
-      return Promise.resolve(boardSnapshot() as unknown as T);
+      return ok(snapshot(a.workspaceId));
     case "skills_list":
-      return Promise.resolve(MOCK_SKILLS as unknown as T);
+      return ok(MOCK_SKILLS);
     case "setting_get":
     case "ui_state_get":
-      return Promise.resolve(null as unknown as T);
+      return ok(null);
     case "card_detail": {
-      const card = cards.find((c) => c.id === a.cardId) ?? cards[0];
+      const found = findCard(a.cardId);
+      const card = found?.card ?? boardOf(WS_GH).cards[0];
       const detail: CardDetail = {
         card,
         body: `# ${card.title}\n\nMock issue body for QA.`,
@@ -154,56 +257,153 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
           : [],
         assignee_avatar_url: null,
       };
-      return Promise.resolve(detail as unknown as T);
+      return ok(detail);
     }
 
-    // writes that return an entity
+    // ---- board mutations (return entity AND emit evt:board) ----
     case "card_create": {
-      const card = mkCard(a.columnId, a.title);
-      cards.push(card);
-      return Promise.resolve(card as unknown as T);
+      const card = mkCard(a.workspaceId, a.columnId, a.title);
+      boardOf(a.workspaceId).cards.push(card);
+      emitBoard(a.workspaceId);
+      return ok(card);
     }
     case "card_update": {
-      const card = cards.find((c) => c.id === a.cardId);
-      if (card) {
-        if (a.title != null) card.title = a.title;
-        if (a.bodyPreview != null) card.body_preview = a.bodyPreview;
+      const found = findCard(a.cardId);
+      if (found) {
+        if (a.title != null) found.card.title = a.title;
+        if (a.bodyPreview != null) found.card.body_preview = a.bodyPreview;
+        emitBoard(found.wsId);
       }
-      return Promise.resolve((card ?? cards[0]) as unknown as T);
+      return ok(found?.card ?? boardOf(WS_GH).cards[0]);
     }
     case "card_update_github": {
-      const card = cards.find((c) => c.id === a.cardId);
-      if (card && a.title != null) card.title = a.title;
-      return Promise.resolve((card ?? cards[0]) as unknown as T);
+      const found = findCard(a.cardId);
+      if (found && a.title != null) {
+        found.card.title = a.title;
+        emitBoard(found.wsId);
+      }
+      return ok(found?.card ?? boardOf(WS_GH).cards[0]);
     }
     case "card_promote": {
-      const card = cards.find((c) => c.id === a.cardId) ?? cards[0];
+      const found = findCard(a.cardId);
+      const card = found?.card ?? boardOf(WS_GH).cards[0];
       card.source = "github";
-      card.github_issue_number = card.github_issue_number ?? 999;
+      card.github_issue_number = card.github_issue_number ?? 900 + seq;
       card.github_state = "open";
-      return Promise.resolve(card as unknown as T);
+      if (found) emitBoard(found.wsId);
+      return ok(card);
     }
     case "card_move": {
-      const card = cards.find((c) => c.id === a.cardId);
-      if (card) card.column_id = a.toColumnId;
-      return Promise.resolve((card ?? cards[0]) as unknown as T);
+      const found = findCard(a.cardId);
+      if (found) {
+        found.card.column_id = a.toColumnId;
+        emitBoard(found.wsId);
+      }
+      return ok(found?.card ?? boardOf(WS_GH).cards[0]);
     }
     case "card_delete": {
-      const i = cards.findIndex((c) => c.id === a.cardId);
-      if (i >= 0) cards.splice(i, 1);
-      return Promise.resolve(undefined as unknown as T);
+      const found = findCard(a.cardId);
+      if (found) {
+        const i = found.board.cards.indexOf(found.card);
+        if (i >= 0) found.board.cards.splice(i, 1);
+        emitBoard(found.wsId);
+      }
+      return ok(undefined);
     }
 
-    // terminal
-    case "terminal_open":
-      return Promise.resolve({
-        pane_id: `pane-${++seq}`,
-        window_id: a.windowId ?? `win-${seq}`,
-      } as unknown as T);
+    // ---- sync state machine ----
+    case "sync_now": {
+      const wsId = a.workspaceId;
+      emit("evt:sync", { workspace_id: wsId, status: "syncing" });
+      later(() => {
+        const ws = workspaces.find((w) => w.id === wsId);
+        emit("evt:sync", {
+          workspace_id: wsId,
+          status: "idle",
+          last_sync: new Date().toISOString(),
+        });
+        if (ws && ws.github_owner) {
+          // Simulate a remote change so subscribeBoard → setBoard logic runs and
+          // the Backlog count ticks up — visible proof the board reacts to events.
+          const b = boardOf(wsId);
+          const n = 200 + seq;
+          b.cards.push(
+            mkCard(wsId, colId(wsId, "Backlog"), `Synced issue #${n}`, {
+              source: "github",
+              github_issue_number: n,
+              github_state: "open",
+            })
+          );
+          emitBoard(wsId);
+          // Reachable notification path: a github sync surfaces a notice in the
+          // bell so /qa can exercise the notify → toast → history logic.
+          emit("evt:notify", {
+            level: "warn",
+            code: "ISSUE_LIST_LARGE",
+            message: `Sincronizado: +1 issue (${b.cards.length} cards no board).`,
+          });
+        } else {
+          // Local-only workspace: nothing to sync — exercise the notify path.
+          emit("evt:notify", {
+            level: "warn",
+            code: "REMOTE_NOT_GITHUB",
+            message: "Workspace local: nada para sincronizar.",
+          });
+        }
+      }, 700);
+      return ok(undefined);
+    }
 
-    // gbrain
+    // ---- terminal ----
+    case "terminal_open": {
+      const wsId = a.workspaceId;
+      const windowId = a.windowId ?? `win-${++seq}`;
+      const paneId = `pane-${++seq}`;
+      const channel = a.channel as MockChannel<unknown> | undefined;
+      if (channel) {
+        channels.set(paneId, channel);
+        channel.push(
+          enc(
+            "\x1b[2m[mock terminal — QA mode] digite e veja o eco. Sem PTY real.\x1b[0m\r\n$ "
+          )
+        );
+      }
+      // Drive the working-comet → completion logic on the tab/workspace.
+      later(
+        () =>
+          emit("evt:terminal-alert", {
+            workspace_id: wsId,
+            window_id: windowId,
+            kind: "started",
+            detail: "",
+          }),
+        200
+      );
+      later(
+        () =>
+          emit("evt:terminal-alert", {
+            workspace_id: wsId,
+            window_id: windowId,
+            kind: "completed",
+            detail: "0",
+          }),
+        1800
+      );
+      return ok({ pane_id: paneId, window_id: windowId });
+    }
+    case "terminal_write": {
+      const ch = channels.get(a.paneId);
+      if (ch) ch.push(enc(a.data)); // echo keystrokes so the xterm write path runs
+      return ok(undefined);
+    }
+    case "terminal_close": {
+      channels.delete(a.paneId);
+      return ok(undefined);
+    }
+
+    // ---- gbrain ----
     case "gbrain_status":
-      return Promise.resolve({
+      return ok({
         healthy: true,
         pages: 128,
         chunks: 540,
@@ -212,24 +412,24 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
         embedding_coverage_pct: 0,
         unacknowledged_failures: 0,
         source_count: 2,
-      } as GbrainStatus as unknown as T);
+      } as GbrainStatus);
     case "gbrain_identity":
-      return Promise.resolve({
+      return ok({
         version: "0.9.0",
         engine: "pglite",
         pages: 128,
         chunks: 540,
         update_available: false,
-      } as GbrainIdentity as unknown as T);
+      } as GbrainIdentity);
     case "gbrain_liveness":
-      return Promise.resolve({
+      return ok({
         reachable: true,
         status: "ok",
         version: "0.9.0",
         engine: "pglite",
-      } as GbrainLiveness as unknown as T);
+      } as GbrainLiveness);
     case "gbrain_health":
-      return Promise.resolve({
+      return ok({
         brain_score: 0.86,
         page_count: 128,
         embed_coverage: 0,
@@ -237,9 +437,9 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
         orphan_pages: 1,
         missing_embeddings: 128,
         dead_links: 0,
-      } as GbrainHealth as unknown as T);
+      } as GbrainHealth);
     case "gbrain_sources":
-      return Promise.resolve([
+      return ok([
         {
           id: "gstack-code-ade",
           sync_enabled: true,
@@ -260,14 +460,14 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
           chunks: 140,
           embedding_coverage_pct: 0,
         },
-      ] as GbrainSource[] as unknown as T);
+      ] as GbrainSource[]);
     case "gbrain_recent_pages":
-      return Promise.resolve([
+      return ok([
         { slug: "ade-overview", title: "ADE overview", kind: "doc", updated_at: NOW },
         { slug: "qa-strategy", title: "QA strategy", kind: "doc", updated_at: NOW },
-      ] as GbrainPage[] as unknown as T);
+      ] as GbrainPage[]);
     case "gbrain_query":
-      return Promise.resolve([
+      return ok([
         {
           slug: "qa-strategy",
           title: "QA strategy",
@@ -275,33 +475,28 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
           source: "gstack-code-ade",
           score: 0.91,
         },
-      ] as GbrainHit[] as unknown as T);
+      ] as GbrainHit[]);
     case "gbrain_sync":
-      return Promise.resolve("job-mock-1" as unknown as T);
+      return ok("job-mock-1");
 
     case "github_set_token":
-      return Promise.resolve({ login: "MatheusKlauck" } as unknown as T);
-
-    // workspace mutations
+      return ok({ login: "MatheusKlauck" });
     case "workspace_create":
-      return Promise.resolve(workspaces[0] as unknown as T);
+      return ok(workspaces[0]);
 
-    // fire-and-forget writes / no-ops
+    // ---- fire-and-forget writes / no-ops ----
     case "setting_set":
     case "ui_state_set":
-    case "terminal_write":
     case "terminal_resize":
-    case "terminal_close":
     case "terminal_kill_window":
     case "workspace_close":
-    case "sync_now":
     case "gbrain_restart":
-      return Promise.resolve(undefined as unknown as T);
+      return ok(undefined);
 
     default:
       // Unknown command: resolve undefined rather than reject, so an unmocked
       // call degrades to a no-op instead of crashing the QA session.
-      return Promise.resolve(undefined as unknown as T);
+      return ok(undefined);
   }
 }
 
@@ -312,26 +507,28 @@ const MOCK_SKILLS: SkillInfo[] = [
   { name: "impeccable", description: "Improve a frontend interface.", category: "Design" },
 ];
 
-// ---- mock event bus ----
-// Tauri's `listen` returns an unlisten fn; the mock never emits, so subscribing
-// is a no-op that hands back a no-op unlisten.
-export function mockListen<T>(
-  _event: string,
-  _handler: (ev: { payload: T }) => void
-): Promise<() => void> {
-  return Promise.resolve(() => {});
-}
-
 // ---- mock terminal channel ----
 // Mirrors @tauri-apps/api Channel's surface that the app uses: an `onmessage`
-// setter that receives ArrayBuffer chunks. Emits a one-line banner so a pane
-// renders something instead of staying blank.
+// setter receiving ArrayBuffer chunks. Buffers messages pushed before the
+// consumer (TerminalPane) assigns onmessage, then flushes on assignment — so
+// the open banner isn't lost to a render-order race.
 export class MockChannel<T = unknown> {
-  onmessage: (msg: T) => void = () => {};
-  constructor() {
-    queueMicrotask(() => {
-      const banner = "\x1b[2m[mock terminal — QA mode, no real PTY]\x1b[0m\r\n";
-      this.onmessage(new TextEncoder().encode(banner).buffer as unknown as T);
-    });
+  private handler: ((m: T) => void) | null = null;
+  private buffer: T[] = [];
+
+  set onmessage(fn: (m: T) => void) {
+    this.handler = fn;
+    if (fn) {
+      for (const m of this.buffer) fn(m);
+      this.buffer = [];
+    }
+  }
+  get onmessage(): (m: T) => void {
+    return this.handler ?? (() => {});
+  }
+
+  push(m: T): void {
+    if (this.handler) this.handler(m);
+    else this.buffer.push(m);
   }
 }

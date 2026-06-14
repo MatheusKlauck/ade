@@ -112,8 +112,24 @@ npm run dev            # serve a app em http://localhost:1420
 ```
 
 Selectors `data-testid` (abas, colunas, cards, panes, settings, notificações)
-estão nos componentes para a suíte ficar estável. Terminais nesse modo são um
-banner falso (sem PTY real) — terminal de verdade só no caminho WebDriver acima.
+estão nos componentes para a suíte ficar estável.
+
+### Lógica exercitável pelo /qa (não só render)
+
+O mock é **event-driven**, fiel ao contrato `invoke → estado → evt:* → store`, então
+o /qa testa a lógica reativa, não apenas o estado inicial:
+
+- **Boards por workspace** — `ade` (github, ~15 cards) e `gstack` (local-only,
+  cards distintos, sem números de issue). Troca de aba mostra boards diferentes.
+- **State machine de sync** — re-sync do `ade` emite `evt:sync` `syncing → idle`;
+  o chip mostra "Syncing…" e depois "synced just now".
+- **Board reativo** — o sync simula uma mudança remota e emite `evt:board`; o
+  store reconcilia e a contagem do Backlog sobe (12 → 13).
+- **Notificações** — o sync do `ade` emite `evt:notify`; aparece toast + badge de
+  não-lido no sino + entrada no histórico.
+- **Terminal** — `terminal_open` mostra um banner e emite `evt:terminal-alert`
+  (`started`/`completed`) que dirige o comet/badge; `terminal_write` **ecoa** as
+  teclas de volta pro xterm. Sem PTY real (isso só no caminho WebDriver acima).
 
 ## Pendências (próximo incremento)
 
