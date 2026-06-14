@@ -246,12 +246,18 @@ export function syncNow(workspaceId: string): Promise<void> {
 
 // Compact brain health for the StatusBar pill. Fields are optional because the
 // snapshot shape varies by gbrain version; `healthy` is false while the
-// app-owned serve is still coming up (rendered as "offline").
+// app-owned serve is still coming up (rendered as "offline"). `staleness` is the
+// worst sync class across sources ("fresh" | "aging" | "stale") and drives the
+// pill colour.
 export interface GbrainStatus {
   healthy: boolean;
   pages?: number;
-  sync_fresh?: boolean;
-  last_commit?: string;
+  chunks?: number;
+  staleness?: string;
+  last_sync_at?: string;
+  embedding_coverage_pct?: number;
+  unacknowledged_failures?: number;
+  source_count?: number;
 }
 
 export function gbrainStatus(): Promise<GbrainStatus> {
@@ -269,6 +275,86 @@ export interface GbrainHit {
 
 export function gbrainQuery(q: string, limit?: number): Promise<GbrainHit[]> {
   return invoke<GbrainHit[]>("gbrain_query", { q, limit });
+}
+
+// Brain identity for the panel header (version + update availability).
+export interface GbrainIdentity {
+  version?: string;
+  engine?: string;
+  pages?: number;
+  chunks?: number;
+  update_available?: boolean;
+  latest_version?: string;
+}
+
+export function gbrainIdentity(): Promise<GbrainIdentity> {
+  return invoke<GbrainIdentity>("gbrain_identity");
+}
+
+// One federated source's sync state, for the "stale" panel.
+export interface GbrainSource {
+  id: string;
+  sync_enabled?: boolean;
+  staleness?: string;
+  staleness_hours?: number;
+  last_sync_at?: string;
+  last_commit?: string;
+  pages?: number;
+  chunks?: number;
+  embedding_coverage_pct?: number;
+}
+
+export function gbrainSources(): Promise<GbrainSource[]> {
+  return invoke<GbrainSource[]>("gbrain_sources");
+}
+
+// One page row for the explore/browse list.
+export interface GbrainPage {
+  slug: string;
+  title: string;
+  kind?: string;
+  updated_at?: string;
+}
+
+export function gbrainRecentPages(limit?: number): Promise<GbrainPage[]> {
+  return invoke<GbrainPage[]>("gbrain_recent_pages", { limit });
+}
+
+// Brain quality metrics from `get_health`, for the offline/diagnostic panel.
+export interface GbrainHealth {
+  brain_score?: number;
+  page_count?: number;
+  embed_coverage?: number;
+  stale_pages?: number;
+  orphan_pages?: number;
+  missing_embeddings?: number;
+  dead_links?: number;
+}
+
+export function gbrainHealth(): Promise<GbrainHealth> {
+  return invoke<GbrainHealth>("gbrain_health");
+}
+
+// Unauthenticated liveness probe (`GET /health`).
+export interface GbrainLiveness {
+  reachable: boolean;
+  status?: string;
+  version?: string;
+  engine?: string;
+}
+
+export function gbrainLiveness(): Promise<GbrainLiveness> {
+  return invoke<GbrainLiveness>("gbrain_liveness");
+}
+
+// Trigger a brain sync (enqueues a sync job); resolves to a job id when known.
+export function gbrainSync(full?: boolean): Promise<string> {
+  return invoke<string>("gbrain_sync", { full });
+}
+
+// Restart the app-owned serve in place.
+export function gbrainRestart(): Promise<void> {
+  return invoke<void>("gbrain_restart");
 }
 
 // ---- events ----

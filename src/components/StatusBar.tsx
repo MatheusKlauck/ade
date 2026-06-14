@@ -1,22 +1,24 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { COL_DOING } from "../lib/columns";
 import { syncNow, gbrainStatus, type GbrainStatus } from "../lib/ipc";
 import { BranchIcon, ChevronIcon, ColumnsIcon, RefreshIcon } from "./icons";
-import BrainSearch from "./BrainSearch";
+import BrainPanel from "./BrainPanel";
 
 // How often the brain pill re-polls the serve for a fresh status snapshot.
 const BRAIN_POLL_MS = 30_000;
 
 // Map a brain status to the pill's dot colour + label. Offline (serve still
-// coming up or down) reads red; healthy + stale reads amber; healthy + fresh
-// reads green.
+// coming up or down) reads red; healthy but a source past "fresh" reads cyan;
+// healthy + fresh reads green.
 function brainView(s: GbrainStatus | null): { color: string; label: string } {
   if (!s || !s.healthy) return { color: "var(--status-error)", label: "brain offline" };
   const count = s.pages != null ? ` · ${s.pages} pages` : "";
-  if (s.sync_fresh === false) return { color: "var(--accent-cyan)", label: `brain stale${count}` };
+  if (s.staleness && s.staleness !== "fresh") {
+    return { color: "var(--accent-cyan)", label: `brain ${s.staleness}${count}` };
+  }
   return { color: "var(--status-success)", label: `brain${count}` };
 }
 
@@ -73,19 +75,18 @@ export default function StatusBar({
   // the first snapshot resolves (rendered as "offline").
   const [brain, setBrain] = useState<GbrainStatus | null>(null);
   const [brainOpen, setBrainOpen] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    const tick = () =>
-      gbrainStatus()
-        .then((s) => alive && setBrain(s))
-        .catch(() => alive && setBrain(null));
-    tick();
-    const id = setInterval(tick, BRAIN_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+  // Re-pollable so the expansion panel can refresh after an action (sync /
+  // restart) without waiting out the 30s interval.
+  const refreshBrain = useCallback(() => {
+    gbrainStatus()
+      .then(setBrain)
+      .catch(() => setBrain(null));
   }, []);
+  useEffect(() => {
+    refreshBrain();
+    const id = setInterval(refreshBrain, BRAIN_POLL_MS);
+    return () => clearInterval(id);
+  }, [refreshBrain]);
   const brainv = brainView(brain);
 
   const ws = workspaceId ? workspaces.find((w) => w.id === workspaceId) ?? null : null;
@@ -201,8 +202,8 @@ export default function StatusBar({
         type="button"
         onClick={() => setBrainOpen((o) => !o)}
         aria-expanded={brainOpen}
-        title="Search the brain"
-        aria-label="Search the brain"
+        title="Open brain panel"
+        aria-label="Open brain panel"
         style={{
           ...itemStyle,
           background: "transparent",
@@ -217,7 +218,9 @@ export default function StatusBar({
         />
         <span style={{ color: "var(--fg)" }}>{brainv.label}</span>
       </button>
-      {brainOpen && <BrainSearch onClose={() => setBrainOpen(false)} />}
+      {brainOpen && (
+        <BrainPanel status={brain} onClose={() => setBrainOpen(false)} onRefresh={refreshBrain} />
+      )}
 
       {ws?.name && <span style={itemStyle}>workspace: {ws.name}</span>}
 

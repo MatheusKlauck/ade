@@ -283,6 +283,13 @@ pub fn run() {
             ipc::skills::skills_list,
             ipc::gbrain::gbrain_status,
             ipc::gbrain::gbrain_query,
+            ipc::gbrain::gbrain_identity,
+            ipc::gbrain::gbrain_sources,
+            ipc::gbrain::gbrain_recent_pages,
+            ipc::gbrain::gbrain_health,
+            ipc::gbrain::gbrain_liveness,
+            ipc::gbrain::gbrain_sync,
+            ipc::gbrain::gbrain_restart,
         ])
         .build(tauri::generate_context!());
 
