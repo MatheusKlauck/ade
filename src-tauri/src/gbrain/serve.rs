@@ -80,6 +80,7 @@ pub fn reap_orphan_stdio_serve() -> usize {
 /// A running, supervised `gbrain serve --http`. Dropping the handle does not
 /// stop the serve — call [`ServeHandle::kill`] (the app's exit handler does).
 pub struct ServeHandle {
+    port: u16,
     shutdown: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     _supervisor: tokio::task::JoinHandle<()>,
@@ -96,6 +97,24 @@ impl ServeHandle {
                 let _ = c.wait();
             }
         }
+    }
+
+    /// Restart the serve in place: kill the current child and spawn a fresh one
+    /// into the same slot, leaving supervision running (unlike [`kill`], which
+    /// stops it). User-triggered recovery from the "offline" panel — and a way
+    /// to pick up a freed PGLite lock or a new gbrain binary. Errors if the
+    /// respawn fails (the supervisor will then keep retrying on its own).
+    pub fn restart(&self) -> std::io::Result<()> {
+        let mut guard = self
+            .child
+            .lock()
+            .map_err(|_| std::io::Error::other("serve child lock poisoned"))?;
+        if let Some(mut c) = guard.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        *guard = Some(spawn_child(self.port)?);
+        Ok(())
     }
 }
 
@@ -155,6 +174,7 @@ pub fn spawn_supervised(port: u16) -> ServeHandle {
     });
 
     ServeHandle {
+        port,
         shutdown,
         child,
         _supervisor: supervisor,
