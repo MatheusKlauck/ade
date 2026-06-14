@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useSettingsStore } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
+import { useCommandFreqStore } from "../store/commandFrequency";
 import { useModalFocus } from "../lib/useModalFocus";
 import AppearanceTab from "./settings/AppearanceTab";
 import PresetsEditor from "./settings/PresetsEditor";
@@ -340,13 +341,42 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
 
             {/* Terminal: presets */}
             {activeTab === "terminal" && (
-              <PresetsEditor
-                saveState={fieldStatus.presets}
-                onSaveResult={(state) => flashStatus("presets", state)}
-                onResize={updateFade}
-                expandedPresetId={expandedPresetId}
-                onExpandedChange={setExpandedPresetId}
-              />
+              <>
+                <PresetsEditor
+                  saveState={fieldStatus.presets}
+                  onSaveResult={(state) => flashStatus("presets", state)}
+                  onResize={updateFade}
+                  expandedPresetId={expandedPresetId}
+                  onExpandedChange={setExpandedPresetId}
+                />
+                <label style={{ ...sectionLabelStyle, marginTop: 24 }}>
+                  Suggested Commands
+                  <FieldStatus state={fieldStatus.suggestions} />
+                </label>
+                <p style={{ margin: "0 0 10px", fontSize: 11, lineHeight: 1.5, color: "var(--muted)" }}>
+                  The quick-command bar learns the commands you run most in{" "}
+                  {activeWorkspaceName ? `“${activeWorkspaceName}”` : "this workspace"}. Reset to clear them.
+                </p>
+                <button
+                  onClick={() => {
+                    if (!activeWorkspaceId) return;
+                    useCommandFreqStore.getState().reset(activeWorkspaceId);
+                    flashStatus("suggestions", "saved");
+                  }}
+                  disabled={!activeWorkspaceId}
+                  style={{
+                    padding: "6px 16px",
+                    fontSize: 13,
+                    background: "var(--input-bg)",
+                    color: "var(--fg)",
+                    border: "1px solid var(--input-border)",
+                    borderRadius: 4,
+                    cursor: activeWorkspaceId ? "pointer" : "not-allowed",
+                  }}
+                >
+                  Reset Suggested Commands
+                </button>
+              </>
             )}
 
             {/* Sync: interval */}

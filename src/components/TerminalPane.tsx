@@ -620,7 +620,7 @@ function TerminalPane({
         ) : (
           <span
             title={title}
-            onDoubleClick={() => onRename && startRename()}
+            onDoubleClick={() => onToggleMaximize?.()}
             style={{
               flexShrink: isBoard ? 1 : undefined,
               flex: isBoard ? undefined : 1,

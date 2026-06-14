@@ -62,6 +62,9 @@ interface CommandFreqState {
   // Load persisted counts for a workspace from ui_state (merging any counts
   // already recorded this session). Idempotent per workspace.
   load: (workspaceId: string) => Promise<void>;
+  // Clear all recorded counts for a workspace (in-memory + persisted), emptying
+  // its quick-command bar.
+  reset: (workspaceId: string) => void;
 }
 
 export const useCommandFreqStore = create<CommandFreqState>((set, get) => ({
@@ -102,5 +105,11 @@ export const useCommandFreqStore = create<CommandFreqState>((set, get) => ({
     } catch {
       // No stored state or malformed JSON — start from whatever's in memory.
     }
+  },
+  reset: (workspaceId) => {
+    set((s) => ({
+      freqByWorkspace: { ...s.freqByWorkspace, [workspaceId]: {} },
+    }));
+    uiStateSet(freqKey(workspaceId), JSON.stringify({})).catch(() => {});
   },
 }));
