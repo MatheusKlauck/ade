@@ -41,8 +41,9 @@ interface WorkspacesState {
   clearTerminalAlerts: (workspaceId: string) => void;
   // A window started a command — mark it busy for its workspace.
   markTerminalStarted: (workspaceId: string, windowId: string) => void;
-  // A window finished a command — clear its busy flag and bump the veil counter.
-  markTerminalDone: (workspaceId: string, windowId: string) => void;
+  // A window finished a command — clear its busy flag, and (unless bumpVeil is
+  // false, e.g. the workspace is active) bump the veil counter to replay the sweep.
+  markTerminalDone: (workspaceId: string, windowId: string, bumpVeil?: boolean) => void;
   // Reconcile busy state when a window goes away without a completion (killed
   // mid-command). Omit windowId to clear the whole workspace.
   clearTerminalBusy: (workspaceId: string, windowId?: string) => void;
@@ -82,7 +83,12 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   },
 
   setActive: (id: string) => {
-    set({ activeWorkspaceId: id });
+    set((s) => ({
+      activeWorkspaceId: id,
+      // Visiting a workspace means you've seen any finished work — reset the veil
+      // counter so leaving the tab again doesn't replay a stale sweep on remount.
+      terminalVeils: { ...s.terminalVeils, [id]: 0 },
+    }));
     // Visiting a workspace means you've seen its completions — drop the badge.
     get().clearTerminalAlerts(id);
   },
@@ -167,10 +173,12 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
     });
   },
 
-  markTerminalDone: (workspaceId: string, windowId: string) => {
+  markTerminalDone: (workspaceId: string, windowId: string, bumpVeil = true) => {
     set((s) => {
-      // Clear the busy flag (drop the key when the workspace goes idle) and bump
-      // the veil counter so the tab replays the attention sweep once.
+      // Always clear the busy flag (drop the key when the workspace goes idle).
+      // Only bump the veil counter when asked — a completion on the ACTIVE tab is
+      // already shown by the pane itself, and bumping here would make the sweep
+      // replay when you later switch away (the span animates on mount).
       const busyWindows = { ...s.busyWindows };
       const cur = busyWindows[workspaceId];
       if (cur?.has(windowId)) {
@@ -179,6 +187,7 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
         if (next.size === 0) delete busyWindows[workspaceId];
         else busyWindows[workspaceId] = next;
       }
+      if (!bumpVeil) return { busyWindows };
       return {
         busyWindows,
         terminalVeils: {

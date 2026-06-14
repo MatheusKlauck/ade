@@ -273,13 +273,12 @@ elif [ -n "${BASH_VERSION:-}" ]; then
       printf '\033]133;D;%s\007' "$__e"
     fi
   }
-  __ade_arm() { __ade_armed=1; }
   trap '__ade_preexec' DEBUG
   __ade_last=$HISTCMD
   case ";${PROMPT_COMMAND:-};" in
     *";__ade_precmd;"*) ;;
-    # __ade_arm runs LAST so the flag survives the rest of PROMPT_COMMAND.
-    *) PROMPT_COMMAND="__ade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__ade_arm" ;;
+    # arming runs LAST so the flag survives the rest of PROMPT_COMMAND.
+    *) PROMPT_COMMAND="__ade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__ade_armed=1" ;;
   esac
 fi
 "#;
