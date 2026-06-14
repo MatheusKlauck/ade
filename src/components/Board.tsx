@@ -14,6 +14,7 @@ import { COL_BACKLOG, COL_DOING, COL_DONE, COLUMN_ORDER } from "../lib/columns";
 import { useEnterAnimation } from "../lib/useEnterAnimation";
 import Card from "./Card";
 import CardDetail from "./CardDetail";
+import { useCardDeleteConfirm } from "./CardContextMenu";
 import { ChevronIcon } from "./icons";
 
 // Paginate cards per column so a long backlog can't make a column outgrow the
@@ -37,6 +38,7 @@ export default function Board({ workspaceId }: BoardProps) {
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const { requestDelete, dialog: deleteDialog } = useCardDeleteConfirm();
   // Per-column current page (0-indexed); columns paginate at PAGE_SIZE cards.
   const [pages, setPages] = useState<Record<string, number>>({});
 
@@ -182,6 +184,27 @@ export default function Board({ workspaceId }: BoardProps) {
     [workspaceId, optimisticMove]
   );
 
+  // Right-click → "Move to {column}": same path as a column drop, plus the
+  // Done-closes-its-terminal side effect.
+  const handleMove = useCallback(
+    (card: CardType, toColumnId: string) => {
+      if (!workspaceId) return;
+      const b = useBoardStore.getState().boards[workspaceId];
+      optimisticMove(workspaceId, card.id, toColumnId);
+      cardMove(card.id, toColumnId).catch((e) => {
+        console.error("card_move (context menu) failed", e);
+      });
+      const targetCol = b?.columns.find((c) => c.id === toColumnId);
+      if (targetCol?.name === COL_DONE && card.terminal_window_id) {
+        const pane = useTerminalsStore
+          .getState()
+          .panes.find((p) => p.windowId === card.terminal_window_id);
+        if (pane) removePane(pane.paneId);
+      }
+    },
+    [workspaceId, optimisticMove, removePane]
+  );
+
   const sortedColumns = useMemo(
     () =>
       [...columns].sort(
@@ -274,6 +297,9 @@ export default function Board({ workspaceId }: BoardProps) {
             onCreateCard={handleCreateCard}
             onCardDoubleClick={setSelectedCardId}
             onRunWithPreset={handleRunWithPreset}
+            onMove={handleMove}
+            onDelete={requestDelete}
+            columns={columns}
             page={pages[col.id] || 0}
             onPageChange={(p) =>
               setPages((prev) => ({ ...prev, [col.id]: p }))
@@ -318,6 +344,8 @@ export default function Board({ workspaceId }: BoardProps) {
           </div>
         </>
       )}
+
+      {deleteDialog}
     </div>
   );
 }
@@ -333,6 +361,9 @@ function Column({
   onCreateCard,
   onCardDoubleClick,
   onRunWithPreset,
+  onMove,
+  onDelete,
+  columns,
   page,
   onPageChange,
 }: {
@@ -346,6 +377,9 @@ function Column({
   onCreateCard: () => void;
   onCardDoubleClick: (cardId: string) => void;
   onRunWithPreset: (card: CardType, preset: TerminalPreset) => void;
+  onMove: (card: CardType, toColumnId: string) => void;
+  onDelete: (card: CardType) => void;
+  columns: import("../lib/ipc").BoardColumn[];
   page: number;
   onPageChange: (page: number) => void;
 }) {
@@ -477,9 +511,14 @@ function Column({
           <Card
             key={card.id}
             card={card}
+            columnName={column.name}
+            columns={columns}
             onDropBefore={onDropBeforeCard}
             onDoubleClick={() => onCardDoubleClick(card.id)}
+            onOpenDetail={onCardDoubleClick}
             onRunWithPreset={onRunWithPreset}
+            onMove={onMove}
+            onDelete={onDelete}
             entering={isEntering(card.id)}
             onEntered={() => onEntered(card.id)}
           />

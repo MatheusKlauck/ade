@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 /** Shared row treatment for context-menu items — the card "Run with…" menu and
@@ -73,6 +73,25 @@ export function ContextMenu({
   minWidth?: number;
   children: ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Start at the click point, then nudge inward once we can measure the menu so
+  // it never spills past the right/bottom edge (and never lands off-screen when
+  // opened from near the corner).
+  const [coords, setCoords] = useState(position);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const margin = 8;
+    const maxX = window.innerWidth - width - margin;
+    const maxY = window.innerHeight - height - margin;
+    setCoords({
+      x: Math.max(margin, Math.min(position.x, maxX)),
+      y: Math.max(margin, Math.min(position.y, maxY)),
+    });
+  }, [position.x, position.y]);
+
   return (
     <>
       <div
@@ -84,12 +103,15 @@ export function ContextMenu({
         style={{ position: "fixed", inset: 0, zIndex: 1000 }}
       />
       <div
+        ref={ref}
         style={{
           position: "fixed",
-          top: position.y,
-          left: position.x,
+          top: coords.y,
+          left: coords.x,
           zIndex: 1001,
           minWidth,
+          maxHeight: "calc(100vh - 16px)",
+          overflowY: "auto",
           padding: 4,
           background: "var(--surface-raised)",
           border: "1px solid var(--border)",

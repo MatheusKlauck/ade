@@ -1,6 +1,7 @@
 pub mod board_pos;
 pub mod db;
 pub mod error;
+pub mod gbrain;
 pub mod notify;
 
 mod gh;
@@ -32,6 +33,10 @@ pub struct AppState {
     pub workers: tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
     /// Window ids with a live completion monitor (see `term_monitor`).
     pub monitors: term_monitor::Monitors,
+    /// The app-owned `gbrain serve --http` connection, populated asynchronously
+    /// by `gbrain::init_background` shortly after startup (None until ready). A
+    /// std Mutex so the sync exit handler can take it to kill the serve.
+    pub gbrain: std::sync::Mutex<Option<gbrain::GbrainRuntime>>,
 }
 
 async fn seed_dev_workspace(pool: &db::DbPool) -> Result<(), crate::error::AdeError> {
@@ -235,9 +240,18 @@ pub fn run() {
                     )),
                     workers: tokio::sync::Mutex::new(HashMap::new()),
                     monitors: Arc::new(std::sync::Mutex::new(HashSet::new())),
+                    gbrain: std::sync::Mutex::new(None),
                 });
 
                 spawn_sync_workers(pool, handle.clone(), &state.workers).await;
+
+                // Bring up the shared gbrain serve off the startup path so it
+                // doesn't delay first paint; it publishes into state.gbrain once
+                // the HTTP serve is reachable.
+                let gbrain_state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    gbrain::init_background(gbrain_state).await;
+                });
 
                 handle.manage(state);
             });
@@ -267,6 +281,8 @@ pub fn run() {
             ipc::terminal::terminal_kill_window,
             ipc::sync::sync_now,
             ipc::skills::skills_list,
+            ipc::gbrain::gbrain_status,
+            ipc::gbrain::gbrain_query,
         ])
         .build(tauri::generate_context!());
 
@@ -293,6 +309,13 @@ pub fn run() {
                 };
                 for pane in panes {
                     let _ = pane.close();
+                }
+                // Stop the app-owned gbrain serve so it doesn't outlive the app
+                // (and keep holding the PGLite lock).
+                if let Ok(mut g) = state.gbrain.lock() {
+                    if let Some(rt) = g.take() {
+                        rt.handle.kill();
+                    }
                 }
             }
         }

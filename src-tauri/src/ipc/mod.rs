@@ -1,6 +1,7 @@
 pub mod board;
 pub mod card;
 pub mod card_lifecycle;
+pub mod gbrain;
 pub mod github;
 pub mod settings;
 pub mod skills;

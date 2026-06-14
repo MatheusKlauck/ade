@@ -1,10 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { COL_DOING } from "../lib/columns";
-import { syncNow } from "../lib/ipc";
+import { syncNow, gbrainStatus, type GbrainStatus } from "../lib/ipc";
 import { BranchIcon, ChevronIcon, ColumnsIcon, RefreshIcon } from "./icons";
+import BrainSearch from "./BrainSearch";
+
+// How often the brain pill re-polls the serve for a fresh status snapshot.
+const BRAIN_POLL_MS = 30_000;
+
+// Map a brain status to the pill's dot colour + label. Offline (serve still
+// coming up or down) reads red; healthy + stale reads amber; healthy + fresh
+// reads green.
+function brainView(s: GbrainStatus | null): { color: string; label: string } {
+  if (!s || !s.healthy) return { color: "var(--status-error)", label: "brain offline" };
+  const count = s.pages != null ? ` · ${s.pages} pages` : "";
+  if (s.sync_fresh === false) return { color: "var(--accent-cyan)", label: `brain stale${count}` };
+  return { color: "var(--status-success)", label: `brain${count}` };
+}
 
 // Relative "Nm ago" / "Nh ago" formatter for the last-sync timestamp. Accepts
 // the ISO string the backend stamps on sync events; returns "" when unparseable.
@@ -54,6 +68,25 @@ export default function StatusBar({
   const boards = useBoardStore((s) => s.boards);
   const panes = useTerminalsStore((s) => s.panes);
   const [syncHovered, setSyncHovered] = useState(false);
+
+  // Brain status for the pill, polled from the shared gbrain serve. Null until
+  // the first snapshot resolves (rendered as "offline").
+  const [brain, setBrain] = useState<GbrainStatus | null>(null);
+  const [brainOpen, setBrainOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      gbrainStatus()
+        .then((s) => alive && setBrain(s))
+        .catch(() => alive && setBrain(null));
+    tick();
+    const id = setInterval(tick, BRAIN_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  const brainv = brainView(brain);
 
   const ws = workspaceId ? workspaces.find((w) => w.id === workspaceId) ?? null : null;
   const board = workspaceId ? boards[workspaceId] : undefined;
@@ -162,7 +195,31 @@ export default function StatusBar({
         </span>
       )}
 
-      <span style={itemStyle}>workspace: {ws?.name ?? "—"}</span>
+      {/* Brain pill — replaces the plain workspace label in the bottom row.
+          Dot reflects serve health; clicking opens the brain-search popover. */}
+      <button
+        type="button"
+        onClick={() => setBrainOpen((o) => !o)}
+        aria-expanded={brainOpen}
+        title="Search the brain"
+        aria-label="Search the brain"
+        style={{
+          ...itemStyle,
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{ width: 7, height: 7, borderRadius: "50%", background: brainv.color }}
+        />
+        <span style={{ color: "var(--fg)" }}>{brainv.label}</span>
+      </button>
+      {brainOpen && <BrainSearch onClose={() => setBrainOpen(false)} />}
+
+      {ws?.name && <span style={itemStyle}>workspace: {ws.name}</span>}
 
       <div style={{ flex: 1 }} />
 

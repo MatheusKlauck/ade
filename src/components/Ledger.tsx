@@ -31,6 +31,7 @@ import {
 } from "../store/ledger";
 import { COL_BACKLOG, COL_DOING, COL_DONE } from "../lib/columns";
 import LedgerRow from "./LedgerRow";
+import { useCardDeleteConfirm } from "./CardContextMenu";
 import ExpandedTerminal from "./ExpandedTerminal";
 import NewTerminalButton from "./NewTerminalButton";
 import CardDetail from "./CardDetail";
@@ -98,6 +99,7 @@ export default function Ledger({
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const { requestDelete, dialog: deleteDialog } = useCardDeleteConfirm();
   const [dragH, setDragH] = useState<number | null>(null);
   const [cursorIdx, setCursorIdx] = useState(-1); // keyboard cursor row
 
@@ -619,6 +621,7 @@ export default function Ledger({
                   onOpenDetail={setSelectedCardId}
                   onMove={moveCard}
                   onRunWithPreset={handleRunWithPreset}
+                  onDelete={requestDelete}
                   onCardDrop={handleCardDrop}
                 />
                 {pane && (
@@ -770,6 +773,8 @@ export default function Ledger({
           </div>
         </>
       )}
+
+      {deleteDialog}
     </div>
   );
 }

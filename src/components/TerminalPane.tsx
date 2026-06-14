@@ -18,7 +18,9 @@ import { useBoardStore } from "../store/board";
 import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
+import { useCommandFreqStore } from "../store/commandFrequency";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
+import TerminalCommandBar from "./TerminalCommandBar";
 import { BranchIcon, LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
 
 interface TerminalPaneProps {
@@ -51,6 +53,56 @@ interface TerminalPaneProps {
   // grid gives it room); otherwise it hugs the inner edge (the inline ledger
   // accordion, where there's no surrounding gap to orbit into).
   cometOutside?: boolean;
+}
+
+// Reconstruct the command lines a user types from the raw keystroke stream
+// xterm hands us in onData. We only see local input here (the shell echo comes
+// back as PTY output, not onData), so we replay basic line editing —
+// printables append, backspace pops, ESC sequences (arrows/history) and other
+// control keys are skipped — and emit a line each time Enter is pressed. It's a
+// heuristic, not a shell: history-recalled or tab-completed text the shell
+// redraws on its own never reaches us, so those runs are simply missed (never
+// mis-recorded). The buffer is mutated in place via the ref and completed lines
+// are returned.
+function feedCommandBuffer(
+  bufRef: { current: string },
+  data: string
+): string[] {
+  const completed: string[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const ch = data[i];
+    const code = data.charCodeAt(i);
+    if (ch === "\r" || ch === "\n") {
+      const line = bufRef.current.trim();
+      bufRef.current = "";
+      if (line) completed.push(line);
+    } else if (code === 0x7f || code === 0x08) {
+      // Backspace / delete.
+      bufRef.current = bufRef.current.slice(0, -1);
+    } else if (code === 0x1b) {
+      // Escape sequence (arrow keys, Home/End, history nav, Alt-combos). Skip
+      // its bytes so they don't land in the buffer: a CSI (\x1b[) or SS3
+      // (\x1bO) intro runs until a letter/`~` terminator; a lone ESC or
+      // Alt-<key> is just the next single byte.
+      i++;
+      if (data[i] === "[" || data[i] === "O") {
+        i++;
+        while (i < data.length && !/[A-Za-z~]/.test(data[i])) i++;
+      }
+    } else if (code === 0x03 || code === 0x15) {
+      // Ctrl-C (interrupt) / Ctrl-U (kill line) — abandon the current line.
+      bufRef.current = "";
+    } else if (code === 0x17) {
+      // Ctrl-W — delete the previous word.
+      bufRef.current = bufRef.current.replace(/\s*\S+\s*$/, "");
+    } else if (code >= 0x20) {
+      bufRef.current += ch;
+    }
+    // Other control bytes (Tab, etc.) are ignored.
+  }
+  // Guard against a runaway buffer if some unusual input never submits.
+  if (bufRef.current.length > 1000) bufRef.current = "";
+  return completed;
 }
 
 const iconBtnStyle: React.CSSProperties = {
@@ -133,6 +185,19 @@ function TerminalPane({
   // just the shell echoing what was typed, not the agent producing — so it must
   // not drive the comet/veil. See markActivity below.
   const lastInputRef = useRef(0);
+  // Accumulates the command line the user is currently typing, so a full line
+  // can be recorded into the quick-command frequency store when Enter is hit.
+  const cmdLineRef = useRef("");
+  // Dismisses the quick-command bar for good the moment a command is run (Enter
+  // or a chip click). It's a one-way latch — once a command runs in this pane,
+  // the bar stays gone for the rest of the pane's life (it comes back only on a
+  // fresh pane / app restart).
+  const [barDismissed, setBarDismissed] = useState(false);
+  const dismissCommandBar = () => setBarDismissed(true);
+  // The onData handler is registered once, so it reads the latest dismiss
+  // function through a ref to avoid capturing a stale closure.
+  const dismissCommandBarRef = useRef(dismissCommandBar);
+  dismissCommandBarRef.current = dismissCommandBar;
 
   useEffect(() => {
     // React.StrictMode (dev only) double-invokes effects on mount:
@@ -174,11 +239,20 @@ function TerminalPane({
     }
 
     const windowId = pane.windowId;
+    const workspaceId = pane.workspaceId;
     const acts = useTerminalsStore.getState;
 
     // Data from user typing
     term.onData((data) => {
       lastInputRef.current = Date.now();
+      // Reconstruct typed command lines and record each completed one so the
+      // quick-command bar can rank the workspace's most-used commands. The first
+      // submitted command also dismisses the bar for good.
+      const submitted = feedCommandBuffer(cmdLineRef, data);
+      for (const cmd of submitted) {
+        useCommandFreqStore.getState().record(workspaceId, cmd);
+      }
+      if (submitted.length > 0) dismissCommandBarRef.current();
       // The user is typing again, so the terminal is back to awaiting input.
       // Stop the comet now (no veil — the burst was interrupted, not finished).
       burstActiveRef.current = false;
@@ -715,6 +789,20 @@ function TerminalPane({
         }}
       />
       </div>
+      {/* Quick-command bar: the workspace's most-used commands, one click to
+          re-run. Lives outside the clip so it sits flush at the pane's bottom
+          edge, and only on chromed grid panes (the inline ledger terminal has
+          its own footer). */}
+      {!chromeless && !barDismissed && (
+        <TerminalCommandBar
+          paneId={pane.paneId}
+          workspaceId={pane.workspaceId}
+          onInject={() => {
+            termRef.current?.focus();
+            dismissCommandBar();
+          }}
+        />
+      )}
     </div>
   );
 }
