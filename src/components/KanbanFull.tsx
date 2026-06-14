@@ -6,7 +6,7 @@ import {
 } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import type { ElementDropTargetEventBasePayload } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { boardGet, cardCreate, cardMove, terminalWrite } from "../lib/ipc";
-import type { Card as CardType } from "../lib/ipc";
+import type { Card as CardType, BoardColumn as BoardColumnType } from "../lib/ipc";
 import type { TerminalPreset } from "../store/settings";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
@@ -21,7 +21,8 @@ import {
 import { useSettingsStore } from "../store/settings";
 import { useEnterAnimation } from "../lib/useEnterAnimation";
 import CardDetail from "./CardDetail";
-import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
+import { useContextMenu } from "./ContextMenu";
+import CardContextMenu, { useCardDeleteConfirm } from "./CardContextMenu";
 import { ArrowUpRightIcon, BranchIcon } from "./icons";
 
 interface KanbanFullProps {
@@ -47,6 +48,7 @@ export default function KanbanFull({ workspaceId }: KanbanFullProps) {
 
   const [newTitle, setNewTitle] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const { requestDelete, dialog: deleteDialog } = useCardDeleteConfirm();
 
   // DnD handlers read the latest board state via getState() (not the render-time
   // snapshot) so the closures registered once per drop target never act on a
@@ -135,6 +137,21 @@ export default function KanbanFull({ workspaceId }: KanbanFullProps) {
     [workspaceId, optimisticMove]
   );
 
+  // Right-click → "Move to {column}": same path as a column drop, including the
+  // Done-closes-its-terminal side effect.
+  const handleMove = useCallback(
+    (card: CardType, toColumnId: string) => {
+      if (!workspaceId) return;
+      optimisticMove(workspaceId, card.id, toColumnId);
+      cardMove(card.id, toColumnId).catch((e) => {
+        console.error("card_move (context menu) failed", e);
+      });
+      const b = useBoardStore.getState().boards[workspaceId];
+      closeTerminalIfDone(b, toColumnId, card.id, removePane);
+    },
+    [workspaceId, optimisticMove, removePane]
+  );
+
   const sortedColumns = useMemo(
     () =>
       [...columns].sort(
@@ -176,6 +193,9 @@ export default function KanbanFull({ workspaceId }: KanbanFullProps) {
           onDropBeforeCard={handleDropBeforeCard}
           onCardDoubleClick={setSelectedCardId}
           onRunWithPreset={handleRunWithPreset}
+          onMove={handleMove}
+          onDelete={requestDelete}
+          columns={columns}
           showNewCardInput={col.name === COL_BACKLOG}
           newTitle={newTitle}
           setNewTitle={setNewTitle}
@@ -219,6 +239,8 @@ export default function KanbanFull({ workspaceId }: KanbanFullProps) {
           </div>
         </>
       )}
+
+      {deleteDialog}
     </div>
   );
 }
@@ -255,6 +277,9 @@ function BoardColumn({
   onDropBeforeCard,
   onCardDoubleClick,
   onRunWithPreset,
+  onMove,
+  onDelete,
+  columns,
   showNewCardInput,
   newTitle,
   setNewTitle,
@@ -267,6 +292,9 @@ function BoardColumn({
   onDropBeforeCard: (draggedCardId: string, beforeCardId: string) => void;
   onCardDoubleClick: (cardId: string) => void;
   onRunWithPreset: (card: CardType, preset: TerminalPreset) => void;
+  onMove: (card: CardType, toColumnId: string) => void;
+  onDelete: (card: CardType) => void;
+  columns: BoardColumnType[];
   showNewCardInput: boolean;
   newTitle: string;
   setNewTitle: (s: string) => void;
@@ -362,9 +390,13 @@ function BoardColumn({
             key={card.id}
             card={card}
             columnName={column.name}
+            columns={columns}
             onDropBefore={onDropBeforeCard}
             onDoubleClick={() => onCardDoubleClick(card.id)}
+            onOpenDetail={onCardDoubleClick}
             onRunWithPreset={onRunWithPreset}
+            onMove={onMove}
+            onDelete={onDelete}
             entering={isEntering(card.id)}
             onEntered={() => onEntered(card.id)}
           />
@@ -400,17 +432,25 @@ function BoardColumn({
 function BoardCard({
   card,
   columnName,
+  columns,
   onDropBefore,
   onDoubleClick,
+  onOpenDetail,
   onRunWithPreset,
+  onMove,
+  onDelete,
   entering,
   onEntered,
 }: {
   card: CardType;
   columnName: string;
+  columns: BoardColumnType[];
   onDropBefore: (cardId: string, beforeCardId: string) => void;
   onDoubleClick: () => void;
+  onOpenDetail: (cardId: string) => void;
   onRunWithPreset: (card: CardType, preset: TerminalPreset) => void;
+  onMove: (card: CardType, toColumnId: string) => void;
+  onDelete: (card: CardType) => void;
   entering: boolean;
   onEntered: () => void;
 }) {
@@ -600,52 +640,18 @@ function BoardCard({
       </div>
 
       {menu && (
-        <ContextMenu position={menu} onClose={closeMenu} minWidth={170}>
-          <div
-            style={{
-              padding: "4px 10px 6px",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-            }}
-          >
-            Run with
-          </div>
-          {presets.length === 0 ? (
-            <div style={{ padding: "6px 10px", fontSize: 13, color: "var(--muted)" }}>
-              No presets — add one in Settings
-            </div>
-          ) : (
-            presets.map((preset) => (
-              <button
-                key={preset.id}
-                style={menuItemStyle}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--panel)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                }}
-                onClick={() => {
-                  onRunWithPreset(card, preset);
-                  closeMenu();
-                }}
-              >
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {preset.name}
-                </span>
-              </button>
-            ))
-          )}
-        </ContextMenu>
+        <CardContextMenu
+          position={menu}
+          onClose={closeMenu}
+          card={card}
+          columnName={columnName}
+          columns={columns}
+          presets={presets}
+          onOpen={onOpenDetail}
+          onRunWithPreset={onRunWithPreset}
+          onMove={onMove}
+          onDelete={onDelete}
+        />
       )}
     </>
   );

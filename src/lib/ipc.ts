@@ -226,6 +226,9 @@ export function workspaceClose(workspaceId: string): Promise<void> {
 export interface SkillInfo {
   name: string;
   description: string;
+  // Coarse family for grouping in the sidebar spine (Plan, Review, Design, …);
+  // computed by the backend, "Other" when it can't be inferred.
+  category: string;
 }
 
 // Scan the workspace root for skills (`.claude/skills/*/SKILL.md`, `skills/*/SKILL.md`).
@@ -237,6 +240,35 @@ export function skillsList(workspaceId: string): Promise<SkillInfo[]> {
 // `notify`s the running worker; it's a no-op for local-only workspaces).
 export function syncNow(workspaceId: string): Promise<void> {
   return invoke("sync_now", { workspaceId });
+}
+
+// ---- gbrain (shared local `gbrain serve --http`) ----
+
+// Compact brain health for the StatusBar pill. Fields are optional because the
+// snapshot shape varies by gbrain version; `healthy` is false while the
+// app-owned serve is still coming up (rendered as "offline").
+export interface GbrainStatus {
+  healthy: boolean;
+  pages?: number;
+  sync_fresh?: boolean;
+  last_commit?: string;
+}
+
+export function gbrainStatus(): Promise<GbrainStatus> {
+  return invoke<GbrainStatus>("gbrain_status");
+}
+
+// One brain-search hit. `slug` identifies the page; the rest are best-effort.
+export interface GbrainHit {
+  slug: string;
+  title: string;
+  snippet: string;
+  source?: string;
+  score?: number;
+}
+
+export function gbrainQuery(q: string, limit?: number): Promise<GbrainHit[]> {
+  return invoke<GbrainHit[]>("gbrain_query", { q, limit });
 }
 
 // ---- events ----

@@ -6,8 +6,8 @@ import {
 import type { Card as CardType, BoardColumn } from "../lib/ipc";
 import type { TerminalPreset } from "../store/settings";
 import { useSettingsStore } from "../store/settings";
-import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
-import { CheckIcon } from "./icons";
+import { useContextMenu } from "./ContextMenu";
+import CardContextMenu from "./CardContextMenu";
 import type { Attention } from "../store/ledger";
 import {
   COL_BACKLOG,
@@ -15,7 +15,6 @@ import {
   COL_DONE,
   COL_PAUSED,
   COL_PR,
-  COLUMN_ORDER,
 } from "../lib/columns";
 
 /*
@@ -45,6 +44,7 @@ export interface LedgerRowProps {
   onOpenDetail: (cardId: string) => void;
   onMove: (card: CardType, toColumnId: string) => void;
   onRunWithPreset: (card: CardType, preset: TerminalPreset) => void;
+  onDelete: (card: CardType) => void;
   // Drop another card onto THIS row's terminal (works even when collapsed,
   // since the row itself — not the hidden pane — is the drop target).
   onCardDrop?: (
@@ -180,6 +180,7 @@ export default function LedgerRow({
   onOpenDetail,
   onMove,
   onRunWithPreset,
+  onDelete,
   onCardDrop,
 }: LedgerRowProps) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -190,8 +191,7 @@ export default function LedgerRow({
   // Disambiguate a single click (expand) from a double click (open detail).
   const clickTimer = useRef<number | null>(null);
 
-  const moveMenu = useContextMenu();
-  const runMenu = useContextMenu();
+  const cardMenu = useContextMenu();
 
   useEffect(() => {
     const el = ref.current;
@@ -255,10 +255,6 @@ export default function LedgerRow({
   const chip = statChip(columnName, attention, hasPane);
   const dotColor = leftDotColor(attention, hasPane, columnName);
 
-  const sortedCols = [...columns].sort(
-    (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
-  );
-
   const handleClick = () => {
     if (!hasPane) return; // nothing to expand
     if (clickTimer.current != null) return; // a second click → let dblclick win
@@ -285,7 +281,7 @@ export default function LedgerRow({
         onContextMenu={(e) => {
           if (isAdHocShell) return;
           e.preventDefault();
-          runMenu.open(e.clientX, e.clientY);
+          cardMenu.open(e.clientX, e.clientY);
         }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
@@ -390,7 +386,7 @@ export default function LedgerRow({
             onClick={(e) => {
               e.stopPropagation();
               const r = e.currentTarget.getBoundingClientRect();
-              moveMenu.open(r.left, r.bottom + 2);
+              cardMenu.open(r.left, r.bottom + 2);
             }}
             title="Move to another column"
             style={{
@@ -475,86 +471,19 @@ export default function LedgerRow({
         </span>
       </div>
 
-      {moveMenu.menu && (
-        <ContextMenu position={moveMenu.menu} onClose={moveMenu.close} minWidth={160}>
-          <div
-            style={{
-              padding: "4px 10px 6px",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-            }}
-          >
-            Move to
-          </div>
-          {sortedCols.map((col) => {
-            const current = col.name === columnName;
-            return (
-              <button
-                key={col.id}
-                style={menuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--panel)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                onClick={() => {
-                  if (!current) onMove(card, col.id);
-                  moveMenu.close();
-                }}
-              >
-                <span style={{ width: 14, display: "inline-flex" }}>
-                  {current && <CheckIcon size={13} />}
-                </span>
-                <span>{col.name}</span>
-              </button>
-            );
-          })}
-        </ContextMenu>
-      )}
-
-      {runMenu.menu && (
-        <ContextMenu position={runMenu.menu} onClose={runMenu.close} minWidth={170}>
-          <div
-            style={{
-              padding: "4px 10px 6px",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-            }}
-          >
-            Run with
-          </div>
-          {presets.length === 0 ? (
-            <div style={{ padding: "6px 10px", fontSize: 13, color: "var(--muted)" }}>
-              No presets — add one in Settings
-            </div>
-          ) : (
-            presets.map((preset) => (
-              <button
-                key={preset.id}
-                style={menuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--panel)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                onClick={() => {
-                  onRunWithPreset(card, preset);
-                  runMenu.close();
-                }}
-              >
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {preset.name}
-                </span>
-              </button>
-            ))
-          )}
-        </ContextMenu>
+      {cardMenu.menu && (
+        <CardContextMenu
+          position={cardMenu.menu}
+          onClose={cardMenu.close}
+          card={card}
+          columnName={columnName}
+          columns={columns}
+          presets={presets}
+          onOpen={onOpenDetail}
+          onRunWithPreset={onRunWithPreset}
+          onMove={onMove}
+          onDelete={onDelete}
+        />
       )}
     </>
   );

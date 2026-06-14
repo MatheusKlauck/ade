@@ -1,15 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
-import type { Card as CardType } from "../lib/ipc";
+import type { Card as CardType, BoardColumn } from "../lib/ipc";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
-import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
+import { useContextMenu } from "./ContextMenu";
+import CardContextMenu from "./CardContextMenu";
 
 interface CardProps {
   card: CardType;
+  columnName: string;
+  columns: BoardColumn[];
   onDropBefore?: (cardId: string, beforeCardId: string) => void;
   onDoubleClick?: () => void;
-  // Launch this card's task with a chosen terminal preset (right-click → Run with…).
+  // Right-click menu actions: open detail, run with preset, move, delete.
+  onOpenDetail?: (cardId: string) => void;
   onRunWithPreset?: (card: CardType, preset: TerminalPreset) => void;
+  onMove?: (card: CardType, toColumnId: string) => void;
+  onDelete?: (card: CardType) => void;
   /** True while this card is animating in (new to its column). */
   entering?: boolean;
   onEntered?: () => void;
@@ -29,9 +35,14 @@ function assigneeInitials(assignee: string | null): string | null {
 
 export default function Card({
   card,
+  columnName,
+  columns,
   onDropBefore,
   onDoubleClick,
+  onOpenDetail,
   onRunWithPreset,
+  onMove,
+  onDelete,
   entering,
   onEntered,
 }: CardProps) {
@@ -184,58 +195,18 @@ export default function Card({
     </div>
 
     {menu && (
-      <ContextMenu position={menu} onClose={closeMenu} minWidth={170}>
-          <div
-            style={{
-              padding: "4px 10px 6px",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-            }}
-          >
-            Run with
-          </div>
-          {presets.length === 0 ? (
-            <div
-              style={{
-                padding: "6px 10px",
-                fontSize: 13,
-                color: "var(--muted)",
-              }}
-            >
-              No presets — add one in Settings
-            </div>
-          ) : (
-            presets.map((preset) => (
-              <button
-                key={preset.id}
-                style={menuItemStyle}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--panel)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                }}
-                onClick={() => {
-                  onRunWithPreset?.(card, preset);
-                  closeMenu();
-                }}
-              >
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {preset.name}
-                </span>
-              </button>
-            ))
-          )}
-      </ContextMenu>
+      <CardContextMenu
+        position={menu}
+        onClose={closeMenu}
+        card={card}
+        columnName={columnName}
+        columns={columns}
+        presets={presets}
+        onOpen={onOpenDetail}
+        onRunWithPreset={onRunWithPreset}
+        onMove={onMove}
+        onDelete={onDelete}
+      />
     )}
     </>
   );
