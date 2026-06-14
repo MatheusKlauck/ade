@@ -329,6 +329,7 @@ function BoardColumn({
   return (
     <div
       ref={ref}
+      data-testid={`board-column-${column.name.toLowerCase()}`}
       style={{
         flex: 1,
         minWidth: 0,
@@ -523,6 +524,8 @@ function BoardCard({
     <>
       <div
         ref={ref}
+        data-testid={`board-card-${card.id}`}
+        data-card-source={card.source}
         className={entering ? "ade-card-enter" : undefined}
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) onEntered();

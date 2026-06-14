@@ -92,6 +92,29 @@ Rodar num Mac real, no binário de produção (`npm run tauri build`):
 - [ ] Traffic lights (fechar/minimizar/zoom) na posição correta e funcionais.
 - [ ] Tema dark/light reflete no chrome.
 
+## Modo navegador (gstack /qa via browse daemon)
+
+O skill **gstack `/qa`** não usa `tauri-driver` — ele dirige um **browser headless
+apontado para uma URL**. Para isso o frontend roda sozinho (`vite dev`, sem o
+backend Rust) com um **mock de IPC** em memória:
+
+- `src/lib/mockBackend.ts` — backend falso (board com ~15 cards, workspaces,
+  settings, gbrain, terminal). Reads devolvem fixtures; writes mutam o estado em
+  memória, então criar/mover/excluir card reflete na tela.
+- `src/lib/ipc.ts` — seam único: usa a bridge real do Tauri quando
+  `window.__TAURI_INTERNALS__` existe; caso contrário roteia para o mock.
+
+Rodar:
+
+```bash
+npm run dev            # serve a app em http://localhost:1420
+# então: /qa  (aponta o browse daemon para http://localhost:1420)
+```
+
+Selectors `data-testid` (abas, colunas, cards, panes, settings, notificações)
+estão nos componentes para a suíte ficar estável. Terminais nesse modo são um
+banner falso (sem PTY real) — terminal de verdade só no caminho WebDriver acima.
+
 ## Pendências (próximo incremento)
 
 - [ ] `data-testid` nos componentes (selectors estáveis).

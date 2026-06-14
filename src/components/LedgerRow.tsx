@@ -275,6 +275,7 @@ export default function LedgerRow({
     <>
       <div
         ref={ref}
+        data-testid={`ledger-row-${card.id}`}
         data-ledger-row={card.terminal_window_id ?? card.id}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}

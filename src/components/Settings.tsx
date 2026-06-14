@@ -198,6 +198,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
     >
       <div
         ref={panelRef}
+        data-testid="settings-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"

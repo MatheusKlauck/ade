@@ -753,24 +753,28 @@ export default function App() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <SkillsSidebar workspaceId={activeWorkspaceId} />
         {viewMode === "ledger" ? (
-          <Ledger
-            workspaceId={activeWorkspaceId}
-            panes={activePanes}
-            onNewTerminal={handleNewTerminal}
-            onRemovePane={handleRemove}
-            highlightedWindowId={highlightedWindowId}
-            onHighlightDone={clearHighlight}
-          />
+          <div data-testid="view-ledger" style={{ display: "contents" }}>
+            <Ledger
+              workspaceId={activeWorkspaceId}
+              panes={activePanes}
+              onNewTerminal={handleNewTerminal}
+              onRemovePane={handleRemove}
+              highlightedWindowId={highlightedWindowId}
+              onHighlightDone={clearHighlight}
+            />
+          </div>
         ) : (
-          <BoardView
-            workspaceId={activeWorkspaceId}
-            panes={activePanes}
-            onNewTerminal={handleNewTerminal}
-            onRemovePane={handleRemove}
-            highlightedWindowId={highlightedWindowId}
-            onHighlightDone={clearHighlight}
-            open={boardOpen}
-          />
+          <div data-testid="view-board" style={{ display: "contents" }}>
+            <BoardView
+              workspaceId={activeWorkspaceId}
+              panes={activePanes}
+              onNewTerminal={handleNewTerminal}
+              onRemovePane={handleRemove}
+              highlightedWindowId={highlightedWindowId}
+              onHighlightDone={clearHighlight}
+              open={boardOpen}
+            />
+          </div>
         )}
       </div>
       {/* The board view's footer spans the full width (under the skills rail). */}

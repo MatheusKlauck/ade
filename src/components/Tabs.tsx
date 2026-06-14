@@ -146,6 +146,8 @@ export default function Tabs() {
             )}
             <button
               onClick={() => handleTabClick(ws.id)}
+              data-testid={`workspace-tab-${ws.slug}`}
+              data-active={active}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -236,6 +238,7 @@ export default function Tabs() {
       <button
         onClick={handleAddWorkspace}
         disabled={creating}
+        data-testid="workspace-add"
         aria-label="Add workspace"
         title="Add workspace"
         style={{

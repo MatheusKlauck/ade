@@ -513,6 +513,7 @@ function TerminalPane({
 
   return (
     <div
+      data-testid={`terminal-pane-${pane.windowId}`}
       className={[
         "ade-term-pane",
         "ade-comet",

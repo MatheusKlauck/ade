@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// ipc.ts routes to the real (mocked) Tauri bridge only when running "under
+// Tauri" (window.__TAURI_INTERNALS__ present); otherwise it uses the browser
+// mock backend. Declare the Tauri flag before ipc.ts loads so terminalOpen
+// exercises the snake_case mapping this test guards, not the mock.
+vi.hoisted(() => {
+  (globalThis as Record<string, unknown>).window = { __TAURI_INTERNALS__: {} };
+});
+
 // The backend (TerminalOpenResult) serializes snake_case: { pane_id, window_id }.
 // Regression guard for BUG-001: terminalOpen used to read camelCase keys
 // (res.paneId/res.windowId), which were always undefined — so every opened

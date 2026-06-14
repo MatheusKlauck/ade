@@ -65,6 +65,7 @@ export default function NotificationCenter() {
     <div style={{ position: "relative" }} ref={panelRef}>
       <button
         onClick={handleToggle}
+        data-testid="notifications-trigger"
         title="Notifications"
         aria-label="Notifications"
         style={{
@@ -108,6 +109,7 @@ export default function NotificationCenter() {
 
       {open && (
         <div
+          data-testid="notifications-panel"
           style={{
             position: "absolute",
             top: "100%",

@@ -1,6 +1,15 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { Channel } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
+import { listen as tauriListen } from "@tauri-apps/api/event";
+import { isTauri, mockInvoke, mockListen, MockChannel } from "./mockBackend";
+
+// Single seam: under Tauri use the real bridge; in a plain browser (`vite dev`,
+// e.g. the gstack /qa headless run) route to the in-memory mock backend so the
+// whole UI is interactive at localhost:1420. See mockBackend.ts. `Channel` is
+// kept as the real type; the mock channel is cast to it so consumers (store,
+// TerminalPane) keep the unchanged public types.
+const invoke = isTauri ? tauriInvoke : mockInvoke;
+const listen = isTauri ? tauriListen : mockListen;
+const ChannelCtor = isTauri ? Channel : (MockChannel as unknown as typeof Channel);
 
 // ---- notifications ----
 export async function subscribeNotify(
@@ -57,7 +66,7 @@ export function terminalOpen(
   workspaceId: string,
   windowId?: string
 ): Promise<TerminalOpenResult> {
-  const channel = new Channel<unknown>();
+  const channel = new ChannelCtor<unknown>();
   return invoke("terminal_open", { workspaceId, windowId, channel }).then(
     (res: unknown) => {
       // Backend serializes snake_case (TerminalOpenResult { pane_id, window_id }),
