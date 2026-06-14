@@ -230,18 +230,21 @@ fn set_window_size_latest(window_id: &str) {
         .output();
 }
 
-/// Shell snippet that makes bash/zsh emit an OSC 133;D;<exit> marker whenever an
-/// interactive command finishes. ADE reads that marker off the raw pane output
-/// (via `pipe-pane`, see `term_monitor`) to notify on completion. Sourced once
-/// per freshly created window; the hooks live in the shell process, so they
-/// persist across detach/reattach (tmux windows outlive the app's viewers).
-const SHELL_INTEGRATION: &str = r#"# ade shell integration — emit OSC 133;D;<exit> when an interactive command finishes.
+/// Shell snippet that makes bash/zsh emit an OSC 133;C marker when an interactive
+/// command starts and an OSC 133;D;<exit> marker when it finishes. ADE reads both
+/// off the raw pane output (via `pipe-pane`, see `term_monitor`): the start marker
+/// drives the per-window "busy" state (the tab comet for background workspaces),
+/// the done marker drives completion notifications. Sourced once per freshly
+/// created window; the hooks live in the shell process, so they persist across
+/// detach/reattach (tmux windows outlive the app's viewers).
+const SHELL_INTEGRATION: &str = r#"# ade shell integration — emit OSC 133;C on command start and OSC 133;D;<exit> on finish.
 # Ensure UTF-8 locale so emojis and accented characters are accepted.
 export LANG="${LANG:-en_US.UTF-8}"
 export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
 if [ -n "${ZSH_VERSION:-}" ]; then
   autoload -Uz add-zsh-hook 2>/dev/null
-  __ade_preexec() { __ade_ran=1 }
+  # preexec runs right before the entered command executes: emit the start marker.
+  __ade_preexec() { __ade_ran=1; printf '\033]133;C\007' }
   __ade_precmd() {
     local __e=$?
     if [ "${__ade_ran:-0}" = "1" ]; then
@@ -252,6 +255,17 @@ if [ -n "${ZSH_VERSION:-}" ]; then
   add-zsh-hook preexec __ade_preexec 2>/dev/null
   add-zsh-hook precmd __ade_precmd 2>/dev/null
 elif [ -n "${BASH_VERSION:-}" ]; then
+  # bash has no native preexec; a DEBUG trap fires before every simple command.
+  # An "armed" flag (set at the prompt by __ade_arm, cleared on first fire) emits
+  # 133;C once per entered command line rather than once per pipeline element.
+  # Skip our own hook functions so PROMPT_COMMAND machinery doesn't consume it.
+  __ade_preexec() {
+    case "$BASH_COMMAND" in __ade_*) return;; esac
+    if [ "${__ade_armed:-0}" = "1" ]; then
+      __ade_armed=0
+      printf '\033]133;C\007'
+    fi
+  }
   __ade_precmd() {
     local __e=$?
     if [ "${__ade_last:-}" != "$HISTCMD" ]; then
@@ -259,10 +273,13 @@ elif [ -n "${BASH_VERSION:-}" ]; then
       printf '\033]133;D;%s\007' "$__e"
     fi
   }
+  __ade_arm() { __ade_armed=1; }
+  trap '__ade_preexec' DEBUG
   __ade_last=$HISTCMD
   case ";${PROMPT_COMMAND:-};" in
     *";__ade_precmd;"*) ;;
-    *) PROMPT_COMMAND="__ade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+    # __ade_arm runs LAST so the flag survives the rest of PROMPT_COMMAND.
+    *) PROMPT_COMMAND="__ade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__ade_arm" ;;
   esac
 fi
 "#;
