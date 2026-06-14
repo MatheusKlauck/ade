@@ -12,6 +12,8 @@ export default function Tabs() {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const terminalAlerts = useWorkspacesStore((s) => s.terminalAlerts);
+  const busyWindows = useWorkspacesStore((s) => s.busyWindows);
+  const terminalVeils = useWorkspacesStore((s) => s.terminalVeils);
   const setActive = useWorkspacesStore((s) => s.setActive);
   const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
   const closeWorkspace = useWorkspacesStore((s) => s.closeWorkspace);
@@ -110,9 +112,15 @@ export default function Tabs() {
       {workspaces.map((ws) => {
         const active = ws.id === activeWorkspaceId;
         const alerts = terminalAlerts[ws.id];
+        // Surface background activity on a non-focused tab, but only when there
+        // are enough workspaces that the user can't see them all at once (>2).
+        const showEffects = !active && workspaces.length > 2;
+        const busy = showEffects && (busyWindows[ws.id]?.size ?? 0) > 0;
+        const veilKey = terminalVeils[ws.id] ?? 0;
         return (
           <div
             key={ws.id}
+            className={busy ? "ade-comet ade-term-visible ade-term-working" : undefined}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -125,8 +133,17 @@ export default function Tabs() {
                 ? "2px solid var(--accent)"
                 : "2px solid transparent",
               background: active ? "var(--surface-raised)" : "transparent",
+              // The comet ring (::after, inset:0) and the veil sweep (200% child)
+              // both need a positioned, clipping host. overflow:hidden keeps the
+              // inside comet variant and the oversized veil within the pill.
+              position: "relative",
+              overflow: showEffects ? "hidden" : undefined,
+              borderRadius: busy ? "var(--radius-sm)" : undefined,
             }}
           >
+            {showEffects && veilKey > 0 && (
+              <span className="ade-term-done-veil" key={veilKey} />
+            )}
             <button
               onClick={() => handleTabClick(ws.id)}
               style={{

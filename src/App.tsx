@@ -322,6 +322,26 @@ export default function App() {
   const alertThrottle = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     const unsub = subscribeTerminalAlert((p) => {
+      // Viewer-independent busy/veil tracking runs FIRST, before the focus guard
+      // and throttle below (which are about notification semantics). A workspace
+      // in the background is never the focused window, but routing here also
+      // keeps the active workspace's state accurate for when you switch away.
+      if (p.kind === "started") {
+        // "started" has no badge/ledger meaning and must not be throttled.
+        useWorkspacesStore.getState().markTerminalStarted(p.workspace_id, p.window_id);
+        return;
+      }
+      if (p.kind === "gone") {
+        // The pane reached EOF (e.g. the shell `exit`ed) without a completion —
+        // reconcile the busy flag so the tab's comet doesn't linger. No badge.
+        useWorkspacesStore.getState().clearTerminalBusy(p.workspace_id, p.window_id);
+        return;
+      }
+      if (p.kind === "completed") {
+        useWorkspacesStore.getState().markTerminalDone(p.workspace_id, p.window_id);
+        // fall through to the existing badge + ledger logic
+      }
+
       const { focusedWindowId } = useTerminalsStore.getState();
       if (p.window_id === focusedWindowId && document.hasFocus()) return;
 
@@ -460,13 +480,16 @@ export default function App() {
   // Subscribe to terminal close events (a card moved to Done). The backend has
   // already killed the tmux window; drop the matching pane from the UI.
   useEffect(() => {
-    const unsub = subscribeTerminalClose(({ window_id }) => {
+    const unsub = subscribeTerminalClose(({ workspace_id, window_id }) => {
       const pane = useTerminalsStore
         .getState()
         .panes.find((p) => p.windowId === window_id);
       if (pane) removePane(pane.paneId);
       // The tmux window is gone for good — drop any attention flag for it.
       useLedgerStore.getState().clearAttention(window_id);
+      // Reconcile background busy state: a window killed mid-command emitted a
+      // "started" but never its "completed", so clear it to avoid a stale comet.
+      useWorkspacesStore.getState().clearTerminalBusy(workspace_id, window_id);
     });
     return () => {
       unsub.then((u) => u());

@@ -31,12 +31,20 @@ pub type Monitors = Arc<Mutex<HashSet<String>>>;
 /// A detected terminal event worth surfacing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
+    /// A shell command started running (OSC 133;C). Carries no payload — the
+    /// exit code only exists at completion. Marks the start of a "busy" window.
+    Started,
     /// A shell command finished. Carries the exit code string when known.
     Completed(Option<String>),
     /// A standalone BEL (program rang the terminal bell).
     Bell,
     /// An app-emitted notification (OSC 9 / OSC 777 notify). Carries the text.
     App(String),
+    /// The monitored pane reached EOF — the window is gone (e.g. the shell
+    /// exited via `exit`). Not produced by the scanner; emitted by the monitor
+    /// loop on teardown so the UI can reconcile per-window state (a `Started`
+    /// with no matching `Completed` would otherwise leak a "busy" flag).
+    Gone,
 }
 
 /// Streaming scanner over raw pane bytes. Kept as a tiny state machine so OSC
@@ -134,6 +142,10 @@ impl Scanner {
             if let Some(after) = rest.strip_prefix('D') {
                 let code = after.strip_prefix(';').map(|c| c.to_string());
                 emit(Alert::Completed(code));
+            } else if rest.strip_prefix('C').is_some() {
+                // OSC 133;C[;<...>] — command output begins (command started).
+                // Tolerate trailing params like the D arm tolerates ;<exit>.
+                emit(Alert::Started);
             }
         } else if let Some(text) = payload.strip_prefix("9;") {
             // OSC 9;<text> is an iTerm-style notification. ConEmu reuses OSC 9
@@ -225,6 +237,10 @@ fn run_monitor(app: &AppHandle, workspace_id: &str, window_id: &str) {
                 Ok(n) => scanner.feed(&buf[..n], |alert| emit(app, workspace_id, window_id, alert)),
             }
         }
+        // EOF: the pane died. Tell the UI the window is gone so it can clear any
+        // lingering per-window state (only reached if we actually streamed, so a
+        // failed FIFO open never spuriously reports a live pane as gone).
+        emit(app, workspace_id, window_id, Alert::Gone);
     }
 
     // Pane is gone: stop piping (best-effort; the pane may already be dead) and
@@ -239,9 +255,11 @@ fn run_monitor(app: &AppHandle, workspace_id: &str, window_id: &str) {
 
 fn emit(app: &AppHandle, workspace_id: &str, window_id: &str, alert: Alert) {
     let (kind, detail) = match alert {
+        Alert::Started => ("started", String::new()),
         Alert::Completed(code) => ("completed", code.unwrap_or_default()),
         Alert::Bell => ("bell", String::new()),
         Alert::App(msg) => ("app", msg),
+        Alert::Gone => ("gone", String::new()),
     };
     let _ = app.emit(
         "evt:terminal-alert",
@@ -283,6 +301,35 @@ mod tests {
     fn completion_without_exit_code() {
         let out = collect(&[b"\x1b]133;D\x07"]);
         assert_eq!(out, vec![Alert::Completed(None)]);
+    }
+
+    #[test]
+    fn started_marker() {
+        let out = collect(&[b"\x1b]133;C\x07"]);
+        assert_eq!(out, vec![Alert::Started]);
+    }
+
+    #[test]
+    fn started_with_params() {
+        // Some emitters append params to 133;C — we ignore them.
+        let out = collect(&[b"\x1b]133;C;cmd\x07"]);
+        assert_eq!(out, vec![Alert::Started]);
+    }
+
+    #[test]
+    fn started_then_completed() {
+        // The realistic busy→done sequence for a single command.
+        let out = collect(&[b"\x1b]133;C\x07output\x1b]133;D;0\x07"]);
+        assert_eq!(
+            out,
+            vec![Alert::Started, Alert::Completed(Some("0".into()))]
+        );
+    }
+
+    #[test]
+    fn started_split_across_chunks() {
+        let out = collect(&[b"\x1b]13", b"3;C", b"\x07"]);
+        assert_eq!(out, vec![Alert::Started]);
     }
 
     #[test]

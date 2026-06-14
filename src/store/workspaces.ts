@@ -22,6 +22,16 @@ interface WorkspacesState {
   loaded: boolean;
   syncStatus: Record<string, SyncStatusEntry>;
   terminalAlerts: Record<string, TerminalAlerts>;
+  // Viewer-INDEPENDENT activity, driven by the backend term_monitor's
+  // started/completed events (not the frontend xterm heuristic, which dies when
+  // a workspace's panes unmount on switch). Lets a background workspace's tab
+  // surface that its agents are still working / just finished.
+  // workspaceId → set of window ids currently between a "started" and its
+  // "completed". The tab's comet shows while this set is non-empty.
+  busyWindows: Record<string, Set<string>>;
+  // workspaceId → monotonically increasing counter, bumped on each completion.
+  // Used as a React key on the tab's veil element so a bump replays the sweep.
+  terminalVeils: Record<string, number>;
   load: () => Promise<void>;
   setActive: (id: string) => void;
   addWorkspace: (path: string) => Promise<Workspace | null>;
@@ -29,6 +39,13 @@ interface WorkspacesState {
   updateSyncStatus: (workspaceId: string, status: string, lastSync?: string) => void;
   pushTerminalAlert: (workspaceId: string, message: string) => void;
   clearTerminalAlerts: (workspaceId: string) => void;
+  // A window started a command — mark it busy for its workspace.
+  markTerminalStarted: (workspaceId: string, windowId: string) => void;
+  // A window finished a command — clear its busy flag and bump the veil counter.
+  markTerminalDone: (workspaceId: string, windowId: string) => void;
+  // Reconcile busy state when a window goes away without a completion (killed
+  // mid-command). Omit windowId to clear the whole workspace.
+  clearTerminalBusy: (workspaceId: string, windowId?: string) => void;
 }
 
 const MAX_ALERT_MESSAGES = 20;
@@ -39,6 +56,8 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   loaded: false,
   syncStatus: {},
   terminalAlerts: {},
+  busyWindows: {},
+  terminalVeils: {},
 
   load: async () => {
     try {
@@ -99,7 +118,11 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
         s.activeWorkspaceId === id
           ? remaining[0]?.id ?? null
           : s.activeWorkspaceId;
-      return { workspaces: remaining, activeWorkspaceId };
+      const busyWindows = { ...s.busyWindows };
+      delete busyWindows[id];
+      const terminalVeils = { ...s.terminalVeils };
+      delete terminalVeils[id];
+      return { workspaces: remaining, activeWorkspaceId, busyWindows, terminalVeils };
     });
   },
 
@@ -131,6 +154,56 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
       const next = { ...s.terminalAlerts };
       delete next[workspaceId];
       return { terminalAlerts: next };
+    });
+  },
+
+  markTerminalStarted: (workspaceId: string, windowId: string) => {
+    set((s) => {
+      const cur = s.busyWindows[workspaceId];
+      if (cur?.has(windowId)) return s; // already busy — avoid a needless render
+      const next = new Set(cur);
+      next.add(windowId);
+      return { busyWindows: { ...s.busyWindows, [workspaceId]: next } };
+    });
+  },
+
+  markTerminalDone: (workspaceId: string, windowId: string) => {
+    set((s) => {
+      // Clear the busy flag (drop the key when the workspace goes idle) and bump
+      // the veil counter so the tab replays the attention sweep once.
+      const busyWindows = { ...s.busyWindows };
+      const cur = busyWindows[workspaceId];
+      if (cur?.has(windowId)) {
+        const next = new Set(cur);
+        next.delete(windowId);
+        if (next.size === 0) delete busyWindows[workspaceId];
+        else busyWindows[workspaceId] = next;
+      }
+      return {
+        busyWindows,
+        terminalVeils: {
+          ...s.terminalVeils,
+          [workspaceId]: (s.terminalVeils[workspaceId] ?? 0) + 1,
+        },
+      };
+    });
+  },
+
+  clearTerminalBusy: (workspaceId: string, windowId?: string) => {
+    set((s) => {
+      const cur = s.busyWindows[workspaceId];
+      if (!cur) return s;
+      const busyWindows = { ...s.busyWindows };
+      if (windowId === undefined) {
+        delete busyWindows[workspaceId];
+      } else {
+        if (!cur.has(windowId)) return s;
+        const next = new Set(cur);
+        next.delete(windowId);
+        if (next.size === 0) delete busyWindows[workspaceId];
+        else busyWindows[workspaceId] = next;
+      }
+      return { busyWindows };
     });
   },
 }));

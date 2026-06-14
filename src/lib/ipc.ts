@@ -281,7 +281,7 @@ export function subscribeSync(
 export interface TerminalAlertPayload {
   workspace_id: string;
   window_id: string;
-  kind: "completed" | "bell" | "app";
+  kind: "started" | "completed" | "bell" | "app" | "gone";
   detail: string;
 }
 
