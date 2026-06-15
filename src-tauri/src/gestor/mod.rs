@@ -1,0 +1,6 @@
+// The Gestor: deterministic FSM orchestration layer (PLANO-GESTOR-v1 §2).
+// The LLM only enters at typed edges via `GestorProvider`; the FSM, scheduler
+// and git/push paths are plain deterministic core. This slice (S2/#42) lands
+// the provider boundary; fsm/jobs/runtime/worker arrive in #43–#49.
+
+pub mod provider;

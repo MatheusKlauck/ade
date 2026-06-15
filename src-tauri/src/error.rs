@@ -20,6 +20,8 @@ pub enum AdeError {
     RateLimited(String),
     #[error("keychain error: {0}")]
     Keychain(String),
+    #[error("gestor provider unavailable: {0}")]
+    ProviderMissing(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -36,6 +38,7 @@ impl AdeError {
             AdeError::RateLimited(_) => "RATE_LIMITED",
             AdeError::GitHub(_) => "SYNC_WRITE_FAILED",
             AdeError::Keychain(_) => "INTERNAL",
+            AdeError::ProviderMissing(_) => "GESTOR_PROVIDER_MISSING",
             AdeError::Io(_) => "INTERNAL",
             AdeError::Other(_) => "INTERNAL",
             AdeError::Db(_) => "DB_ERROR",

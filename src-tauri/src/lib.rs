@@ -2,6 +2,7 @@ pub mod board_pos;
 pub mod db;
 pub mod error;
 pub mod gbrain;
+pub mod gestor;
 pub mod notify;
 
 mod gh;
