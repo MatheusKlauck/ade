@@ -8,6 +8,7 @@ pub mod fsm;
 pub mod gates;
 pub mod jobs;
 pub mod notes;
+pub mod ollama;
 pub mod plan;
 pub mod provider;
 pub mod publish;
