@@ -165,6 +165,30 @@ pub async fn agent_task_by_id(db: &DbPool, id: &str) -> Result<Option<AgentTask>
     .map_err(AdeError::Db)
 }
 
+/// Update an agent_task's mutable lifecycle fields.
+#[allow(dead_code)]
+pub async fn update_agent_task(db: &DbPool, t: &AgentTask) -> Result<(), AdeError> {
+    sqlx::query(
+        "UPDATE agent_task SET state=?, attempt=?, branch=?, worktree_path=?, window_id=?, events_file=?, fail_reason=?, last_event_at=?, started_at=?, finished_at=?, updated_at=? WHERE id=?",
+    )
+    .bind(&t.state)
+    .bind(t.attempt)
+    .bind(&t.branch)
+    .bind(&t.worktree_path)
+    .bind(&t.window_id)
+    .bind(&t.events_file)
+    .bind(&t.fail_reason)
+    .bind(&t.last_event_at)
+    .bind(&t.started_at)
+    .bind(&t.finished_at)
+    .bind(&t.updated_at)
+    .bind(&t.id)
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(AdeError::Db)
+}
+
 /// Fetch all agent_tasks for a workspace, newest first.
 #[allow(dead_code)]
 pub async fn agent_tasks_for_workspace(
