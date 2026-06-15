@@ -8,6 +8,7 @@ pub mod dispatch;
 pub mod fsm;
 pub mod gates;
 pub mod jobs;
+pub mod merge;
 pub mod notes;
 pub mod ollama;
 pub mod plan;

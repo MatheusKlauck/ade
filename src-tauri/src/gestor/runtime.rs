@@ -364,6 +364,47 @@ pub async fn start_runtime<P: GestorProvider>(
                         .await;
                     }
                 }
+
+                // 8. CI polling + merge (#55). Poll open PRs; auto-merge ready
+                // tasks at L3 (L2 waits for the human pr_merge IPC). Serialized:
+                // at most one merge per workspace per tick.
+                let gh = crate::gh::client::GitHubClient::new(
+                    crate::gh::client::GITHUB_API_BASE.to_string(),
+                    token.clone(),
+                );
+                let require_ci =
+                    crate::ipc::settings::workspace_setting_value(&db, &workspace_id, "require_ci")
+                        .await
+                        .map(|v| v == "true")
+                        .unwrap_or(false);
+
+                let post_pr = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+                    .await
+                    .unwrap_or_default();
+                for task in post_pr
+                    .iter()
+                    .filter(|t| matches!(t.state.as_str(), "pr_open" | "ci_wait"))
+                {
+                    let _ = crate::gestor::merge::process_ci(
+                        &db, &gh, owner, repo, &repo_path, task, require_ci,
+                    )
+                    .await;
+                }
+
+                if level.can_auto_merge() {
+                    // one merge per tick (serialized fila)
+                    if let Some(task) = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+                        .await
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|t| t.state == "ready_to_merge")
+                    {
+                        let _ = crate::gestor::merge::merge_task(
+                            &db, &gh, owner, repo, &repo_path, task,
+                        )
+                        .await;
+                    }
+                }
             }
         }
     }

@@ -1,7 +1,9 @@
 // M2-T7: GitHub client with injectable base URL for wiremock testing.
 
 use crate::error::AdeError;
-use crate::gh::types::{IssueComment, Label, PullRequest, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
+use crate::gh::types::{
+    CheckRun, IssueComment, Label, PullRequest, RemoteIssue, KANBAN_LABELS_WITH_COLORS,
+};
 use std::time::Duration;
 
 /// Production GitHub API base URL (overridable for tests).
@@ -537,6 +539,54 @@ impl GitHubClient {
         Self::map_pr(&item)
     }
 
+    /// List the CI check runs for a commit (#55 CI polling).
+    /// GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+    #[allow(dead_code)]
+    pub async fn list_check_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<CheckRun>, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs",
+            self.base_url, owner, repo, sha
+        );
+        let response = self.get(&url).await?;
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse check-runs response: {e}")))?;
+        let runs = body["check_runs"].as_array().cloned().unwrap_or_default();
+        Ok(runs
+            .iter()
+            .map(|r| CheckRun {
+                status: r["status"].as_str().unwrap_or("").to_string(),
+                conclusion: r["conclusion"].as_str().map(|s| s.to_string()),
+            })
+            .collect())
+    }
+
+    /// Merge a pull request (#55). PUT /repos/{owner}/{repo}/pulls/{n}/merge.
+    /// Returns whether GitHub reported it merged.
+    #[allow(dead_code)]
+    pub async fn merge_pr(&self, owner: &str, repo: &str, number: u64) -> Result<bool, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/merge",
+            self.base_url, owner, repo, number
+        );
+        let response = Self::expect_success(
+            self.put(&url, &serde_json::json!({ "merge_method": "squash" }))
+                .await?,
+        )
+        .await?;
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse merge response: {e}")))?;
+        Ok(body["merged"].as_bool().unwrap_or(false))
+    }
+
     fn map_pr(item: &serde_json::Value) -> Result<PullRequest, AdeError> {
         let number = item["number"]
             .as_u64()
@@ -584,6 +634,28 @@ impl GitHubClient {
             .send_with_retry(
                 self.http
                     .patch(url)
+                    .header("Authorization", format!("Bearer {}", self.token))
+                    .header("User-Agent", "ade")
+                    .header("Content-Type", "application/json")
+                    .body(body.to_string()),
+            )
+            .await?;
+
+        self.check_rate_limit(response).await
+    }
+
+    /// Send an authenticated PUT request with a JSON body.
+    /// Handles rate limiting (403/429) per CONTRACTS §11.
+    #[allow(dead_code)]
+    async fn put(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AdeError> {
+        let response = self
+            .send_with_retry(
+                self.http
+                    .put(url)
                     .header("Authorization", format!("Bearer {}", self.token))
                     .header("User-Agent", "ade")
                     .header("Content-Type", "application/json")
@@ -1160,5 +1232,46 @@ mod tests {
 
         let fetched = client.get_pr("owner", "repo", 42).await.expect("get_pr");
         assert_eq!(fetched.number, 42);
+    }
+
+    #[tokio::test]
+    async fn check_runs_and_merge() {
+        use wiremock::matchers::{method as match_method, path};
+
+        let server = MockServer::start().await;
+        Mock::given(match_method("GET"))
+            .and(path("/repos/owner/repo/commits/abc123/check-runs"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                    "total_count": 2,
+                    "check_runs": [
+                        { "status": "completed", "conclusion": "success" },
+                        { "status": "completed", "conclusion": "success" },
+                    ],
+                })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(match_method("PUT"))
+            .and(path("/repos/owner/repo/pulls/42/merge"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                    "merged": true,
+                    "sha": "deadbeef",
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let runs = client
+            .list_check_runs("owner", "repo", "abc123")
+            .await
+            .expect("check-runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].conclusion.as_deref(), Some("success"));
+
+        let merged = client.merge_pr("owner", "repo", 42).await.expect("merge");
+        assert!(merged);
     }
 }

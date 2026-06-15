@@ -249,6 +249,18 @@ pub fn push(repo_path: &str, branch: &str, token: &str) -> Result<(), AdeError> 
     Ok(())
 }
 
+/// The commit SHA at the tip of `branch` (the pushed head, for CI polling #55).
+#[allow(dead_code)]
+pub fn head_sha(repo_path: &str, branch: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["-C", repo_path, "rev-parse", branch])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// One-line-per-commit log since the most recent tag (or all history if there's
 /// no tag). Feeds release_notes (#54). Empty if the command fails.
 #[allow(dead_code)]

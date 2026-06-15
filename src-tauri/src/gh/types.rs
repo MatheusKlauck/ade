@@ -37,6 +37,14 @@ pub struct PullRequest {
     pub state: String, // "open" | "closed"
 }
 
+/// A CI check run on a commit (GitHub check-runs API). The gestor polls these to
+/// decide when a PR is mergeable (#55).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CheckRun {
+    pub status: String,             // queued | in_progress | completed
+    pub conclusion: Option<String>, // success | failure | neutral | skipped | ...
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncAction {
     CreateCard {
