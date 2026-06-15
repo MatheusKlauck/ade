@@ -270,6 +270,46 @@ pub async fn start_runtime<P: GestorProvider>(
                 .await;
             }
         }
+
+        // 6. Publish: review is a pass-through until #39 lands; pushing → push +
+        // PR (S9). Needs the repo's GitHub coordinates + a Keychain token.
+        if let (Some(owner), Some(repo)) = (ws.github_owner.as_deref(), ws.github_repo.as_deref()) {
+            if let Ok(Some(token)) = crate::ipc::github::keychain_get_for_workspace(&workspace_id) {
+                for task in fresh
+                    .iter()
+                    .filter(|t| matches!(t.state.as_str(), "reviewing" | "pushing"))
+                {
+                    if task.state == "reviewing" {
+                        let _ = crate::gestor::fsm::transition(
+                            &db,
+                            &task.id,
+                            crate::gestor::fsm::TaskState::Pushing,
+                            Some("review pass-through (pre-#39)"),
+                        )
+                        .await;
+                    }
+                    if let Err(e) = crate::gestor::publish::publish_task(
+                        &db,
+                        &workspace_id,
+                        owner,
+                        repo,
+                        &repo_path,
+                        &cfg.base_branch,
+                        &token,
+                    )
+                    .await
+                    {
+                        let _ = crate::gestor::fsm::transition(
+                            &db,
+                            &task.id,
+                            crate::gestor::fsm::TaskState::Failed,
+                            Some(&format!("publish failed: {e}")),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
     }
 }
 

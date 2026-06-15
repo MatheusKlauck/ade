@@ -8,5 +8,6 @@ pub mod fsm;
 pub mod gates;
 pub mod jobs;
 pub mod provider;
+pub mod publish;
 pub mod runtime;
 pub mod worker;

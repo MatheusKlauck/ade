@@ -347,6 +347,36 @@ pub async fn gestor_jobs_for_workspace(
     .map_err(AdeError::Db)
 }
 
+/// Move a card to the named board column of its workspace (e.g. "PR"). No-op if
+/// the column doesn't exist. Returns whether the card was moved.
+#[allow(dead_code)]
+pub async fn move_card_to_column(
+    db: &DbPool,
+    card_id: &str,
+    workspace_id: &str,
+    column_name: &str,
+    now: &str,
+) -> Result<bool, AdeError> {
+    let col: Option<String> =
+        sqlx::query_scalar("SELECT id FROM board_column WHERE workspace_id = ? AND name = ?")
+            .bind(workspace_id)
+            .bind(column_name)
+            .fetch_optional(db)
+            .await
+            .map_err(AdeError::Db)?;
+    let Some(column_id) = col else {
+        return Ok(false);
+    };
+    sqlx::query("UPDATE card SET column_id = ?, updated_at = ? WHERE id = ?")
+        .bind(&column_id)
+        .bind(now)
+        .bind(card_id)
+        .execute(db)
+        .await
+        .map_err(AdeError::Db)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +420,30 @@ mod tests {
             created_at: "t".into(),
             updated_at: "t".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn move_card_to_pr_column() {
+        let db = test_pool().await;
+        seed_card(&db).await; // card1 in column c1 ("Doing")
+        sqlx::query(
+            "INSERT INTO board_column (id, workspace_id, name, position) VALUES ('pr','w1','PR',3)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let moved = move_card_to_column(&db, "card1", "w1", "PR", "now")
+            .await
+            .unwrap();
+        assert!(moved);
+        let card = card_by_id(&db, "card1").await.unwrap().unwrap();
+        assert_eq!(card.column_id, "pr");
+
+        // unknown column is a no-op
+        assert!(!move_card_to_column(&db, "card1", "w1", "Nope", "now")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

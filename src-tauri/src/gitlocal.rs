@@ -228,6 +228,27 @@ pub fn worktree_remove(repo_path: &str, worktree_path: &str) -> Result<(), AdeEr
     Ok(())
 }
 
+/// Push `branch` to `origin` over HTTPS using a PAT supplied through git2's
+/// credentials callback (PLANO D5/D9: the token is never an argv/URL component,
+/// and the worker never has it — push is core-only). Requires an HTTPS `origin`.
+#[allow(dead_code)]
+pub fn push(repo_path: &str, branch: &str, token: &str) -> Result<(), AdeError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let mut remote = repo.find_remote("origin")?;
+
+    let mut cbs = git2::RemoteCallbacks::new();
+    cbs.credentials(move |_url, _username, _allowed| {
+        // GitHub accepts a PAT as the HTTPS Basic-auth username.
+        git2::Cred::userpass_plaintext("x-access-token", token)
+    });
+    let mut opts = git2::PushOptions::new();
+    opts.remote_callbacks(cbs);
+
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    remote.push(&[&refspec], Some(&mut opts))?;
+    Ok(())
+}
+
 /// Whether a worktree has no uncommitted changes (untracked files count as
 /// dirty here, unlike `prepare_branch`, since a worker may have created new
 /// files it forgot to commit). Used by the Stop decision (PLANO §2.3).
@@ -269,6 +290,14 @@ pub fn commits_ahead(worktree: &str, base: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_without_origin_errors_not_panics() {
+        let (repo, _dir) = init_test_repo();
+        let path = repo.path().parent().unwrap().to_str().unwrap();
+        // no `origin` remote configured → graceful Err
+        assert!(push(path, "main", "tok").is_err());
+    }
 
     #[test]
     fn worktree_git_state_helpers() {

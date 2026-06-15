@@ -1,7 +1,7 @@
 // M2-T7: GitHub client with injectable base URL for wiremock testing.
 
 use crate::error::AdeError;
-use crate::gh::types::{IssueComment, Label, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
+use crate::gh::types::{IssueComment, Label, PullRequest, RemoteIssue, KANBAN_LABELS_WITH_COLORS};
 use std::time::Duration;
 
 /// Production GitHub API base URL (overridable for tests).
@@ -390,13 +390,19 @@ impl GitHubClient {
         );
         let mut payload = serde_json::Map::new();
         if let Some(t) = title {
-            payload.insert("title".to_string(), serde_json::Value::String(t.to_string()));
+            payload.insert(
+                "title".to_string(),
+                serde_json::Value::String(t.to_string()),
+            );
         }
         if let Some(b) = body {
             payload.insert("body".to_string(), serde_json::Value::String(b.to_string()));
         }
-        let response =
-            Self::expect_success(self.patch(&url, &serde_json::Value::Object(payload)).await?).await?;
+        let response = Self::expect_success(
+            self.patch(&url, &serde_json::Value::Object(payload))
+                .await?,
+        )
+        .await?;
         let item: serde_json::Value = response
             .json()
             .await
@@ -468,9 +474,7 @@ impl GitHubClient {
                 .as_u64()
                 .ok_or_else(|| AdeError::GitHub("missing comment id".to_string()))?;
             let user_login = item["user"]["login"].as_str().unwrap_or("").to_string();
-            let user_avatar_url = item["user"]["avatar_url"]
-                .as_str()
-                .map(|s| s.to_string());
+            let user_avatar_url = item["user"]["avatar_url"].as_str().map(|s| s.to_string());
             let body = item["body"].as_str().unwrap_or("").to_string();
             let created_at = item["created_at"].as_str().unwrap_or("").to_string();
             let updated_at = item["updated_at"].as_str().unwrap_or("").to_string();
@@ -484,6 +488,66 @@ impl GitHubClient {
             });
         }
         Ok(comments)
+    }
+
+    /// Open a pull request (PLANO §6, D5: ADE publishes — the worker never does).
+    /// POST /repos/{owner}/{repo}/pulls { title, head, base, body }.
+    pub async fn create_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<PullRequest, AdeError> {
+        let url = format!("{}/repos/{}/{}/pulls", self.base_url, owner, repo);
+        let json_body = serde_json::json!({
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body,
+        });
+        let response = Self::expect_success(self.post(&url, &json_body).await?).await?;
+        let item: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse create_pr response: {e}")))?;
+        Self::map_pr(&item)
+    }
+
+    /// Fetch a pull request by number (CI/merge polling, #55).
+    /// GET /repos/{owner}/{repo}/pulls/{number}
+    #[allow(dead_code)]
+    pub async fn get_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PullRequest, AdeError> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.base_url, owner, repo, number
+        );
+        let response = self.get(&url).await?;
+        let item: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AdeError::GitHub(format!("failed to parse get_pr response: {e}")))?;
+        Self::map_pr(&item)
+    }
+
+    fn map_pr(item: &serde_json::Value) -> Result<PullRequest, AdeError> {
+        let number = item["number"]
+            .as_u64()
+            .ok_or_else(|| AdeError::GitHub("PR response missing number".into()))?;
+        let html_url = item["html_url"].as_str().unwrap_or("").to_string();
+        let state = item["state"].as_str().unwrap_or("open").to_string();
+        Ok(PullRequest {
+            number,
+            html_url,
+            state,
+        })
     }
 
     // ── HTTP helpers ────────────────────────────────────────────────
@@ -1048,5 +1112,53 @@ mod tests {
         assert_eq!(comments[0].body, "First comment");
         assert_eq!(comments[1].id, 2);
         assert_eq!(comments[1].user_login, "bob");
+    }
+
+    #[tokio::test]
+    async fn create_and_get_pr_ok() {
+        use wiremock::matchers::{body_json, method as match_method, path};
+
+        let server = MockServer::start().await;
+        let pr_resp = serde_json::json!({
+            "number": 42,
+            "html_url": "https://github.com/owner/repo/pull/42",
+            "state": "open",
+        });
+
+        Mock::given(match_method("POST"))
+            .and(path("/repos/owner/repo/pulls"))
+            .and(body_json(serde_json::json!({
+                "title": "My change",
+                "head": "issue-7",
+                "base": "main",
+                "body": "closes #7",
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(&pr_resp))
+            .mount(&server)
+            .await;
+        Mock::given(match_method("GET"))
+            .and(path("/repos/owner/repo/pulls/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&pr_resp))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server);
+        let pr = client
+            .create_pr(
+                "owner",
+                "repo",
+                "issue-7",
+                "main",
+                "My change",
+                Some("closes #7"),
+            )
+            .await
+            .expect("create_pr should succeed");
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.html_url, "https://github.com/owner/repo/pull/42");
+        assert_eq!(pr.state, "open");
+
+        let fetched = client.get_pr("owner", "repo", 42).await.expect("get_pr");
+        assert_eq!(fetched.number, 42);
     }
 }

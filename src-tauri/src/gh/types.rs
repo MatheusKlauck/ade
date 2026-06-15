@@ -28,6 +28,15 @@ pub struct RemoteIssue {
     pub assignee_avatar_url: Option<String>,
 }
 
+/// A GitHub pull request, as the gestor needs it (PLANO §6 publish/CI). Minimal:
+/// number to track, html_url for the card, state for CI/merge polling.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PullRequest {
+    pub number: u64,
+    pub html_url: String,
+    pub state: String, // "open" | "closed"
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncAction {
     CreateCard {
