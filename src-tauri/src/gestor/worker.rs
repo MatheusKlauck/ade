@@ -10,6 +10,106 @@
 use crate::error::AdeError;
 use std::path::{Path, PathBuf};
 
+// ── WorkerAdapter (PLANO §2.4, #59) ─────────────────────────────────────────
+
+/// How the gestor learns a worker's lifecycle.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// Claude Code: Stop/Notification/SessionEnd hooks → events.jsonl (precise,
+    /// includes reliable `awaiting_input`).
+    A,
+    /// Generic worker (aider/codex/shell): NO hooks — lifecycle is inferred by
+    /// polling git-state (commits/clean) + process silence. There is no reliable
+    /// `awaiting_input` signal (documented limitation).
+    B,
+}
+
+/// How to inject the prompt into the worker's terminal.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InjectSpec {
+    pub text: String,
+    /// Send as a bracketed paste (default) so a multi-line prompt isn't executed
+    /// line-by-line.
+    pub bracketed_paste: bool,
+}
+
+/// The gestor's surface for launching + driving a worker (PLANO §2.4). Presets
+/// remain the *human* surface ("open a terminal with…"); the adapter is the
+/// *gestor* surface.
+pub trait WorkerAdapter {
+    fn launch_commands(&self) -> Vec<String>;
+    fn instrumentation(&self) -> Tier;
+    fn inject(&self, prompt: &str) -> InjectSpec;
+}
+
+/// Tier A — Claude Code. Composes permission/tool flags by autonomy level.
+pub struct ClaudeAdapter {
+    pub permission_mode: String,
+    pub allowed_tools: Vec<String>,
+}
+
+impl WorkerAdapter for ClaudeAdapter {
+    fn launch_commands(&self) -> Vec<String> {
+        let mut cmd = format!("claude --permission-mode {}", self.permission_mode);
+        if !self.allowed_tools.is_empty() {
+            cmd.push_str(&format!(
+                " --allowedTools '{}'",
+                self.allowed_tools.join(",")
+            ));
+        }
+        vec![cmd]
+    }
+    fn instrumentation(&self) -> Tier {
+        Tier::A
+    }
+    fn inject(&self, prompt: &str) -> InjectSpec {
+        InjectSpec {
+            text: prompt.to_string(),
+            bracketed_paste: true,
+        }
+    }
+}
+
+/// Tier B — generic worker launched from a preset's commands (seed = workspace
+/// default preset). No hooks; the runtime infers lifecycle from git-state.
+pub struct GenericAdapter {
+    pub launch: Vec<String>,
+}
+
+impl WorkerAdapter for GenericAdapter {
+    fn launch_commands(&self) -> Vec<String> {
+        self.launch.clone()
+    }
+    fn instrumentation(&self) -> Tier {
+        Tier::B
+    }
+    fn inject(&self, prompt: &str) -> InjectSpec {
+        InjectSpec {
+            text: prompt.to_string(),
+            bracketed_paste: true,
+        }
+    }
+}
+
+/// Pick the adapter for a workspace. `worker_adapter` setting: "claude" (default,
+/// Tier A) or "generic" (Tier B, using `generic_launch`).
+pub fn select_adapter(
+    worker_adapter: Option<&str>,
+    permission_mode: String,
+    allowed_tools: Vec<String>,
+    generic_launch: Vec<String>,
+) -> Box<dyn WorkerAdapter> {
+    match worker_adapter {
+        Some("generic") => Box::new(GenericAdapter {
+            launch: generic_launch,
+        }),
+        _ => Box::new(ClaudeAdapter {
+            permission_mode,
+            allowed_tools,
+        }),
+    }
+}
+
 /// Absolute path of a task's event log, under the persistent app data dir so it
 /// survives an ADE restart and a manual `claude` relaunch in the same window.
 pub fn events_file_path(app_data_dir: &Path, task_id: &str) -> PathBuf {
@@ -66,6 +166,49 @@ pub fn write_instrumentation(worktree: &Path, events_file: &Path) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_adapter_is_tier_a_with_flags() {
+        let a = ClaudeAdapter {
+            permission_mode: "acceptEdits".into(),
+            allowed_tools: vec!["Read".into(), "Edit".into()],
+        };
+        assert_eq!(a.instrumentation(), Tier::A);
+        let cmd = &a.launch_commands()[0];
+        assert!(cmd.contains("--permission-mode acceptEdits"));
+        assert!(cmd.contains("--allowedTools 'Read,Edit'"));
+        assert!(a.inject("hi").bracketed_paste);
+    }
+
+    #[test]
+    fn generic_adapter_is_tier_b_no_hooks() {
+        let g = GenericAdapter {
+            launch: vec!["aider --model gpt-4o".into()],
+        };
+        assert_eq!(g.instrumentation(), Tier::B); // git-state lifecycle, no awaiting_input
+        assert_eq!(
+            g.launch_commands(),
+            vec!["aider --model gpt-4o".to_string()]
+        );
+    }
+
+    #[test]
+    fn select_adapter_routes_by_setting() {
+        let claude = select_adapter(Some("claude"), "acceptEdits".into(), vec![], vec![]);
+        assert_eq!(claude.instrumentation(), Tier::A);
+        let generic = select_adapter(
+            Some("generic"),
+            "acceptEdits".into(),
+            vec![],
+            vec!["codex".into()],
+        );
+        assert_eq!(generic.instrumentation(), Tier::B);
+        // default (None / unknown) → Claude
+        assert_eq!(
+            select_adapter(None, "acceptEdits".into(), vec![], vec![]).instrumentation(),
+            Tier::A
+        );
+    }
 
     #[test]
     fn events_path_is_absolute_and_under_data_dir() {

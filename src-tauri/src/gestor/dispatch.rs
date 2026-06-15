@@ -131,14 +131,13 @@ pub fn worktree_path(app_data_dir: &Path, slug: &str, branch: &str) -> PathBuf {
 /// auto-accepted, tools restricted to the workspace allow-list. The worker never
 /// receives a token (D9) — push/PR are core-only.
 pub fn worker_launch_command(cfg: &DispatchConfig) -> String {
-    let mut cmd = format!("claude --permission-mode {}", cfg.permission_mode);
-    if !cfg.allowed_tools.is_empty() {
-        cmd.push_str(&format!(
-            " --allowedTools '{}'",
-            cfg.allowed_tools.join(",")
-        ));
+    use crate::gestor::worker::WorkerAdapter;
+    worker::ClaudeAdapter {
+        permission_mode: cfg.permission_mode.clone(),
+        allowed_tools: cfg.allowed_tools.clone(),
     }
-    cmd
+    .launch_commands()
+    .join(" && ")
 }
 
 /// The enriched prompt injected into the worker: the issue, the gates that will
