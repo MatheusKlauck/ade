@@ -42,9 +42,18 @@ macro_rules! gestor_job_cols {
     };
 }
 
+/// The full issue_proposal column list, in `IssueProposal` field order.
+macro_rules! issue_proposal_cols {
+    () => {
+        "id, job_id, workspace_id, ord, title, body, labels_json, depends_on_json, acceptance_json, priority, status, card_id"
+    };
+}
+
 use crate::db::DbPool;
 use crate::error::AdeError;
-use crate::models::{AgentEvent, AgentTask, BoardColumn, Card, GestorJob, Workspace};
+use crate::models::{
+    AgentEvent, AgentTask, BoardColumn, Card, GestorJob, IssueProposal, Workspace,
+};
 
 /// Fetch a card by id, or `None` if it doesn't exist.
 pub async fn card_by_id(db: &DbPool, card_id: &str) -> Result<Option<Card>, AdeError> {
@@ -345,6 +354,78 @@ pub async fn gestor_jobs_for_workspace(
     .fetch_all(db)
     .await
     .map_err(AdeError::Db)
+}
+
+/// Insert an issue_proposal row.
+#[allow(dead_code)]
+pub async fn insert_issue_proposal(db: &DbPool, p: &IssueProposal) -> Result<(), AdeError> {
+    sqlx::query(concat!(
+        "INSERT INTO issue_proposal (",
+        issue_proposal_cols!(),
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    ))
+    .bind(&p.id)
+    .bind(&p.job_id)
+    .bind(&p.workspace_id)
+    .bind(p.ord)
+    .bind(&p.title)
+    .bind(&p.body)
+    .bind(&p.labels_json)
+    .bind(&p.depends_on_json)
+    .bind(&p.acceptance_json)
+    .bind(&p.priority)
+    .bind(&p.status)
+    .bind(&p.card_id)
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(AdeError::Db)
+}
+
+/// All proposals for a job, in proposal order.
+#[allow(dead_code)]
+pub async fn proposals_for_job(db: &DbPool, job_id: &str) -> Result<Vec<IssueProposal>, AdeError> {
+    sqlx::query_as::<_, IssueProposal>(concat!(
+        "SELECT ",
+        issue_proposal_cols!(),
+        " FROM issue_proposal WHERE job_id = ? ORDER BY ord"
+    ))
+    .bind(job_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Fetch one proposal by id.
+#[allow(dead_code)]
+pub async fn proposal_by_id(db: &DbPool, id: &str) -> Result<Option<IssueProposal>, AdeError> {
+    sqlx::query_as::<_, IssueProposal>(concat!(
+        "SELECT ",
+        issue_proposal_cols!(),
+        " FROM issue_proposal WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Set a proposal's status (and optionally its created card id).
+#[allow(dead_code)]
+pub async fn update_proposal_status(
+    db: &DbPool,
+    id: &str,
+    status: &str,
+    card_id: Option<&str>,
+) -> Result<(), AdeError> {
+    sqlx::query("UPDATE issue_proposal SET status = ?, card_id = ? WHERE id = ?")
+        .bind(status)
+        .bind(card_id)
+        .bind(id)
+        .execute(db)
+        .await
+        .map(|_| ())
+        .map_err(AdeError::Db)
 }
 
 /// Move a card to the named board column of its workspace (e.g. "PR"). No-op if

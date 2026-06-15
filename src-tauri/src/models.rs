@@ -82,6 +82,22 @@ pub struct GestorJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct IssueProposal {
+    pub id: String,
+    pub job_id: String,
+    pub workspace_id: String,
+    pub ord: i64,
+    pub title: String,
+    pub body: String,
+    pub labels_json: Option<String>,
+    pub depends_on_json: Option<String>,
+    pub acceptance_json: Option<String>,
+    pub priority: Option<String>,
+    pub status: String,
+    pub card_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AgentEvent {
     pub id: i64,
     pub workspace_id: String,
