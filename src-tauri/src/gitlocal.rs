@@ -249,6 +249,30 @@ pub fn push(repo_path: &str, branch: &str, token: &str) -> Result<(), AdeError> 
     Ok(())
 }
 
+/// One-line-per-commit log since the most recent tag (or all history if there's
+/// no tag). Feeds release_notes (#54). Empty if the command fails.
+#[allow(dead_code)]
+pub fn log_since_last_tag(repo_path: &str) -> String {
+    let tag = std::process::Command::new("git")
+        .args(["-C", repo_path, "describe", "--tags", "--abbrev=0"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty());
+    let range = match &tag {
+        Some(t) => format!("{t}..HEAD"),
+        None => "HEAD".to_string(),
+    };
+    std::process::Command::new("git")
+        .args(["-C", repo_path, "log", &range, "--pretty=format:- %s"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
 /// The diff of a worktree's branch against `base` (`git diff base...HEAD` — the
 /// changes introduced on the branch). Used to feed `review_diff` (#39). Empty
 /// string if the command fails or there's nothing to diff.
@@ -307,6 +331,15 @@ pub fn commits_ahead(worktree: &str, base: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_since_last_tag_lists_commits() {
+        let (repo, _dir) = init_test_repo();
+        let path = repo.path().parent().unwrap().to_str().unwrap();
+        // no tag yet → full history (the single initial commit)
+        let log = log_since_last_tag(path);
+        assert!(log.contains("- initial commit"));
+    }
 
     #[test]
     fn push_without_origin_errors_not_panics() {
