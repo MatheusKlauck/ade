@@ -160,6 +160,9 @@ pub async fn start_runtime<P: GestorProvider>(
     let mut feed_hwm: i64 = 0;
     let mut cursors: std::collections::HashMap<String, TailCursor> =
         std::collections::HashMap::new();
+    // Last time we saw activity from each task (for stall detection, #53).
+    let mut last_activity: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -213,8 +216,17 @@ pub async fn start_runtime<P: GestorProvider>(
             let Some(file) = task.events_file.as_deref() else {
                 continue;
             };
+            // Seed the stall clock when a task is first observed active.
+            last_activity
+                .entry(task.id.clone())
+                .or_insert_with(std::time::Instant::now);
             let cursor = cursors.entry(task.id.clone()).or_default();
-            for line in cursor.read_new(Path::new(file)) {
+            let new_lines = cursor.read_new(Path::new(file));
+            if !new_lines.is_empty() {
+                // Real activity resets the stall clock.
+                last_activity.insert(task.id.clone(), std::time::Instant::now());
+            }
+            for line in new_lines {
                 match parse_hook_line(&line) {
                     Some(HookEvent::Notification) => {
                         let _ = crate::gestor::fsm::transition(
@@ -268,6 +280,37 @@ pub async fn start_runtime<P: GestorProvider>(
                     crate::gestor::gates::GATE_TIMEOUT,
                 )
                 .await;
+            }
+        }
+
+        // 5b. Stall detection (#53): a `working` task silent past stall_timeout
+        // gets a diagnose_stall job (nudge | escalate). Reset its clock after so
+        // it won't re-fire for another stall_timeout.
+        let stall_after = Duration::from_secs(cfg.stall_timeout_secs);
+        for task in fresh.iter().filter(|t| t.state == "working") {
+            let silent = last_activity
+                .get(&task.id)
+                .map(|t0| t0.elapsed())
+                .unwrap_or_default();
+            if silent >= stall_after {
+                if let Some(wt) = task.worktree_path.as_deref() {
+                    let summary = format!(
+                        "tree_clean={}, commits_ahead={}",
+                        crate::gitlocal::tree_clean(wt),
+                        crate::gitlocal::commits_ahead(wt, &cfg.base_branch)
+                    );
+                    let _ = crate::gestor::stall::process_stall(
+                        &db,
+                        provider.as_ref(),
+                        &workspace_id,
+                        task,
+                        Path::new(wt),
+                        &summary,
+                        silent.as_secs(),
+                    )
+                    .await;
+                }
+                last_activity.insert(task.id.clone(), std::time::Instant::now());
             }
         }
 

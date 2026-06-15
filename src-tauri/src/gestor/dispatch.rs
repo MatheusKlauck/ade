@@ -29,6 +29,7 @@ pub struct DispatchConfig {
     pub permission_mode: String,
     pub gate_commands: Vec<String>,
     pub max_attempts: i64,
+    pub stall_timeout_secs: u64,
 }
 
 impl Default for DispatchConfig {
@@ -40,6 +41,7 @@ impl Default for DispatchConfig {
             permission_mode: "acceptEdits".into(),
             gate_commands: vec![],
             max_attempts: 3,
+            stall_timeout_secs: 600,
         }
     }
 }
@@ -65,6 +67,10 @@ pub async fn load_dispatch_config(db: &DbPool, workspace_id: &str) -> DispatchCo
             .await
             .and_then(|v| v.parse().ok())
             .unwrap_or(d.max_attempts),
+        stall_timeout_secs: get("stall_timeout_secs")
+            .await
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d.stall_timeout_secs),
     }
 }
 

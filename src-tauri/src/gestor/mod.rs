@@ -12,4 +12,5 @@ pub mod provider;
 pub mod publish;
 pub mod review;
 pub mod runtime;
+pub mod stall;
 pub mod worker;
