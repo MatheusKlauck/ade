@@ -271,23 +271,31 @@ pub async fn start_runtime<P: GestorProvider>(
             }
         }
 
-        // 6. Publish: review is a pass-through until #39 lands; pushing → push +
-        // PR (S9). Needs the repo's GitHub coordinates + a Keychain token.
+        // 6. Review (#39): the LLM judges each task's diff against its issue.
+        // approve → pushing; needs_fixes → retry/escalate (handled inside).
+        for task in fresh.iter().filter(|t| t.state == "reviewing") {
+            if let Some(wt) = task.worktree_path.as_deref() {
+                let diff = crate::gitlocal::diff(wt, &cfg.base_branch);
+                let _ = crate::gestor::review::process_reviewing(
+                    &db,
+                    provider.as_ref(),
+                    &workspace_id,
+                    task,
+                    Path::new(wt),
+                    &diff,
+                )
+                .await;
+            }
+        }
+
+        // 7. Publish: pushing → push + PR (S9). Needs the repo's GitHub
+        // coordinates + a Keychain token.
+        let after_review = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+            .await
+            .unwrap_or_default();
         if let (Some(owner), Some(repo)) = (ws.github_owner.as_deref(), ws.github_repo.as_deref()) {
             if let Ok(Some(token)) = crate::ipc::github::keychain_get_for_workspace(&workspace_id) {
-                for task in fresh
-                    .iter()
-                    .filter(|t| matches!(t.state.as_str(), "reviewing" | "pushing"))
-                {
-                    if task.state == "reviewing" {
-                        let _ = crate::gestor::fsm::transition(
-                            &db,
-                            &task.id,
-                            crate::gestor::fsm::TaskState::Pushing,
-                            Some("review pass-through (pre-#39)"),
-                        )
-                        .await;
-                    }
+                for task in after_review.iter().filter(|t| t.state == "pushing") {
                     if let Err(e) = crate::gestor::publish::publish_task(
                         &db,
                         &workspace_id,

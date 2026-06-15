@@ -249,6 +249,23 @@ pub fn push(repo_path: &str, branch: &str, token: &str) -> Result<(), AdeError> 
     Ok(())
 }
 
+/// The diff of a worktree's branch against `base` (`git diff base...HEAD` — the
+/// changes introduced on the branch). Used to feed `review_diff` (#39). Empty
+/// string if the command fails or there's nothing to diff.
+#[allow(dead_code)]
+pub fn diff(worktree: &str, base: &str) -> String {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("diff")
+        .arg(format!("{base}...HEAD"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
 /// Whether a worktree has no uncommitted changes (untracked files count as
 /// dirty here, unlike `prepare_branch`, since a worker may have created new
 /// files it forgot to commit). Used by the Stop decision (PLANO §2.3).

@@ -9,5 +9,6 @@ pub mod gates;
 pub mod jobs;
 pub mod provider;
 pub mod publish;
+pub mod review;
 pub mod runtime;
 pub mod worker;

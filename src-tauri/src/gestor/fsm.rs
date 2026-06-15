@@ -113,6 +113,7 @@ pub fn can_transition(from: TaskState, to: TaskState) -> bool {
             | (Verifying, NeedsFixes)
             | (Reviewing, Pushing)
             | (Reviewing, NeedsFixes)
+            | (Reviewing, AwaitingInput)
             | (NeedsFixes, Working)
             | (NeedsFixes, AwaitingInput)
             | (Pushing, PrOpen)
