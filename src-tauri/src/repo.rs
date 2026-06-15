@@ -21,9 +21,23 @@ macro_rules! workspace_cols {
 
 pub(crate) use workspace_cols;
 
+/// The full agent_task column list, in `AgentTask` field order.
+macro_rules! agent_task_cols {
+    () => {
+        "id, workspace_id, card_id, state, attempt, max_attempts, branch, worktree_path, window_id, events_file, fail_reason, last_event_at, started_at, finished_at, created_at, updated_at"
+    };
+}
+
+/// The full agent_event column list, in `AgentEvent` field order.
+macro_rules! agent_event_cols {
+    () => {
+        "id, workspace_id, task_id, job_id, ts, kind, level, payload_json, cost_usd, num_turns, duration_ms"
+    };
+}
+
 use crate::db::DbPool;
 use crate::error::AdeError;
-use crate::models::{BoardColumn, Card, Workspace};
+use crate::models::{AgentEvent, AgentTask, BoardColumn, Card, Workspace};
 
 /// Fetch a card by id, or `None` if it doesn't exist.
 pub async fn card_by_id(db: &DbPool, card_id: &str) -> Result<Option<Card>, AdeError> {
@@ -97,4 +111,215 @@ pub async fn columns_for_workspace(
     .fetch_all(db)
     .await
     .map_err(AdeError::Db)
+}
+
+// ponytail: the agent_task / agent_event repo API. Wired by the Gestor spine
+// slices (#43 jobs, #44 fsm, #45 runtime); unused until then, hence allow.
+#[allow(dead_code)]
+pub async fn insert_agent_task(db: &DbPool, t: &AgentTask) -> Result<(), AdeError> {
+    sqlx::query(concat!(
+        "INSERT INTO agent_task (",
+        agent_task_cols!(),
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ))
+    .bind(&t.id)
+    .bind(&t.workspace_id)
+    .bind(&t.card_id)
+    .bind(&t.state)
+    .bind(t.attempt)
+    .bind(t.max_attempts)
+    .bind(&t.branch)
+    .bind(&t.worktree_path)
+    .bind(&t.window_id)
+    .bind(&t.events_file)
+    .bind(&t.fail_reason)
+    .bind(&t.last_event_at)
+    .bind(&t.started_at)
+    .bind(&t.finished_at)
+    .bind(&t.created_at)
+    .bind(&t.updated_at)
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(AdeError::Db)
+}
+
+/// Fetch an agent_task by id, or `None` if it doesn't exist.
+#[allow(dead_code)]
+pub async fn agent_task_by_id(db: &DbPool, id: &str) -> Result<Option<AgentTask>, AdeError> {
+    sqlx::query_as::<_, AgentTask>(concat!(
+        "SELECT ",
+        agent_task_cols!(),
+        " FROM agent_task WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Fetch all agent_tasks for a workspace, newest first.
+#[allow(dead_code)]
+pub async fn agent_tasks_for_workspace(
+    db: &DbPool,
+    workspace_id: &str,
+) -> Result<Vec<AgentTask>, AdeError> {
+    sqlx::query_as::<_, AgentTask>(concat!(
+        "SELECT ",
+        agent_task_cols!(),
+        " FROM agent_task WHERE workspace_id = ? ORDER BY created_at DESC"
+    ))
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Append an agent_event (D8 audit feed). `id` is autoincrement; the returned
+/// value is the new rowid.
+#[allow(dead_code)]
+pub async fn insert_agent_event(db: &DbPool, e: &AgentEvent) -> Result<i64, AdeError> {
+    sqlx::query(
+        "INSERT INTO agent_event (workspace_id, task_id, job_id, ts, kind, level, payload_json, cost_usd, num_turns, duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(&e.workspace_id)
+    .bind(&e.task_id)
+    .bind(&e.job_id)
+    .bind(&e.ts)
+    .bind(&e.kind)
+    .bind(&e.level)
+    .bind(&e.payload_json)
+    .bind(e.cost_usd)
+    .bind(e.num_turns)
+    .bind(e.duration_ms)
+    .execute(db)
+    .await
+    .map(|r| r.last_insert_rowid())
+    .map_err(AdeError::Db)
+}
+
+/// Fetch the latest agent_events for a workspace, newest first.
+#[allow(dead_code)]
+pub async fn agent_events_for_workspace(
+    db: &DbPool,
+    workspace_id: &str,
+    limit: i64,
+) -> Result<Vec<AgentEvent>, AdeError> {
+    sqlx::query_as::<_, AgentEvent>(concat!(
+        "SELECT ",
+        agent_event_cols!(),
+        " FROM agent_event WHERE workspace_id = ? ORDER BY ts DESC, id DESC LIMIT ?"
+    ))
+    .bind(workspace_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    async fn test_pool() -> DbPool {
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn seed_card(db: &DbPool) {
+        sqlx::query("INSERT INTO workspace (id, name, slug, root_path, created_at) VALUES ('w1','W','w','/tmp','t')").execute(db).await.unwrap();
+        sqlx::query("INSERT INTO board_column (id, workspace_id, name, position) VALUES ('c1','w1','Doing',0)").execute(db).await.unwrap();
+        sqlx::query("INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES ('card1','w1','c1','T',1.0,'local','t','t')").execute(db).await.unwrap();
+    }
+
+    fn task() -> AgentTask {
+        AgentTask {
+            id: "task1".into(),
+            workspace_id: "w1".into(),
+            card_id: "card1".into(),
+            state: "queued".into(),
+            attempt: 1,
+            max_attempts: 3,
+            branch: Some("feat/x".into()),
+            worktree_path: None,
+            window_id: None,
+            events_file: None,
+            fail_reason: None,
+            last_event_at: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_task_round_trip() {
+        let db = test_pool().await;
+        seed_card(&db).await;
+
+        insert_agent_task(&db, &task()).await.unwrap();
+
+        let got = agent_task_by_id(&db, "task1").await.unwrap().unwrap();
+        assert_eq!(got.state, "queued");
+        assert_eq!(got.max_attempts, 3);
+        assert_eq!(got.branch.as_deref(), Some("feat/x"));
+        assert!(got.worktree_path.is_none());
+
+        let list = agent_tasks_for_workspace(&db, "w1").await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(agent_task_by_id(&db, "nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_event_records_metrics_and_nulls() {
+        let db = test_pool().await;
+        seed_card(&db).await;
+
+        let with_metrics = AgentEvent {
+            id: 0,
+            workspace_id: "w1".into(),
+            task_id: Some("task1".into()),
+            job_id: None,
+            ts: "2026-01-01T00:00:01Z".into(),
+            kind: "job_done".into(),
+            level: "info".into(),
+            payload_json: Some(r#"{"out":"ok"}"#.into()),
+            cost_usd: Some(0.42),
+            num_turns: Some(7),
+            duration_ms: Some(1234),
+        };
+        let na = AgentEvent {
+            id: 0,
+            ts: "2026-01-01T00:00:00Z".into(),
+            kind: "task_queued".into(),
+            cost_usd: None,
+            num_turns: None,
+            duration_ms: None,
+            payload_json: None,
+            ..with_metrics.clone()
+        };
+
+        insert_agent_event(&db, &na).await.unwrap();
+        let id2 = insert_agent_event(&db, &with_metrics).await.unwrap();
+        assert!(id2 > 0);
+
+        let feed = agent_events_for_workspace(&db, "w1", 10).await.unwrap();
+        assert_eq!(feed.len(), 2);
+        // newest ts first
+        assert_eq!(feed[0].kind, "job_done");
+        assert_eq!(feed[0].cost_usd, Some(0.42));
+        assert_eq!(feed[0].num_turns, Some(7));
+        assert!(feed[1].cost_usd.is_none());
+        assert!(feed[1].num_turns.is_none());
+    }
 }

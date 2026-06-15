@@ -44,3 +44,38 @@ pub struct BoardGetResult {
     pub columns: Vec<BoardColumn>,
     pub cards: Vec<Card>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AgentTask {
+    pub id: String,
+    pub workspace_id: String,
+    pub card_id: String,
+    pub state: String,
+    pub attempt: i64,
+    pub max_attempts: i64,
+    pub branch: Option<String>,
+    pub worktree_path: Option<String>,
+    pub window_id: Option<String>,
+    pub events_file: Option<String>,
+    pub fail_reason: Option<String>,
+    pub last_event_at: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AgentEvent {
+    pub id: i64,
+    pub workspace_id: String,
+    pub task_id: Option<String>,
+    pub job_id: Option<String>,
+    pub ts: String,
+    pub kind: String,
+    pub level: String,
+    pub payload_json: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub num_turns: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
