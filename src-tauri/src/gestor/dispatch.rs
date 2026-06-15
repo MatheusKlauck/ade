@@ -211,7 +211,14 @@ pub async fn dispatch_task(
     )?;
 
     crate::tmux::send_keys(&window_id, &worker_launch_command(cfg))?;
-    crate::tmux::send_keys(&window_id, &build_worker_prompt(&card, &cfg.gate_commands))?;
+    // Prepend the EXECUTE-stage skills (#50) to the worker prompt.
+    let skills = crate::gestor::stage_skills::load(db, &task.workspace_id).await;
+    let prompt = format!(
+        "{}{}",
+        crate::gestor::stage_skills::execute_preamble(&skills.execute),
+        build_worker_prompt(&card, &cfg.gate_commands)
+    );
+    crate::tmux::send_keys(&window_id, &prompt)?;
 
     // Persist the dispatch artifacts before the working transition (the FSM
     // reloads the task, so these must already be on the row).

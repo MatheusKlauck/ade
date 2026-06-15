@@ -16,5 +16,6 @@ pub mod provider;
 pub mod publish;
 pub mod review;
 pub mod runtime;
+pub mod stage_skills;
 pub mod stall;
 pub mod worker;
