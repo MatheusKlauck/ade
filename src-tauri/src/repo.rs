@@ -35,9 +35,16 @@ macro_rules! agent_event_cols {
     };
 }
 
+/// The full gestor_job column list, in `GestorJob` field order.
+macro_rules! gestor_job_cols {
+    () => {
+        "id, workspace_id, kind, state, input_json, output_json, error, cost_usd, num_turns, duration_ms, created_at, finished_at"
+    };
+}
+
 use crate::db::DbPool;
 use crate::error::AdeError;
-use crate::models::{AgentEvent, AgentTask, BoardColumn, Card, Workspace};
+use crate::models::{AgentEvent, AgentTask, BoardColumn, Card, GestorJob, Workspace};
 
 /// Fetch a card by id, or `None` if it doesn't exist.
 pub async fn card_by_id(db: &DbPool, card_id: &str) -> Result<Option<Card>, AdeError> {
@@ -212,6 +219,83 @@ pub async fn agent_events_for_workspace(
     ))
     .bind(workspace_id)
     .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Insert a new gestor_job row.
+#[allow(dead_code)]
+pub async fn insert_gestor_job(db: &DbPool, j: &GestorJob) -> Result<(), AdeError> {
+    sqlx::query(concat!(
+        "INSERT INTO gestor_job (",
+        gestor_job_cols!(),
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    ))
+    .bind(&j.id)
+    .bind(&j.workspace_id)
+    .bind(&j.kind)
+    .bind(&j.state)
+    .bind(&j.input_json)
+    .bind(&j.output_json)
+    .bind(&j.error)
+    .bind(j.cost_usd)
+    .bind(j.num_turns)
+    .bind(j.duration_ms)
+    .bind(&j.created_at)
+    .bind(&j.finished_at)
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(AdeError::Db)
+}
+
+/// Update a gestor_job's mutable fields (state/output/error/metrics/finished_at).
+#[allow(dead_code)]
+pub async fn update_gestor_job(db: &DbPool, j: &GestorJob) -> Result<(), AdeError> {
+    sqlx::query(
+        "UPDATE gestor_job SET state=?, output_json=?, error=?, cost_usd=?, num_turns=?, duration_ms=?, finished_at=? WHERE id=?",
+    )
+    .bind(&j.state)
+    .bind(&j.output_json)
+    .bind(&j.error)
+    .bind(j.cost_usd)
+    .bind(j.num_turns)
+    .bind(j.duration_ms)
+    .bind(&j.finished_at)
+    .bind(&j.id)
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(AdeError::Db)
+}
+
+/// Fetch a gestor_job by id, or `None` if it doesn't exist.
+#[allow(dead_code)]
+pub async fn gestor_job_by_id(db: &DbPool, id: &str) -> Result<Option<GestorJob>, AdeError> {
+    sqlx::query_as::<_, GestorJob>(concat!(
+        "SELECT ",
+        gestor_job_cols!(),
+        " FROM gestor_job WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
+/// Fetch all gestor_jobs for a workspace, newest first.
+#[allow(dead_code)]
+pub async fn gestor_jobs_for_workspace(
+    db: &DbPool,
+    workspace_id: &str,
+) -> Result<Vec<GestorJob>, AdeError> {
+    sqlx::query_as::<_, GestorJob>(concat!(
+        "SELECT ",
+        gestor_job_cols!(),
+        " FROM gestor_job WHERE workspace_id = ? ORDER BY created_at DESC"
+    ))
+    .bind(workspace_id)
     .fetch_all(db)
     .await
     .map_err(AdeError::Db)

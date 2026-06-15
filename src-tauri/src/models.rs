@@ -66,6 +66,22 @@ pub struct AgentTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GestorJob {
+    pub id: String,
+    pub workspace_id: String,
+    pub kind: String,
+    pub state: String,
+    pub input_json: String,
+    pub output_json: Option<String>,
+    pub error: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub num_turns: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AgentEvent {
     pub id: i64,
     pub workspace_id: String,

@@ -19,6 +19,18 @@ pub enum JobKind {
     ReleaseNotes,
 }
 
+impl JobKind {
+    /// The DB / wire string (matches the `gestor_job.kind` CHECK and serde).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JobKind::PlanIssues => "plan_issues",
+            JobKind::ReviewDiff => "review_diff",
+            JobKind::DiagnoseStall => "diagnose_stall",
+            JobKind::ReleaseNotes => "release_notes",
+        }
+    }
+}
+
 /// Raw result of one provider run. The model's text output plus whatever metrics
 /// the provider reported — signature auth can report 0/absent cost, so all three
 /// metrics are optional (PLANO §2.1: record num_turns/duration_ms regardless).
