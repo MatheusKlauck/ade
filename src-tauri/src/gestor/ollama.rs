@@ -18,6 +18,35 @@ use std::path::Path;
 
 const OLLAMA_CLOUD: &str = "https://ollama.com";
 
+/// The recommended Ollama Cloud model per job kind (#52 decision; review_diff is
+/// the benchmark). The high-value reasoning edges (review/plan) get the strong
+/// model; diagnose_stall/release_notes tolerate a cheaper one. `format` JSON
+/// (structured output) is confirmed on gpt-oss Cloud (context7, #51). These are
+/// defaults — each is overridable per workspace via `ollama_model[_<kind>]`.
+pub fn recommended_model(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::ReviewDiff | JobKind::PlanIssues => "gpt-oss:120b",
+        JobKind::DiagnoseStall | JobKind::ReleaseNotes => "gpt-oss:20b",
+    }
+}
+
+/// Resolve the Ollama model for a job: per-kind override
+/// (`ollama_model_<kind>`) → workspace default (`ollama_model`) → recommendation.
+pub async fn load_model_for(db: &crate::db::DbPool, workspace_id: &str, kind: JobKind) -> String {
+    let per_kind = format!("ollama_model_{}", kind.as_str());
+    if let Some(m) =
+        crate::ipc::settings::workspace_setting_value(db, workspace_id, &per_kind).await
+    {
+        return m;
+    }
+    if let Some(m) =
+        crate::ipc::settings::workspace_setting_value(db, workspace_id, "ollama_model").await
+    {
+        return m;
+    }
+    recommended_model(kind).to_string()
+}
+
 pub struct OllamaCloud {
     base_url: String,
     api_key: String,
@@ -121,6 +150,48 @@ mod tests {
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn recommended_models_by_kind() {
+        assert_eq!(recommended_model(JobKind::ReviewDiff), "gpt-oss:120b");
+        assert_eq!(recommended_model(JobKind::PlanIssues), "gpt-oss:120b");
+        assert_eq!(recommended_model(JobKind::DiagnoseStall), "gpt-oss:20b");
+        assert_eq!(recommended_model(JobKind::ReleaseNotes), "gpt-oss:20b");
+    }
+
+    #[tokio::test]
+    async fn model_override_precedence() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workspace (id, name, slug, root_path, created_at) VALUES ('w1','W','w','/tmp','t')").execute(&pool).await.unwrap();
+
+        // no settings → recommendation
+        assert_eq!(
+            load_model_for(&pool, "w1", JobKind::ReviewDiff).await,
+            "gpt-oss:120b"
+        );
+        // workspace default overrides recommendation
+        sqlx::query("INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('w1','ollama_model','qwen3')").execute(&pool).await.unwrap();
+        assert_eq!(
+            load_model_for(&pool, "w1", JobKind::DiagnoseStall).await,
+            "qwen3"
+        );
+        // per-kind override wins over the default
+        sqlx::query("INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('w1','ollama_model_review_diff','deepseek-r1')").execute(&pool).await.unwrap();
+        assert_eq!(
+            load_model_for(&pool, "w1", JobKind::ReviewDiff).await,
+            "deepseek-r1"
+        );
+    }
 
     #[test]
     fn probe_requires_key() {
