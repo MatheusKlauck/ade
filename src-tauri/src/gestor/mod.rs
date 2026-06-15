@@ -3,6 +3,7 @@
 // and git/push paths are plain deterministic core. This slice (S2/#42) lands
 // the provider boundary; fsm/jobs/runtime/worker arrive in #43–#49.
 
+pub mod autonomy;
 pub mod dispatch;
 pub mod fsm;
 pub mod gates;

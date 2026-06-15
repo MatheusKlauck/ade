@@ -61,7 +61,15 @@ pub async fn load_dispatch_config(db: &DbPool, workspace_id: &str) -> DispatchCo
             .unwrap_or(d.max_parallel),
         base_branch: get("base_branch").await.unwrap_or(d.base_branch),
         allowed_tools: json_arr(get("allowed_tools_json").await).unwrap_or(d.allowed_tools),
-        permission_mode: d.permission_mode,
+        // Worker permission mode scales with the autonomy level (#57).
+        permission_mode: {
+            let level = crate::gestor::autonomy::load(db, workspace_id).await;
+            let l3_skip = get("l3_skip_permissions")
+                .await
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            level.worker_permission_mode(l3_skip).to_string()
+        },
         gate_commands: json_arr(get("gate_commands").await).unwrap_or(d.gate_commands),
         max_attempts: get("max_attempts")
             .await

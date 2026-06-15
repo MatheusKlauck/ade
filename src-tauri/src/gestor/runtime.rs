@@ -177,9 +177,14 @@ pub async fn start_runtime<P: GestorProvider>(
             .await
             .unwrap_or_default();
 
-        // 2. Scheduler: dispatch queued tasks into free slots (S7).
+        // 2. Scheduler: dispatch queued tasks into free slots (S7), gated on the
+        // autonomy level (#57: L1 runs jobs but never dispatches workers).
         let cfg = crate::gestor::dispatch::load_dispatch_config(&db, &workspace_id).await;
+        let level = crate::gestor::autonomy::load(&db, &workspace_id).await;
         for id in select_dispatchable(&tasks, cfg.max_parallel) {
+            if !level.can_dispatch() {
+                break;
+            }
             if let Err(e) = crate::gestor::dispatch::dispatch_task(
                 &db,
                 &app_data_dir,
