@@ -173,6 +173,61 @@ pub fn prepare_branch(repo_path: &str, issue_number: u64) -> Result<BranchOutcom
     Ok(BranchOutcome::Created)
 }
 
+/// Add a git worktree at `worktree_path` on a fresh branch `branch` cut from
+/// `base` (PLANO §3 dispatch). Shells out to `git worktree add` — argv only, no
+/// shell string. Used by the gestor to give each task an isolated checkout.
+#[allow(dead_code)]
+pub fn worktree_add(
+    repo_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    base: &str,
+) -> Result<(), AdeError> {
+    if let Some(parent) = Path::new(worktree_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("worktree")
+        .arg("add")
+        .arg("-b")
+        .arg(branch)
+        .arg(worktree_path)
+        .arg(base)
+        .output()
+        .map_err(|e| AdeError::Other(format!("git worktree add: {e}")))?;
+    if !out.status.success() {
+        return Err(AdeError::Other(format!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Remove a git worktree (PLANO §3 cleanup). `--force` so a dirty/abandoned
+/// worktree still gets cleaned. Best-effort prune of the now-stale admin entry.
+#[allow(dead_code)]
+pub fn worktree_remove(repo_path: &str, worktree_path: &str) -> Result<(), AdeError> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(worktree_path)
+        .output()
+        .map_err(|e| AdeError::Other(format!("git worktree remove: {e}")))?;
+    if !out.status.success() {
+        return Err(AdeError::Other(format!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +331,20 @@ mod tests {
     }
 
     #[test]
+    fn worktree_add_and_remove_roundtrip() {
+        let (repo, dir) = init_test_repo();
+        let repo_path = repo.path().parent().unwrap().to_str().unwrap();
+        let wt = dir.path().join("wt-task1");
+        let wt_str = wt.to_str().unwrap();
+
+        worktree_add(repo_path, wt_str, "gestor/task1", "HEAD").expect("worktree add");
+        assert!(wt.join("hello.txt").exists(), "worktree has the checkout");
+
+        worktree_remove(repo_path, wt_str).expect("worktree remove");
+        assert!(!wt.exists(), "worktree dir removed");
+    }
+
+    #[test]
     fn branch_clean_creates() {
         let (repo, _dir) = init_test_repo();
         let path = repo.path().parent().unwrap().to_str().unwrap();
@@ -347,8 +416,7 @@ mod tests {
         std::fs::create_dir(&sub).expect("mkdir sub");
         git2::Repository::init(&sub).expect("git init sub");
 
-        let found =
-            find_repo_path(container.path().to_str().unwrap()).expect("repo in subdir");
+        let found = find_repo_path(container.path().to_str().unwrap()).expect("repo in subdir");
         assert_eq!(found, canon(&sub));
     }
 

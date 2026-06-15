@@ -17,7 +17,7 @@ use crate::models::AgentTask;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Worker/worktree-occupying states: while a task is in one of these, it holds a
 /// parallelism slot (PLANO §4 `max_parallel_workers`). `queued` waits; pushing..
@@ -144,6 +144,16 @@ pub async fn start_runtime<P: GestorProvider>(
         return;
     }
 
+    // Resolve the workspace's repo + data paths once (dispatch needs them).
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let Ok(ws) = crate::repo::workspace_by_id(&db, &workspace_id).await else {
+        return;
+    };
+    let slug = ws.slug.clone();
+    let repo_path = crate::gitlocal::find_repo_path(&ws.root_path).unwrap_or(ws.root_path.clone());
+
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
     interval.tick().await; // skip the immediate first tick
 
@@ -164,11 +174,39 @@ pub async fn start_runtime<P: GestorProvider>(
             .await
             .unwrap_or_default();
 
-        // 2. Scheduler: dispatch queued tasks into free slots.
-        // ponytail: selection is implemented + tested; the dispatch action
-        // (worktree/branch/tmux/prompt) is #47 — wired here when it lands.
-        let _to_dispatch = select_dispatchable(&tasks, 1);
-        // TODO(#47): for id in _to_dispatch { dispatch(&db, &app, id).await }
+        // 2. Scheduler: dispatch queued tasks into free slots (S7).
+        let cfg = crate::gestor::dispatch::load_dispatch_config(&db, &workspace_id).await;
+        for id in select_dispatchable(&tasks, cfg.max_parallel) {
+            if let Err(e) = crate::gestor::dispatch::dispatch_task(
+                &db,
+                &app_data_dir,
+                &slug,
+                &repo_path,
+                &id,
+                &cfg,
+            )
+            .await
+            {
+                let _ = crate::gestor::fsm::transition(
+                    &db,
+                    &id,
+                    crate::gestor::fsm::TaskState::Failed,
+                    Some(&format!("dispatch failed: {e}")),
+                )
+                .await;
+            }
+        }
+
+        // 4. Clean up worktrees/windows of tasks that have left the worker stage.
+        for task in tasks.iter().filter(|t| {
+            t.worktree_path.is_some() && matches!(t.state.as_str(), "done" | "failed" | "aborted")
+        }) {
+            crate::gestor::dispatch::cleanup(&db, &repo_path, &task.id).await;
+            cursors.remove(&task.id);
+            let mut t = task.clone();
+            t.worktree_path = None;
+            let _ = crate::repo::update_agent_task(&db, &t).await;
+        }
 
         // 3. Tail active workers' events.jsonl and feed the FSM.
         for task in tasks.iter().filter(|t| occupies_slot(&t.state)) {
