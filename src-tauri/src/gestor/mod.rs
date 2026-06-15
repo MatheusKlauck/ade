@@ -5,6 +5,7 @@
 
 pub mod dispatch;
 pub mod fsm;
+pub mod gates;
 pub mod jobs;
 pub mod provider;
 pub mod runtime;

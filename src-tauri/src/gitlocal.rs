@@ -228,9 +228,95 @@ pub fn worktree_remove(repo_path: &str, worktree_path: &str) -> Result<(), AdeEr
     Ok(())
 }
 
+/// Whether a worktree has no uncommitted changes (untracked files count as
+/// dirty here, unlike `prepare_branch`, since a worker may have created new
+/// files it forgot to commit). Used by the Stop decision (PLANO §2.3).
+#[allow(dead_code)]
+pub fn tree_clean(worktree: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+        .map(|o| o.status.success() && o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Whether `worktree`'s HEAD has commits ahead of `base` (PLANO §2.3). False if
+/// `base` can't be resolved (can't confirm progress → don't advance).
+#[allow(dead_code)]
+pub fn commits_ahead(worktree: &str, base: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("rev-list")
+        .arg("--count")
+        .arg(format!("{base}..HEAD"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_git_state_helpers() {
+        let (repo, dir) = init_test_repo();
+        let repo_path = repo.path().parent().unwrap().to_str().unwrap();
+        let base = repo.head().unwrap().shorthand().unwrap().to_string();
+        let wt = dir.path().join("wt-state");
+        let wt_str = wt.to_str().unwrap();
+        worktree_add(repo_path, wt_str, "gestor/state", &base).expect("add");
+
+        // fresh worktree: clean, no commits ahead of base
+        assert!(tree_clean(wt_str));
+        assert!(!commits_ahead(wt_str, &base));
+
+        // dirty it
+        std::fs::write(wt.join("new.txt"), "x").unwrap();
+        assert!(!tree_clean(wt_str));
+
+        // commit → clean again + ahead of base
+        let out = std::process::Command::new("git")
+            .args(["-C", wt_str, "add", "-A"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = std::process::Command::new("git")
+            .args([
+                "-C",
+                wt_str,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "work",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(tree_clean(wt_str));
+        assert!(commits_ahead(wt_str, &base));
+
+        worktree_remove(repo_path, wt_str).ok();
+    }
 
     #[test]
     fn slugify_fix_login_broken() {

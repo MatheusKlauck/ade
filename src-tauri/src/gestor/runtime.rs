@@ -226,11 +226,48 @@ pub async fn start_runtime<P: GestorProvider>(
                         .await;
                     }
                     Some(HookEvent::Stop) => {
-                        // TODO(#47/#48): gather git-state of the worktree and
-                        // apply decide_on_stop → verifying / stay working.
+                        // Decide from git-state alone (D3): clean tree + commits
+                        // ahead of base ⇒ gates; else stay working.
+                        if let Some(wt) = task.worktree_path.as_deref() {
+                            let sig = crate::gestor::fsm::WorkerSignals {
+                                marker_done: false,
+                                tree_clean: crate::gitlocal::tree_clean(wt),
+                                commits_ahead: crate::gitlocal::commits_ahead(wt, &cfg.base_branch),
+                            };
+                            if let crate::gestor::fsm::StopOutcome::ToVerifying { .. } =
+                                crate::gestor::fsm::decide_on_stop(&sig)
+                            {
+                                let _ = crate::gestor::fsm::transition(
+                                    &db,
+                                    &task.id,
+                                    crate::gestor::fsm::TaskState::Verifying,
+                                    None,
+                                )
+                                .await;
+                            }
+                        }
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // 5. Run gates for tasks that just entered `verifying` (S8). Re-read so a
+        // working→verifying move from this same tick's tail is picked up now.
+        let fresh = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+            .await
+            .unwrap_or_default();
+        for task in fresh.iter().filter(|t| t.state == "verifying") {
+            if let Some(wt) = task.worktree_path.as_deref() {
+                let _ = crate::gestor::gates::process_verifying(
+                    &db,
+                    task,
+                    Path::new(wt),
+                    task.window_id.as_deref(),
+                    &cfg.gate_commands,
+                    crate::gestor::gates::GATE_TIMEOUT,
+                )
+                .await;
             }
         }
     }
