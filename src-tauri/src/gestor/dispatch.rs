@@ -30,6 +30,9 @@ pub struct DispatchConfig {
     pub gate_commands: Vec<String>,
     pub max_attempts: i64,
     pub stall_timeout_secs: u64,
+    /// Commands run once in a fresh worktree before the worker starts (e.g.
+    /// `npm install`) so each isolated checkout has its deps (#58).
+    pub worktree_setup_commands: Vec<String>,
 }
 
 impl Default for DispatchConfig {
@@ -42,6 +45,7 @@ impl Default for DispatchConfig {
             gate_commands: vec![],
             max_attempts: 3,
             stall_timeout_secs: 600,
+            worktree_setup_commands: vec![],
         }
     }
 }
@@ -79,7 +83,30 @@ pub async fn load_dispatch_config(db: &DbPool, workspace_id: &str) -> DispatchCo
             .await
             .and_then(|v| v.parse().ok())
             .unwrap_or(d.stall_timeout_secs),
+        worktree_setup_commands: json_arr(get("worktree_setup_commands").await)
+            .unwrap_or(d.worktree_setup_commands),
     }
+}
+
+/// Run a worktree's setup commands in order (e.g. `npm install`). First failure
+/// aborts with the captured output so dispatch fails the task cleanly (#58).
+pub async fn run_setup_commands(worktree: &Path, commands: &[String]) -> Result<(), AdeError> {
+    for cmd in commands {
+        let out = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(worktree)
+            .output()
+            .await
+            .map_err(|e| AdeError::Other(format!("setup `{cmd}` failed to spawn: {e}")))?;
+        if !out.status.success() {
+            return Err(AdeError::Other(format!(
+                "setup `{cmd}` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Branch name for a card: `issue-<n>` when it tracks a GitHub issue, else a
@@ -165,6 +192,9 @@ pub async fn dispatch_task(
 
     let events_file = worker::events_file_path(app_data_dir, task_id);
     worker::write_instrumentation(&worktree, &events_file)?;
+
+    // Prepare deps in the isolated checkout before the worker starts (#58).
+    run_setup_commands(&worktree, &cfg.worktree_setup_commands).await?;
 
     let winname = format!("gestor-{}", branch.replace('/', "-"));
     let issue_number = card.github_issue_number.unwrap_or(0) as u64;
@@ -264,6 +294,22 @@ mod tests {
         let cmd = worker_launch_command(&DispatchConfig::default());
         assert!(cmd.contains("--permission-mode acceptEdits"));
         assert!(cmd.contains("--allowedTools 'Read,Edit,Bash'"));
+    }
+
+    #[tokio::test]
+    async fn setup_commands_run_in_worktree_and_fail_loudly() {
+        let dir = tempfile::tempdir().unwrap();
+        // success: a command that writes a marker into the worktree
+        run_setup_commands(dir.path(), &["touch installed".into()])
+            .await
+            .unwrap();
+        assert!(dir.path().join("installed").exists());
+        // empty list is a no-op
+        run_setup_commands(dir.path(), &[]).await.unwrap();
+        // failure surfaces
+        assert!(run_setup_commands(dir.path(), &["exit 1".into()])
+            .await
+            .is_err());
     }
 
     #[test]
