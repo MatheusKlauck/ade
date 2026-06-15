@@ -229,6 +229,28 @@ pub async fn insert_agent_event(db: &DbPool, e: &AgentEvent) -> Result<i64, AdeE
     .map_err(AdeError::Db)
 }
 
+/// Fetch agent_events with id greater than `after_id`, oldest first. The runtime
+/// uses this to emit `evt:feed` for rows written since the last tick.
+#[allow(dead_code)]
+pub async fn agent_events_after(
+    db: &DbPool,
+    workspace_id: &str,
+    after_id: i64,
+    limit: i64,
+) -> Result<Vec<AgentEvent>, AdeError> {
+    sqlx::query_as::<_, AgentEvent>(concat!(
+        "SELECT ",
+        agent_event_cols!(),
+        " FROM agent_event WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?"
+    ))
+    .bind(workspace_id)
+    .bind(after_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
 /// Fetch the latest agent_events for a workspace, newest first.
 #[allow(dead_code)]
 pub async fn agent_events_for_workspace(
