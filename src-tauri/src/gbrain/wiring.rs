@@ -11,18 +11,10 @@ fn map_keyring(e: KeyringError) -> AdeError {
     AdeError::Keychain(e.to_string())
 }
 
-/// Keychain slot for the long-lived serve bearer token (plaintext; the brain
-/// only stores its hash, so we must keep our own copy to reuse).
+/// Keychain slot for the serve bearer token (plaintext; the brain only stores
+/// its hash, so we keep our own copy for the app's own MCP client this session).
 fn token_entry() -> Result<Entry, AdeError> {
     Entry::new("ade", "gbrain_serve_token").map_err(map_keyring)
-}
-
-fn cached_token() -> Result<Option<String>, AdeError> {
-    match token_entry()?.get_password() {
-        Ok(t) => Ok(Some(t)),
-        Err(KeyringError::NoEntry) => Ok(None),
-        Err(e) => Err(map_keyring(e)),
-    }
 }
 
 /// Extract a `gbrain_<hex>` token from `gbrain auth create` output.
@@ -33,10 +25,10 @@ fn parse_minted_token(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Mint a fresh bearer via `gbrain auth create`. The token name is reused, so a
-/// pre-existing one is revoked first (its plaintext is unrecoverable — we only
-/// reach here when our keychain copy is missing). Requires the PGLite lock to be
-/// free, so call this AFTER reaping the stdio serve and BEFORE starting ours.
+/// Mint a fresh bearer via `gbrain auth create`. The token name is reused across
+/// launches, so a pre-existing one is revoked first (its plaintext is
+/// unrecoverable). Requires the PGLite lock to be free, so call this AFTER
+/// reaping the stdio serve and BEFORE starting ours.
 fn mint_token(bin: &str) -> Result<String, AdeError> {
     const NAME: &str = "ade-app";
     let run = |args: &[&str]| Command::new(bin).args(args).output();
@@ -66,11 +58,14 @@ fn mint_token(bin: &str) -> Result<String, AdeError> {
     )))
 }
 
-/// Return a usable bearer token, minting + caching one on first run.
+/// Mint a FRESH bearer on every startup and cache it. We deliberately do NOT
+/// reuse the keychain copy: a brain re-init (or a manual `gbrain auth revoke`)
+/// wipes the token's hash from the brain, leaving the cached / `~/.claude.json`
+/// copy stale — the serve then 401s every request. Re-minting here, while the
+/// PGLite lock is still free and before the serve starts, guarantees the token
+/// matches the live brain. Cost is one revoke+create per launch (negligible);
+/// `rewire_claude_code` writes the new token through to Claude Code's config.
 pub fn ensure_token(bin: &str) -> Result<String, AdeError> {
-    if let Some(t) = cached_token()? {
-        return Ok(t);
-    }
     let token = mint_token(bin)?;
     token_entry()?.set_password(&token).map_err(map_keyring)?;
     Ok(token)
