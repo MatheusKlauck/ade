@@ -57,7 +57,7 @@ pub async fn gestor_build_feature(
     app: tauri::AppHandle,
     workspace_id: String,
     brief: String,
-) -> Result<Vec<String>, AdeError> {
+) -> Result<Vec<IssueProposal>, AdeError> {
     // 1. Make sure the autonomous loop is running (≥ L2). Persist the dial and
     //    spawn the loop live, same path as a manual change in the Gestor tab.
     if !crate::gestor::autonomy::load(&state.db, &workspace_id)
@@ -96,12 +96,13 @@ pub async fn gestor_build_feature(
 
     // 3. Approve them all → Backlog cards. The loop takes it from here.
     let ids: Vec<String> = proposals.iter().map(|p| p.id.clone()).collect();
-    let card_ids =
-        crate::gestor::plan::approve_proposals(&state.db, &workspace_id, &ids).await?;
+    crate::gestor::plan::approve_proposals(&state.db, &workspace_id, &ids).await?;
 
     // 4. Surface the fresh cards immediately (the loop re-emits as they flow).
     let _ = crate::ipc::board::emit_board(&app, &workspace_id, &state.db).await;
-    Ok(card_ids)
+
+    // Return the proposals so the composer can reveal the unfolded tasks.
+    Ok(proposals)
 }
 
 /// Send a card to the gestor: create a `queued` agent_task the runtime will pick

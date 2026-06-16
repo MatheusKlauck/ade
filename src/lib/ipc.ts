@@ -81,11 +81,12 @@ export function proposalApprove(
   return invoke("proposal_approve", { workspaceId, proposalIds });
 }
 
-/** Hero intake: brief → N Backlog cards that auto-flow to Doing (ensures L2). */
+/** Hero intake: brief → N Backlog cards that auto-flow to Doing (ensures L2).
+ * Returns the proposals it unfolded so the UI can reveal them. */
 export function gestorBuildFeature(
   workspaceId: string,
   brief: string
-): Promise<string[]> {
+): Promise<IssueProposal[]> {
   return invoke("gestor_build_feature", { workspaceId, brief });
 }
 
