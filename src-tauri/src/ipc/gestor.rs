@@ -55,28 +55,7 @@ pub async fn gestor_enqueue_card(
     card_id: String,
 ) -> Result<String, AdeError> {
     let card = crate::repo::card_by_id_required(&state.db, &card_id).await?;
-    let cfg = crate::gestor::dispatch::load_dispatch_config(&state.db, &workspace_id).await;
-    let now = chrono::Utc::now().to_rfc3339();
-    let task = AgentTask {
-        id: uuid::Uuid::new_v4().to_string(),
-        workspace_id: workspace_id.clone(),
-        card_id: card.id,
-        state: "queued".into(),
-        attempt: 1,
-        max_attempts: cfg.max_attempts,
-        branch: None,
-        worktree_path: None,
-        window_id: None,
-        events_file: None,
-        fail_reason: None,
-        last_event_at: None,
-        started_at: None,
-        finished_at: None,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    crate::repo::insert_agent_task(&state.db, &task).await?;
-    Ok(task.id)
+    crate::gestor::dispatch::enqueue_card(&state.db, &workspace_id, &card.id).await
 }
 
 /// List the tasks (with FSM state) for a workspace.

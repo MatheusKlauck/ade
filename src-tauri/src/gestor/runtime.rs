@@ -47,6 +47,20 @@ pub fn select_dispatchable(tasks: &[AgentTask], max_parallel: usize) -> Vec<Stri
         .collect()
 }
 
+/// The autonomous bridge: Backlog cards with no agent_task yet → new queued
+/// tasks. A card with ANY task (in-flight or terminal) is skipped, so a failed
+/// task never re-enqueues in a loop — re-running it is a manual action. Pure so
+/// the bridge is testable without a DB.
+pub fn cards_to_enqueue(backlog_card_ids: &[String], tasks: &[AgentTask]) -> Vec<String> {
+    let has_task: std::collections::HashSet<&str> =
+        tasks.iter().map(|t| t.card_id.as_str()).collect();
+    backlog_card_ids
+        .iter()
+        .filter(|id| !has_task.contains(id.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Which Claude Code hook produced an `events.jsonl` line (D3/§2.3).
 #[derive(Debug, PartialEq, Eq)]
 pub enum HookEvent {
@@ -173,7 +187,7 @@ pub async fn start_runtime<P: GestorProvider>(
         // 1. Surface anything the FSM/jobs wrote since last tick.
         feed_hwm = flush_feed(&app, &db, &workspace_id, feed_hwm).await;
 
-        let tasks = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+        let mut tasks = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
             .await
             .unwrap_or_default();
 
@@ -181,6 +195,30 @@ pub async fn start_runtime<P: GestorProvider>(
         // autonomy level (#57: L1 runs jobs but never dispatches workers).
         let cfg = crate::gestor::dispatch::load_dispatch_config(&db, &workspace_id).await;
         let level = crate::gestor::autonomy::load(&db, &workspace_id).await;
+
+        // 2a. Autonomous bridge: approved Backlog cards → queued tasks, so the
+        // loop runs brief→PR without a manual enqueue. Gated on can_dispatch
+        // (L0/L1 never auto-pull from the board). Re-read tasks so the scheduler
+        // below sees the fresh queue this same tick.
+        if level.can_dispatch() {
+            let backlog = crate::repo::backlog_card_ids(&db, &workspace_id)
+                .await
+                .unwrap_or_default();
+            let mut enqueued = false;
+            for card_id in cards_to_enqueue(&backlog, &tasks) {
+                if crate::gestor::dispatch::enqueue_card(&db, &workspace_id, &card_id)
+                    .await
+                    .is_ok()
+                {
+                    enqueued = true;
+                }
+            }
+            if enqueued {
+                tasks = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+                    .await
+                    .unwrap_or_default();
+            }
+        }
         for id in select_dispatchable(&tasks, cfg.max_parallel) {
             if !level.can_dispatch() {
                 break;
@@ -466,6 +504,20 @@ mod tests {
             task("q", "queued", "2026-01-03"),
         ];
         assert_eq!(select_dispatchable(&tasks, 1), vec!["q"]);
+    }
+
+    #[test]
+    fn enqueue_only_backlog_cards_without_a_task() {
+        let backlog = vec!["c1".to_string(), "c2".to_string(), "c3".to_string()];
+        let mut t_working = task("t", "working", "2026-01-01");
+        t_working.card_id = "c1".into();
+        let mut t_failed = task("f", "failed", "2026-01-01");
+        t_failed.card_id = "c2".into(); // terminal task → still skipped (no retry loop)
+        let tasks = vec![t_working, t_failed];
+        // c1 has an in-flight task, c2 has a terminal one → only c3 is fresh.
+        assert_eq!(cards_to_enqueue(&backlog, &tasks), vec!["c3"]);
+        // empty board / no tasks → all enqueue
+        assert_eq!(cards_to_enqueue(&backlog, &[]), backlog);
     }
 
     #[test]

@@ -88,6 +88,38 @@ pub async fn load_dispatch_config(db: &DbPool, workspace_id: &str) -> DispatchCo
     }
 }
 
+/// Create a `queued` agent_task for a card — the scheduler picks it up next tick.
+/// Shared by the manual "send to gestor" IPC and the autonomous Backlog bridge.
+/// Returns the new task id.
+pub async fn enqueue_card(
+    db: &DbPool,
+    workspace_id: &str,
+    card_id: &str,
+) -> Result<String, AdeError> {
+    let cfg = load_dispatch_config(db, workspace_id).await;
+    let now = chrono::Utc::now().to_rfc3339();
+    let task = crate::models::AgentTask {
+        id: uuid::Uuid::new_v4().to_string(),
+        workspace_id: workspace_id.to_string(),
+        card_id: card_id.to_string(),
+        state: "queued".into(),
+        attempt: 1,
+        max_attempts: cfg.max_attempts,
+        branch: None,
+        worktree_path: None,
+        window_id: None,
+        events_file: None,
+        fail_reason: None,
+        last_event_at: None,
+        started_at: None,
+        finished_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    crate::repo::insert_agent_task(db, &task).await?;
+    Ok(task.id)
+}
+
 /// Run a worktree's setup commands in order (e.g. `npm install`). First failure
 /// aborts with the captured output so dispatch fails the task cleanly (#58).
 pub async fn run_setup_commands(worktree: &Path, commands: &[String]) -> Result<(), AdeError> {

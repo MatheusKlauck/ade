@@ -215,6 +215,20 @@ pub async fn agent_tasks_for_workspace(
     .map_err(AdeError::Db)
 }
 
+/// Card ids sitting in the workspace's `Backlog` column, oldest-first. The
+/// autonomous bridge enqueues these (cards approved from a brief land here).
+#[allow(dead_code)]
+pub async fn backlog_card_ids(db: &DbPool, workspace_id: &str) -> Result<Vec<String>, AdeError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT c.id FROM card c JOIN board_column bc ON c.column_id = bc.id \
+         WHERE c.workspace_id = ? AND bc.name = 'Backlog' ORDER BY c.position",
+    )
+    .bind(workspace_id)
+    .fetch_all(db)
+    .await
+    .map_err(AdeError::Db)
+}
+
 /// Append an agent_event (D8 audit feed). `id` is autoincrement; the returned
 /// value is the new rowid.
 #[allow(dead_code)]
