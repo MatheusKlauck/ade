@@ -17,7 +17,9 @@ const AGENT_ACTIVE = new Set([
   "reviewing",
 ]);
 const AGENT_ATTENTION = new Set(["awaiting_input", "needs_fixes"]);
+const AGENT_ERROR = new Set(["failed", "aborted"]);
 function agentDotColor(state: string): string {
+  if (AGENT_ERROR.has(state)) return "var(--danger, #d35a5a)";
   if (AGENT_ATTENTION.has(state)) return "var(--warning, #d3a72c)";
   if (AGENT_ACTIVE.has(state)) return "var(--accent, #5319e7)";
   return "var(--muted, #9b9ba3)"; // queued / pushing / pr_open / ci_wait / ready_to_merge
@@ -191,12 +193,15 @@ export default function Card({
             {agentState && (
               <span
                 data-testid="card-agent-status"
-                title={`Gestor: ${agentState}`}
+                title={
+                  `Gestor: ${agentState.state}` +
+                  (agentState.reason ? ` — ${agentState.reason}` : "")
+                }
                 style={{
                   width: 8,
                   height: 8,
                   borderRadius: "50%",
-                  background: agentDotColor(agentState),
+                  background: agentDotColor(agentState.state),
                   flexShrink: 0,
                 }}
               />
@@ -220,6 +225,23 @@ export default function Card({
             </span>
           </span>
         </div>
+        {agentState?.reason &&
+          (AGENT_ATTENTION.has(agentState.state) ||
+            AGENT_ERROR.has(agentState.state)) && (
+            <div
+              data-testid="card-agent-reason"
+              style={{
+                marginTop: "var(--space-xs)",
+                fontSize: 11,
+                lineHeight: 1.3,
+                color: AGENT_ERROR.has(agentState.state)
+                  ? "var(--danger, #d35a5a)"
+                  : "var(--warning, #d3a72c)",
+              }}
+            >
+              {agentState.reason}
+            </div>
+          )}
         {card.assignee && (
           <div
             style={{
