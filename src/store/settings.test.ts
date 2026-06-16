@@ -4,6 +4,8 @@ import {
   DEFAULTS,
   parsePresets,
   getDefaultPreset,
+  parseTerminalAppearance,
+  TERMINAL_APPEARANCE_DEFAULT,
 } from "./settings";
 
 // Reset the store between tests
@@ -163,6 +165,40 @@ describe("parsePresets", () => {
     expect(parsePresets("not json")).toEqual([]);
     expect(parsePresets(JSON.stringify({ id: "a" }))).toEqual([]);
     expect(parsePresets(null)).toEqual([]);
+  });
+});
+
+describe("parseTerminalAppearance", () => {
+  it("returns defaults for null / malformed / non-object JSON", () => {
+    expect(parseTerminalAppearance(null)).toEqual(TERMINAL_APPEARANCE_DEFAULT);
+    expect(parseTerminalAppearance("not json")).toEqual(
+      TERMINAL_APPEARANCE_DEFAULT
+    );
+    expect(parseTerminalAppearance("42")).toEqual(TERMINAL_APPEARANCE_DEFAULT);
+  });
+
+  it("merges a partial blob over the defaults", () => {
+    const a = parseTerminalAppearance(
+      JSON.stringify({ background: "#123456", cursorStyle: "block" })
+    );
+    expect(a.background).toBe("#123456");
+    expect(a.cursorStyle).toBe("block");
+    expect(a.foreground).toBe(TERMINAL_APPEARANCE_DEFAULT.foreground);
+  });
+
+  it("clamps font size and rejects a bad cursor style", () => {
+    expect(parseTerminalAppearance(JSON.stringify({ fontSize: 999 })).fontSize).toBe(
+      32
+    );
+    expect(parseTerminalAppearance(JSON.stringify({ fontSize: 1 })).fontSize).toBe(
+      8
+    );
+    expect(
+      parseTerminalAppearance(JSON.stringify({ fontSize: "big" })).fontSize
+    ).toBe(TERMINAL_APPEARANCE_DEFAULT.fontSize);
+    expect(
+      parseTerminalAppearance(JSON.stringify({ cursorStyle: "spiral" })).cursorStyle
+    ).toBe(TERMINAL_APPEARANCE_DEFAULT.cursorStyle);
   });
 });
 

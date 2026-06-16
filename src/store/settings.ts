@@ -77,6 +77,59 @@ export function getDefaultPreset(s: {
   return s.presets.find((p) => p.id === s.defaultPresetId) ?? null;
 }
 
+/** Terminal look & feel, stored per-workspace as one JSON blob under
+ * `terminal_appearance`. One blob (not a key per field) keeps the store + IPC
+ * surface flat as knobs are added. `fontFamily: ""` means "use the app's
+ * --font-mono". */
+export interface TerminalAppearance {
+  fontFamily: string;
+  fontSize: number;
+  background: string;
+  foreground: string;
+  cursorStyle: "block" | "bar" | "underline";
+  cursorBlink: boolean;
+}
+
+export const TERMINAL_APPEARANCE_DEFAULT: TerminalAppearance = {
+  fontFamily: "",
+  fontSize: 13,
+  background: "#0b0e14",
+  foreground: "#e6e6e6",
+  cursorStyle: "bar",
+  cursorBlink: true,
+};
+
+const CURSOR_STYLES: readonly string[] = ["block", "bar", "underline"];
+
+/** Merge a stored blob over the defaults so a missing or garbage field can't
+ * break the terminal, clamping the two values a bad blob could make nonsensical
+ * (font size, cursor style). */
+export function parseTerminalAppearance(raw: string | null): TerminalAppearance {
+  if (!raw) return TERMINAL_APPEARANCE_DEFAULT;
+  let o: unknown;
+  try {
+    o = JSON.parse(raw);
+  } catch {
+    return TERMINAL_APPEARANCE_DEFAULT;
+  }
+  if (!o || typeof o !== "object") return TERMINAL_APPEARANCE_DEFAULT;
+  const m = o as Record<string, unknown>;
+  const d = TERMINAL_APPEARANCE_DEFAULT;
+  return {
+    fontFamily: typeof m.fontFamily === "string" ? m.fontFamily : d.fontFamily,
+    fontSize:
+      typeof m.fontSize === "number" && Number.isFinite(m.fontSize)
+        ? Math.min(32, Math.max(8, m.fontSize))
+        : d.fontSize,
+    background: typeof m.background === "string" ? m.background : d.background,
+    foreground: typeof m.foreground === "string" ? m.foreground : d.foreground,
+    cursorStyle: CURSOR_STYLES.includes(m.cursorStyle as string)
+      ? (m.cursorStyle as TerminalAppearance["cursorStyle"])
+      : d.cursorStyle,
+    cursorBlink: typeof m.cursorBlink === "boolean" ? m.cursorBlink : d.cursorBlink,
+  };
+}
+
 interface SettingsState {
   workspaceId: string | null;
   theme: string;
@@ -86,6 +139,7 @@ interface SettingsState {
   syncInterval: string;
   presets: TerminalPreset[];
   defaultPresetId: string | null;
+  terminalAppearance: TerminalAppearance;
   ghTokenDisplay: string;
   loaded: boolean;
 
@@ -97,6 +151,7 @@ interface SettingsState {
   setSyncInterval: (secs: string) => Promise<void>;
   setPresets: (presets: TerminalPreset[]) => Promise<void>;
   setDefaultPreset: (id: string | null) => Promise<void>;
+  setTerminalAppearance: (a: TerminalAppearance) => Promise<void>;
   setGhToken: (token: string) => Promise<string>; // returns login
 }
 
@@ -109,6 +164,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   syncInterval: DEFAULTS.sync_interval_secs,
   presets: [],
   defaultPresetId: null,
+  terminalAppearance: TERMINAL_APPEARANCE_DEFAULT,
   ghTokenDisplay: "",
   loaded: false,
 
@@ -117,7 +173,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // active workspace changed while the IPC calls were in flight.
   load: async (workspaceId: string) => {
     set({ workspaceId, loaded: false });
-    const [t, a, sc, sd, si, pr, dp, tk] = await Promise.all([
+    const [t, a, sc, sd, si, pr, dp, ta, tk] = await Promise.all([
       settingGet(workspaceId, "theme"),
       settingGet(workspaceId, "accent"),
       settingGet(workspaceId, "startup_command"),
@@ -125,6 +181,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       settingGet(workspaceId, "sync_interval_secs"),
       settingGet(workspaceId, "terminal_presets"),
       settingGet(workspaceId, "default_preset_id"),
+      settingGet(workspaceId, "terminal_appearance"),
       settingGet(workspaceId, "github_token_display"),
     ]);
     if (get().workspaceId !== workspaceId) return; // superseded by a newer load
@@ -136,6 +193,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       syncInterval: si ?? DEFAULTS.sync_interval_secs,
       presets: parsePresets(pr),
       defaultPresetId: dp ? dp : null,
+      terminalAppearance: parseTerminalAppearance(ta),
       ghTokenDisplay: tk ?? "",
       loaded: true,
     });
@@ -191,6 +249,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const wid = get().workspaceId;
     set({ defaultPresetId: id });
     if (wid) await settingSet(wid, "default_preset_id", id ?? "");
+  },
+
+  setTerminalAppearance: async (a: TerminalAppearance) => {
+    const wid = get().workspaceId;
+    set({ terminalAppearance: a });
+    if (wid) await settingSet(wid, "terminal_appearance", JSON.stringify(a));
   },
 
   setGhToken: async (token: string) => {

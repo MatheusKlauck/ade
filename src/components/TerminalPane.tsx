@@ -19,9 +19,33 @@ import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useCommandFreqStore } from "../store/commandFrequency";
+import { useSettingsStore, type TerminalAppearance } from "../store/settings";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
 import TerminalCommandBar from "./TerminalCommandBar";
 import { BranchIcon, LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
+
+/** Resolve the appearance blob into xterm constructor/option values. xterm
+ * measures glyphs on a canvas, so fontFamily must be a real font stack — a CSS
+ * var won't resolve there; "" falls back to the app's --font-mono. */
+function xtermAppearance(a: TerminalAppearance) {
+  const fontFamily =
+    a.fontFamily ||
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--font-mono")
+      .trim() ||
+    "monospace";
+  return {
+    fontFamily,
+    fontSize: a.fontSize,
+    cursorStyle: a.cursorStyle,
+    cursorBlink: a.cursorBlink,
+    theme: {
+      background: a.background,
+      foreground: a.foreground,
+      cursor: a.foreground,
+    },
+  };
+}
 
 interface TerminalPaneProps {
   pane: OpenTerminal;
@@ -218,7 +242,9 @@ function TerminalPane({
       closeTimerRef.current = null;
     }
 
-    const term = new Terminal({ cursorBlink: true });
+    const term = new Terminal(
+      xtermAppearance(useSettingsStore.getState().terminalAppearance)
+    );
     termRef.current = term;
 
     const fit = new FitAddon();
@@ -419,6 +445,24 @@ function TerminalPane({
       }, 100);
     };
   }, [pane.paneId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Apply live appearance changes (font, colors, cursor) without tearing down
+  // the PTY-linked terminal. A font-size change reflows the grid even though the
+  // container size is unchanged — the ResizeObserver won't fire — so refit and
+  // tell the backend the new cols/rows explicitly.
+  const appearance = useSettingsStore((s) => s.terminalAppearance);
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const o = xtermAppearance(appearance);
+    term.options.fontFamily = o.fontFamily;
+    term.options.fontSize = o.fontSize;
+    term.options.cursorStyle = o.cursorStyle;
+    term.options.cursorBlink = o.cursorBlink;
+    term.options.theme = o.theme;
+    fitRef.current?.fit();
+    terminalResize(pane.paneId, term.cols, term.rows).catch(() => {});
+  }, [appearance, pane.paneId]);
 
   // Highlight effect: scroll into view and add brief glow
   useEffect(() => {
@@ -791,7 +835,7 @@ function TerminalPane({
         style={{
           flex: 1,
           minHeight: 0,
-          background: "#000",
+          background: appearance.background,
           outline: dragOver ? "2px solid var(--accent)" : "none",
           outlineOffset: "-2px",
         }}

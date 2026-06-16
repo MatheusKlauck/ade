@@ -10,6 +10,7 @@ import { useWorkspacesStore } from "../store/workspaces";
 import { useCommandFreqStore } from "../store/commandFrequency";
 import { useModalFocus } from "../lib/useModalFocus";
 import AppearanceTab from "./settings/AppearanceTab";
+import TerminalAppearanceTab from "./settings/TerminalAppearanceTab";
 import PresetsEditor from "./settings/PresetsEditor";
 import {
   FieldStatus,
@@ -340,9 +341,15 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
               />
             )}
 
-            {/* Terminal: presets */}
+            {/* Terminal: appearance + presets */}
             {activeTab === "terminal" && (
               <>
+                <TerminalAppearanceTab
+                  status={fieldStatus.terminalAppearance}
+                  onSaveResult={(state) =>
+                    flashStatus("terminalAppearance", state)
+                  }
+                />
                 <PresetsEditor
                   saveState={fieldStatus.presets}
                   onSaveResult={(state) => flashStatus("presets", state)}
