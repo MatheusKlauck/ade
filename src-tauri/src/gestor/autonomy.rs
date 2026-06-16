@@ -18,13 +18,15 @@ pub enum AutonomyLevel {
 }
 
 impl AutonomyLevel {
-    /// Parse `L0`..`L3` (or bare `0`..`3`); anything else → the safe default L2.
+    /// Parse `L0`..`L3` (or bare `0`..`3`); anything else → the safe default L0
+    /// (D11/D12: autonomy is the only dial, and an unset/garbage value must grant
+    /// nothing — the gestor is present but manual until the user dials up).
     pub fn parse(s: &str) -> AutonomyLevel {
         match s.trim().to_ascii_uppercase().as_str() {
-            "L0" | "0" | "OFF" => AutonomyLevel::Off,
             "L1" | "1" | "COPILOT" => AutonomyLevel::Copilot,
+            "L2" | "2" | "SUPERVISED" => AutonomyLevel::Supervised,
             "L3" | "3" | "AUTONOMOUS" => AutonomyLevel::Autonomous,
-            _ => AutonomyLevel::Supervised,
+            _ => AutonomyLevel::Off,
         }
     }
 
@@ -68,12 +70,13 @@ impl AutonomyLevel {
     }
 }
 
-/// Load a workspace's autonomy level (setting `autonomy_level`, default L2).
+/// Load a workspace's autonomy level (setting `autonomy_level`, default L0 — the
+/// gestor is the substrate, but acts only when the user dials up; D12).
 pub async fn load(db: &DbPool, workspace_id: &str) -> AutonomyLevel {
     crate::ipc::settings::workspace_setting_value(db, workspace_id, "autonomy_level")
         .await
         .map(|v| AutonomyLevel::parse(&v))
-        .unwrap_or(AutonomyLevel::Supervised)
+        .unwrap_or(AutonomyLevel::Off)
 }
 
 #[cfg(test)]
@@ -84,8 +87,10 @@ mod tests {
     fn parsing_and_default() {
         assert_eq!(AutonomyLevel::parse("L0"), AutonomyLevel::Off);
         assert_eq!(AutonomyLevel::parse("1"), AutonomyLevel::Copilot);
+        assert_eq!(AutonomyLevel::parse("L2"), AutonomyLevel::Supervised);
         assert_eq!(AutonomyLevel::parse("L3"), AutonomyLevel::Autonomous);
-        assert_eq!(AutonomyLevel::parse("garbage"), AutonomyLevel::Supervised);
+        // Unset/garbage → Off (least privilege), not Supervised (D11/D12).
+        assert_eq!(AutonomyLevel::parse("garbage"), AutonomyLevel::Off);
     }
 
     #[test]

@@ -3,10 +3,9 @@
 // pick queued tasks that fit a free slot and dispatch them, (3) tail each active
 // worker's events.jsonl and feed the FSM.
 //
-// Dispatch itself (worktree+branch+tmux) is S7/#47, gates S8, push S9 — this
-// slice lands the loop skeleton plus the testable scheduler/tail primitives.
-// The loop is not spawned from setup() yet: the gestor stays opt-in (gestor_enabled
-// default off), and the spawn wires in with #47 once a tick does real work.
+// Dispatch itself (worktree+branch+tmux) is S7/#47, gates S8, push S9. The loop
+// is spawned at boot (and live on autonomy change) for workspaces dialed to L2+
+// — D11: the autonomy dial is the only control, there is no on/off toggle.
 //
 // ponytail: pre-wired API; allow until the spawn lands.
 #![allow(dead_code)]

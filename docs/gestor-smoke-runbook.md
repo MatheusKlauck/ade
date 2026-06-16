@@ -45,16 +45,16 @@ guardado no Keychain **por workspace**. Sem token, o loop trava em `pushing`.
 
 | Campo | Valor | Por quê |
 |---|---|---|
-| Gestor ligado | ✅ | liga o loop |
-| Nível de autonomia | **L2** | despacha worker, **merge humano** |
+| Nível de autonomia | **L2** | **é o que liga o loop** — despacha worker, merge humano |
 | Branch base | `main` | de onde sai o worktree / pra onde vai o PR |
 | Workers paralelos | `1` | um worker, mais fácil de observar |
 | Tentativas máximas | `2` | escala pra você rápido se travar |
 | Exigir CI verde | ⬜ (ou ✅ se o repo tem Actions) | espera os checks |
 | Comandos de gate | ex. `cargo test` / vazio | build/test antes do review |
 
-Ligar o "Gestor ligado" **aplica na hora** — o loop sobe assim que você marca
-o toggle (sem reiniciar). Desligar derruba o loop.
+Não há mais toggle on/off (D11): a **autonomia é o dial**. L0 = manual (você move
+os cards), L2+ liga o loop autônomo. Mudar pra L2 **aplica na hora** — o loop sobe
+sem reiniciar; voltar pra L0/L1 derruba.
 
 ## 5. Dá trabalho pro loop
 

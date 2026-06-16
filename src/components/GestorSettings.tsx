@@ -7,7 +7,11 @@ import { settingGet, settingSet } from "../lib/ipc";
 // loop actually uses when a key is unset.
 
 const AUTONOMY = [
-  { value: "L0", label: "L0 · Off", desc: "Gestor desligado." },
+  {
+    value: "L0",
+    label: "L0 · Manual",
+    desc: "Presente, mas manual — você move cada card; o loop não age.",
+  },
   {
     value: "L1",
     label: "L1 · Copiloto",
@@ -16,7 +20,7 @@ const AUTONOMY = [
   {
     value: "L2",
     label: "L2 · Supervisionado",
-    desc: "Despacha workers + gate humano de merge.",
+    desc: "Liga o loop autônomo: despacha workers + gate humano de merge.",
   },
   { value: "L3", label: "L3 · Autônomo", desc: "Tudo de L2 + auto-merge." },
 ];
@@ -28,8 +32,7 @@ export default function GestorSettings({
 }: {
   workspaceId: string | null;
 }) {
-  const [enabled, setEnabled] = useState(false);
-  const [level, setLevel] = useState("L2");
+  const [level, setLevel] = useState("L0");
   const [baseBranch, setBaseBranch] = useState("main");
   const [maxParallel, setMaxParallel] = useState("1");
   const [maxAttempts, setMaxAttempts] = useState("3");
@@ -46,8 +49,7 @@ export default function GestorSettings({
     let alive = true;
     const get = (k: string) => settingGet(workspaceId, k).catch(() => null);
     (async () => {
-      const [en, lv, bb, mp, ma, ss, ci, sk, gc, st] = await Promise.all([
-        get("gestor_enabled"),
+      const [lv, bb, mp, ma, ss, ci, sk, gc, st] = await Promise.all([
         get("autonomy_level"),
         get("base_branch"),
         get("max_parallel_workers"),
@@ -59,8 +61,7 @@ export default function GestorSettings({
         get("stage_skills"),
       ]);
       if (!alive) return;
-      setEnabled(en === "true");
-      setLevel(lv ?? "L2");
+      setLevel(lv ?? "L0");
       setBaseBranch(bb ?? "main");
       setMaxParallel(mp ?? "1");
       setMaxAttempts(ma ?? "3");
@@ -108,21 +109,6 @@ export default function GestorSettings({
 
   return (
     <div style={{ maxWidth: 560, display: "grid", gap: 18 }}>
-      <Row
-        label="Gestor ligado"
-        hint="Liga o loop autônomo deste workspace. Aplica na hora."
-      >
-        <input
-          type="checkbox"
-          data-testid="gestor-enabled"
-          checked={enabled}
-          onChange={(e) => {
-            setEnabled(e.target.checked);
-            save("gestor_enabled", String(e.target.checked));
-          }}
-        />
-      </Row>
-
       <Row
         label="Nível de autonomia"
         hint={AUTONOMY.find((a) => a.value === level)?.desc}

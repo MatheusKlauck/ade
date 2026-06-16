@@ -32,7 +32,7 @@ pub struct AppState {
     pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
     pub workers: tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
-    /// Running gestor loops, keyed by workspace id, so toggling `gestor_enabled`
+    /// Running gestor loops, keyed by workspace id, so changing `autonomy_level`
     /// in the UI starts/stops the loop live — no app restart (see `setting_set`).
     pub gestor: tokio::sync::Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     /// Window ids with a live completion monitor (see `term_monitor`).
@@ -171,11 +171,12 @@ async fn spawn_sync_workers(
     }
 }
 
-/// Spawn the Gestor runtime loop at boot for every open workspace that has opted
-/// in (`gestor_enabled = "true"`). Each loop probes `claude` and, if present,
-/// drives that workspace's tasks; a missing provider disables only that loop.
-/// Handles are registered in `AppState.gestor` so `setting_set` can start/stop a
-/// loop live when the toggle changes (no restart).
+/// Spawn the Gestor runtime loop at boot for every open workspace at autonomy
+/// L2+ (D11: the dial is the only control; L2 is the first level that dispatches).
+/// Each loop probes `claude` and, if present, drives that workspace's tasks; a
+/// missing provider disables only that loop. Handles are registered in
+/// `AppState.gestor` so `setting_set` can start/stop a loop live when
+/// `autonomy_level` changes (no restart).
 async fn spawn_gestor_runtimes(pool: db::DbPool, app: tauri::AppHandle, handles: &GestorHandles) {
     let workspaces: Vec<crate::models::Workspace> =
         match sqlx::query_as::<_, crate::models::Workspace>(concat!(
@@ -194,12 +195,13 @@ async fn spawn_gestor_runtimes(pool: db::DbPool, app: tauri::AppHandle, handles:
         };
 
     for ws in workspaces {
-        let enabled =
-            crate::ipc::settings::workspace_setting_value(&pool, &ws.id, "gestor_enabled")
-                .await
-                .map(|v| v == "true")
-                .unwrap_or(false);
-        if enabled {
+        // D11: the autonomy dial is the only control. The autonomous loop runs
+        // at L2+ (can_dispatch); L0/L1 need no loop (L0 is manual, L1's jobs are
+        // on-demand via IPC). No `gestor_enabled` toggle.
+        if crate::gestor::autonomy::load(&pool, &ws.id)
+            .await
+            .can_dispatch()
+        {
             spawn_gestor_for_workspace(ws.id, pool.clone(), app.clone(), handles).await;
         }
     }
@@ -311,9 +313,9 @@ pub fn run() {
 
                 spawn_sync_workers(pool, handle.clone(), &state.workers).await;
 
-                // Gestor: spawn the autonomous loop for opt-in workspaces
-                // (gestor_enabled). Off by default — the rest of the app is
-                // untouched when the gestor is disabled or `claude` is absent.
+                // Gestor: spawn the autonomous loop for workspaces dialed to L2+
+                // (D11). L0/L1 run no loop; the rest of the app is untouched when
+                // the gestor is manual or `claude` is absent.
                 spawn_gestor_runtimes(state.db.clone(), handle.clone(), &state.gestor).await;
 
                 // Bring up the shared gbrain serve off the startup path so it

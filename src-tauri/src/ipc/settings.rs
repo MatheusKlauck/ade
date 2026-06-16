@@ -65,10 +65,11 @@ pub async fn setting_set(
     .await
     .map_err(AdeError::Db)?;
 
-    // Hot-toggle the gestor loop so enabling it in the UI takes effect live,
-    // without an app restart (the loop is otherwise only spawned at boot).
-    if key == "gestor_enabled" {
-        if value == "true" {
+    // D11: the autonomy dial drives the loop live. Crossing into L2+ spawns the
+    // autonomous loop; dropping to L0/L1 stops it — no app restart, no separate
+    // on/off setting.
+    if key == "autonomy_level" {
+        if crate::gestor::autonomy::AutonomyLevel::parse(&value).can_dispatch() {
             crate::spawn_gestor_for_workspace(
                 workspace_id.clone(),
                 state.db.clone(),
