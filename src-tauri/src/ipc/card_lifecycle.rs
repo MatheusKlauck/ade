@@ -9,7 +9,7 @@ use crate::models::Card;
 use crate::notify::emit_notify;
 use crate::pty::PtyRegistry;
 use crate::{gitlocal, tmux};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use super::board::emit_board;
 
@@ -25,6 +25,39 @@ pub async fn on_moved_to_done(
     pty: &PtyRegistry,
     card: &mut Card,
 ) -> Result<(), AdeError> {
+    // Gestor card: the dispatch path (B) stores the worker window on the
+    // agent_task, not card.terminal_window_id. Abort the task — that tears down
+    // its worktree+window via cleanup — then re-pin the card to Done so the
+    // human's drag wins over the aborted→Paused projection (D13).
+    if let Some(t) = crate::repo::agent_tasks_for_workspace(db, &card.workspace_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|t| {
+            t.card_id == card.id
+                && !crate::gestor::fsm::TaskState::parse(&t.state)
+                    .map(|s| s.is_terminal())
+                    .unwrap_or(false)
+        })
+    {
+        let _ = crate::gestor::fsm::transition(
+            db,
+            &t.id,
+            crate::gestor::fsm::TaskState::Aborted,
+            Some("moved to Done by user"),
+        )
+        .await;
+        if let Ok(ws) = crate::repo::workspace_by_id(db, &card.workspace_id).await {
+            let repo_path = gitlocal::find_repo_path(&ws.root_path).unwrap_or(ws.root_path);
+            crate::gestor::dispatch::cleanup(db, &repo_path, &t.id).await;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let _ =
+            crate::repo::move_card_to_column(db, &card.id, &card.workspace_id, "Done", &now).await;
+        emit_board(app, &card.workspace_id, db).await?;
+        return Ok(());
+    }
+
     let Some(window_id) = card.terminal_window_id.clone() else {
         return Ok(());
     };
@@ -117,242 +150,54 @@ pub async fn on_moved_to_done(
     Ok(())
 }
 
-/// Move to Doing: auto-launch a terminal for the card (§16 trigger).
-/// Re-focuses an already-alive window, otherwise ensures the base tmux
-/// session, spawns an issue/app window, optionally prepares a git branch,
-/// and stores the window id on the card.
+/// Move to Doing: the single dispatch surface (B/D11). The human dragging a card
+/// to Doing runs the SAME enqueue+worker-launch the autonomous loop uses — the
+/// gestor owns the card's FSM either way. The worker runs in an isolated worktree
+/// with the protocol prompt injected by the backend; we focus its pane WITHOUT a
+/// `card_id` so the frontend does not re-inject. Re-dragging an in-flight card
+/// just re-focuses its window.
 pub async fn on_moved_to_doing(
     db: &DbPool,
     app: &tauri::AppHandle,
     card: &Card,
 ) -> Result<(), AdeError> {
-    // 2. Look up workspace for this card
-    let ws = match crate::repo::workspace_by_id_opt(db, &card.workspace_id).await? {
-        Some(ws) => ws,
-        None => return Ok(()),
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        emit_notify(
+            app,
+            "warn",
+            "DISPATCH_FAILED",
+            "could not resolve app data dir for dispatch",
+        );
+        return Ok(());
     };
-    let slug: String = ws.slug;
-    let root_path: String = ws.root_path;
-    let github_owner: Option<String> = ws.github_owner;
-    let github_repo: Option<String> = ws.github_repo;
 
-    // 3. If card already has a terminal_window_id and it's alive, just re-focus it
-    if let Some(ref wid) = card.terminal_window_id {
-        let alive = {
-            let slug = slug.clone();
-            let wid = wid.clone();
-            tokio::task::spawn_blocking(move || tmux::window_alive(&slug, &wid).unwrap_or(false))
-                .await
-                .unwrap_or(false)
-        };
-        if alive {
+    match crate::gestor::dispatch::enqueue_and_dispatch(
+        db,
+        &app_data_dir,
+        &card.workspace_id,
+        &card.id,
+    )
+    .await
+    {
+        Ok(Some(window_id)) => {
             let _ = app.emit(
                 "evt:terminal_focus",
                 serde_json::json!({
                     "workspace_id": card.workspace_id,
-                    "window_id": wid,
+                    "window_id": window_id,
                 }),
             );
-            return Ok(());
         }
-    }
-
-    // 4. Ensure base tmux session exists before creating windows.
-    // All tmux/git work below runs in spawn_blocking: each call spawns a
-    // subprocess (or does git I/O) that would otherwise block a tokio worker
-    // and add visible latency to concurrent IPC (e.g. keystrokes).
-    let ensure = {
-        let slug = slug.clone();
-        let root = root_path.clone();
-        tokio::task::spawn_blocking(move || tmux::ensure_base_session(&slug, &root))
-            .await
-            .unwrap_or_else(|e| Err(AdeError::Tmux(e.to_string())))
-    };
-    if let Err(e) = ensure {
-        emit_notify(
+        Ok(None) => {}
+        Err(e) => emit_notify(
             app,
             "warn",
-            "TMUX_SESSION_FAILED",
-            &format!("failed to create tmux session: {}", e),
-        );
-        return Ok(());
+            "DISPATCH_FAILED",
+            &format!("failed to dispatch worker: {e}"),
+        ),
     }
 
-    // 5. Branch: GitHub-linked card vs local card
-    let window_id: String = if let Some(issue_number) =
-        card.github_issue_number.filter(|_| card.source == "github")
-    {
-        // GitHub-linked card
-        let fallback = format!("issue-{}", issue_number);
-        let winname = format!(
-            "{}-{}",
-            issue_number,
-            gitlocal::slugify(&card.title, &fallback)
-        );
-
-        // Construct html_url
-        let html_url = match (&github_owner, &github_repo) {
-            (Some(owner), Some(repo)) => {
-                format!(
-                    "https://github.com/{}/{}/issues/{}",
-                    owner, repo, issue_number
-                )
-            }
-            _ => format!("https://github.com/issues/{}", issue_number),
-        };
-
-        // Create issue window with env vars
-        let spawn_result = {
-            let slug = slug.clone();
-            let root = root_path.clone();
-            let winname = winname.clone();
-            let title = card.title.clone();
-            let html_url = html_url.clone();
-            tokio::task::spawn_blocking(move || {
-                tmux::new_issue_window(
-                    &slug,
-                    &root,
-                    &winname,
-                    issue_number as u64,
-                    &title,
-                    &html_url,
-                )
-            })
-            .await
-            .unwrap_or_else(|e| Err(AdeError::Tmux(e.to_string())))
-        };
-        let wid = match spawn_result {
-            Ok(w) => w,
-            Err(e) => {
-                emit_notify(
-                    app,
-                    "warn",
-                    "TMUX_WINDOW_FAILED",
-                    &format!("failed to create tmux issue window: {}", e),
-                );
-                return Ok(());
-            }
-        };
-
-        // Auto-branch: check per-workspace setting (default true)
-        let auto_branch: bool =
-            crate::ipc::settings::workspace_setting_value(db, &card.workspace_id, "auto_branch")
-                .await
-                .map(|val| val != "false")
-                .unwrap_or(true);
-
-        if auto_branch {
-            // The repo may live in a subdirectory of the workspace folder
-            // (e.g. `test/` → `test/zkDash`); create the branch there, not
-            // at the container root.
-            let repo_path =
-                gitlocal::find_repo_path(&root_path).unwrap_or_else(|| root_path.clone());
-            let branch_result = tokio::task::spawn_blocking(move || {
-                gitlocal::prepare_branch(&repo_path, issue_number as u64)
-            })
-            .await
-            .unwrap_or_else(|e| Err(AdeError::Other(e.to_string())));
-            match branch_result {
-                Ok(gitlocal::BranchOutcome::ReusedExisting) => {
-                    emit_notify(
-                        app,
-                        "info",
-                        "BRANCH_EXISTS_REUSED",
-                        &format!(
-                            "branch issue-{} already exists, checking it out",
-                            issue_number
-                        ),
-                    );
-                }
-                Ok(gitlocal::BranchOutcome::SkippedDirty) => {
-                    emit_notify(
-                        app,
-                        "warn",
-                        "BRANCH_DIRTY_WORKTREE",
-                        &format!(
-                            "worktree has uncommitted changes; branch issue-{} not created",
-                            issue_number
-                        ),
-                    );
-                }
-                Ok(gitlocal::BranchOutcome::Created) => {
-                    // No notification on success
-                }
-                Err(e) => {
-                    emit_notify(
-                        app,
-                        "warn",
-                        "BRANCH_FAILED",
-                        &format!("failed to prepare branch issue-{}: {}", issue_number, e),
-                    );
-                }
-            }
-        }
-
-        wid
-    } else {
-        // Local card: use new_app_window (no env vars, no issue window name)
-        let id8 = &card.id[..card.id.len().min(8)];
-        let fallback = format!("card-{}", id8);
-        let winname = gitlocal::slugify(&card.title, &fallback);
-
-        let spawn_result = {
-            let slug = slug.clone();
-            let root = root_path.clone();
-            let winname = winname.clone();
-            tokio::task::spawn_blocking(move || {
-                let wid = tmux::new_app_window(&slug, &root)?;
-                // Rename the window to the slugified name (new_app_window
-                // doesn't accept a name); safe to target by window id.
-                let _ = std::process::Command::new("tmux")
-                    .arg("rename-window")
-                    .arg("-t")
-                    .arg(&wid)
-                    .arg(&winname)
-                    .output();
-                Ok::<_, AdeError>(wid)
-            })
-            .await
-            .unwrap_or_else(|e| Err(AdeError::Tmux(e.to_string())))
-        };
-        match spawn_result {
-            Ok(w) => w,
-            Err(e) => {
-                emit_notify(
-                    app,
-                    "warn",
-                    "TMUX_WINDOW_FAILED",
-                    &format!("failed to create tmux app window: {}", e),
-                );
-                return Ok(());
-            }
-        }
-    };
-
-    // 6. Store terminal_window_id on the card
-    sqlx::query("UPDATE card SET terminal_window_id = ? WHERE id = ?")
-        .bind(&window_id)
-        .bind(&card.id)
-        .execute(db)
-        .await
-        .map_err(AdeError::Db)?;
-
-    // 7. Emit terminal_focus event. This is a window freshly created for a card
-    // just moved to Doing, so carry the card id: the frontend injects the task
-    // title + description as the agent's prompt *only* for fresh launches. The
-    // re-focus/reuse path above intentionally omits card_id so an already-running
-    // task is never re-injected.
-    let _ = app.emit(
-        "evt:terminal_focus",
-        serde_json::json!({
-            "workspace_id": card.workspace_id,
-            "window_id": window_id,
-            "card_id": card.id,
-        }),
-    );
-
-    // 8. Re-emit board (terminal_window_id changed)
+    // Board changed (card projected to Doing, terminal opened).
     emit_board(app, &card.workspace_id, db).await?;
-
     Ok(())
 }

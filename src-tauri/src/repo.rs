@@ -99,22 +99,6 @@ pub async fn workspace_by_id(db: &DbPool, workspace_id: &str) -> Result<Workspac
     .map_err(AdeError::Db)
 }
 
-/// Fetch a workspace by id, or `None` if it doesn't exist.
-pub async fn workspace_by_id_opt(
-    db: &DbPool,
-    workspace_id: &str,
-) -> Result<Option<Workspace>, AdeError> {
-    sqlx::query_as::<_, Workspace>(concat!(
-        "SELECT ",
-        workspace_cols!(),
-        " FROM workspace WHERE id = ?"
-    ))
-    .bind(workspace_id)
-    .fetch_optional(db)
-    .await
-    .map_err(AdeError::Db)
-}
-
 /// Fetch all board columns for a workspace, ordered by position.
 pub async fn columns_for_workspace(
     db: &DbPool,

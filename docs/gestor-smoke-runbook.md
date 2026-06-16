@@ -58,9 +58,13 @@ sem reiniciar; voltar pra L0/L1 derruba.
 
 ## 5. Dá trabalho pro loop
 
-Crie um card no **Backlog** descrevendo a tarefa (ou use "Enviar para o
-Gestor" no menu de um card). Em L2 a ponte autônoma puxa cards do Backlog
-sozinha a cada tick (~3s).
+Crie um card no **Backlog** descrevendo a tarefa. Dois jeitos de despachar
+(mesma superfície, D11/B):
+
+- **Arrastar pra Doing** → despacha **na hora**, em qualquer nível (você é o
+  scheduler). Worker sobe num worktree isolado, prompt-protocolo injetado pelo
+  backend; o pane abre já com o worker rodando.
+- **Deixar no Backlog** → em L2+ a ponte autônoma puxa sozinha a cada tick (~3s).
 
 ## 6. Observa o loop andar
 

@@ -130,6 +130,32 @@ pub async fn enqueue_card(
     Ok(task.id)
 }
 
+/// The single dispatch surface (B/D11): enqueue the card and run it through the
+/// SAME worker launch the autonomous loop uses. A human dragging a card to Doing
+/// and the loop auto-pulling from Backlog both land here — one action, two
+/// operators. Idempotent: a card already in flight (non-queued task) is a no-op,
+/// returning the existing window so the caller can re-focus it. Returns the tmux
+/// window id (if any) for the UI to focus. UI-free — the caller emits events.
+pub async fn enqueue_and_dispatch(
+    db: &DbPool,
+    app_data_dir: &Path,
+    workspace_id: &str,
+    card_id: &str,
+) -> Result<Option<String>, AdeError> {
+    let task_id = enqueue_card(db, workspace_id, card_id).await?;
+    let task = repo_task(db, &task_id).await?;
+    // Already preparing/working/…: re-drag is a no-op, just hand back its window.
+    if task.state != "queued" {
+        return Ok(task.window_id);
+    }
+    let ws = crate::repo::workspace_by_id(db, workspace_id).await?;
+    let repo_path =
+        crate::gitlocal::find_repo_path(&ws.root_path).unwrap_or_else(|| ws.root_path.clone());
+    let cfg = load_dispatch_config(db, workspace_id).await;
+    dispatch_task(db, app_data_dir, &ws.slug, &repo_path, &task_id, &cfg).await?;
+    Ok(repo_task(db, &task_id).await?.window_id)
+}
+
 /// Run a worktree's setup commands in order (e.g. `npm install`). First failure
 /// aborts with the captured output so dispatch fails the task cleanly (#58).
 pub async fn run_setup_commands(worktree: &Path, commands: &[String]) -> Result<(), AdeError> {
@@ -325,6 +351,60 @@ mod tests {
         assert_eq!(
             branch_for_card(&card("Add the Gestor view!", None, None)),
             "gestor/add-the-gestor-view"
+        );
+    }
+
+    // Re-dragging a card whose task is already in flight must NOT spawn a second
+    // worker — it hands back the existing window for the UI to re-focus. (The
+    // queued→dispatch branch spawns real tmux/git and isn't unit-testable here.)
+    #[tokio::test]
+    async fn enqueue_and_dispatch_noop_for_in_flight_card() {
+        use crate::models::AgentTask;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT INTO workspace (id, name, slug, root_path, created_at) VALUES ('w1','W','w','/tmp','t')").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO board_column (id, workspace_id, name, position) VALUES ('c1','w1','Doing',0)").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES ('card1','w1','c1','T',1.0,'local','t','t')").execute(&db).await.unwrap();
+        let t = AgentTask {
+            id: "task1".into(),
+            workspace_id: "w1".into(),
+            card_id: "card1".into(),
+            state: "working".into(),
+            attempt: 1,
+            max_attempts: 3,
+            branch: None,
+            worktree_path: None,
+            window_id: Some("win42".into()),
+            events_file: None,
+            fail_reason: None,
+            last_event_at: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        };
+        crate::repo::insert_agent_task(&db, &t).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let win = enqueue_and_dispatch(&db, dir.path(), "w1", "card1")
+            .await
+            .unwrap();
+        assert_eq!(win.as_deref(), Some("win42"));
+        // No second task spawned.
+        assert_eq!(
+            crate::repo::agent_tasks_for_workspace(&db, "w1")
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 
