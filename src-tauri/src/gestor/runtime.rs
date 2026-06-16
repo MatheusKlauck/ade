@@ -168,6 +168,48 @@ pub async fn start_runtime<P: GestorProvider>(
     let slug = ws.slug.clone();
     let repo_path = crate::gitlocal::find_repo_path(&ws.root_path).unwrap_or(ws.root_path.clone());
 
+    // Boot reconciliation: a restart leaves worker-stage tasks orphaned (the tmux
+    // worker is gone, but the DB still says active). `preparing` means dispatch was
+    // interrupted mid-setup → abort (re-enqueue is idempotent). `working` with a
+    // clean tree + commits ahead means the worker finished and committed before the
+    // Stop was tailed → carry it to verifying so the core resumes the loop. Dirty
+    // `working` tasks are left to stall detection.
+    {
+        let cfg = crate::gestor::dispatch::load_dispatch_config(&db, &workspace_id).await;
+        let tasks = crate::repo::agent_tasks_for_workspace(&db, &workspace_id)
+            .await
+            .unwrap_or_default();
+        for task in &tasks {
+            match task.state.as_str() {
+                "preparing" => {
+                    let _ = crate::gestor::fsm::transition(
+                        &db,
+                        &task.id,
+                        crate::gestor::fsm::TaskState::Aborted,
+                        Some("dispatch interrupted by app restart"),
+                    )
+                    .await;
+                }
+                "working" => {
+                    if let Some(wt) = task.worktree_path.as_deref() {
+                        if crate::gitlocal::tree_clean(wt)
+                            && crate::gitlocal::commits_ahead(wt, &cfg.base_branch)
+                        {
+                            let _ = crate::gestor::fsm::transition(
+                                &db,
+                                &task.id,
+                                crate::gestor::fsm::TaskState::Verifying,
+                                Some("worker finished before restart"),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
     interval.tick().await; // skip the immediate first tick
 
