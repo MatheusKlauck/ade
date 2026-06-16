@@ -365,6 +365,7 @@ pub fn run() {
             ipc::gbrain::gbrain_restart,
             ipc::gestor::gestor_plan,
             ipc::gestor::proposal_approve,
+            ipc::gestor::gestor_build_feature,
             ipc::gestor::gestor_enqueue_card,
             ipc::gestor::gestor_tasks_list,
             ipc::gestor::gestor_feed_list,

@@ -17,6 +17,7 @@ import {
 import AppBar, { type ViewMode } from "./components/AppBar";
 import Settings from "./components/Settings";
 import GestorPanel from "./components/GestorPanel";
+import NewFeatureComposer from "./components/NewFeatureComposer";
 import { useAgentStatusSync } from "./store/agentStatus";
 import Ledger from "./components/Ledger";
 import BoardView from "./components/BoardView";
@@ -189,6 +190,7 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showGestor, setShowGestor] = useState(false);
+  const [showNewFeature, setShowNewFeature] = useState(false);
   // Which main GUI is shown: "ledger" (dense issue table, default) or "classic"
   // (terminal grid + bottom Kanban dock). Persisted globally to ui_state.
   const [viewMode, setViewMode] = useState<ViewMode>("ledger");
@@ -801,6 +803,7 @@ export default function App() {
       <AppBar
         onOpenSettings={() => setShowSettings(true)}
         onOpenGestor={() => setShowGestor(true)}
+        onNewFeature={() => setShowNewFeature(true)}
         viewMode={viewMode}
         onToggleView={handleToggleView}
       />
@@ -849,6 +852,12 @@ export default function App() {
         <GestorPanel
           workspaceId={activeWorkspaceId}
           onClose={() => setShowGestor(false)}
+        />
+      )}
+      {showNewFeature && activeWorkspaceId && (
+        <NewFeatureComposer
+          workspaceId={activeWorkspaceId}
+          onClose={() => setShowNewFeature(false)}
         />
       )}
     </div>

@@ -243,6 +243,8 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return ok(MOCK_GESTOR_PROPOSALS);
     case "proposal_approve":
       return ok((a.proposalIds as string[]) ?? []);
+    case "gestor_build_feature":
+      return ok(MOCK_GESTOR_PROPOSALS.map((p) => p.id));
     case "gestor_enqueue_card":
       return ok("mock-task");
     case "gestor_release_notes":

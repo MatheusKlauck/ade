@@ -46,6 +46,64 @@ pub async fn proposal_approve(
     crate::gestor::plan::approve_proposals(&state.db, &workspace_id, &proposal_ids).await
 }
 
+/// Hero intake: one shot from a brief to a board that flows. Ensures the
+/// workspace is at least L2 (so the loop runs and cards auto-dispatch to Doing),
+/// plans the brief into proposals, approves them ALL into Backlog cards, and
+/// emits the board. The user types once and watches their vision unfold — no
+/// checkbox gate, no Settings trip (the act of building is the consent to flow).
+#[tauri::command]
+pub async fn gestor_build_feature(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+    workspace_id: String,
+    brief: String,
+) -> Result<Vec<String>, AdeError> {
+    // 1. Make sure the autonomous loop is running (≥ L2). Persist the dial and
+    //    spawn the loop live, same path as a manual change in the Gestor tab.
+    if !crate::gestor::autonomy::load(&state.db, &workspace_id)
+        .await
+        .can_dispatch()
+    {
+        sqlx::query(
+            "INSERT INTO workspace_setting (workspace_id, key, value) VALUES (?, 'autonomy_level', 'L2') \
+             ON CONFLICT(workspace_id, key) DO UPDATE SET value=excluded.value",
+        )
+        .bind(&workspace_id)
+        .execute(&state.db)
+        .await
+        .map_err(AdeError::Db)?;
+        crate::spawn_gestor_for_workspace(
+            workspace_id.clone(),
+            state.db.clone(),
+            app.clone(),
+            &state.gestor,
+        )
+        .await;
+    }
+
+    // 2. Plan the brief into repo-grounded proposals.
+    let ws = crate::repo::workspace_by_id(&state.db, &workspace_id).await?;
+    let repo = repo_path_for(&ws);
+    let provider = crate::gestor::provider::ClaudeCli::new();
+    let (_, proposals) = crate::gestor::plan::plan_issues(
+        &state.db,
+        &provider,
+        &workspace_id,
+        &brief,
+        Path::new(&repo),
+    )
+    .await?;
+
+    // 3. Approve them all → Backlog cards. The loop takes it from here.
+    let ids: Vec<String> = proposals.iter().map(|p| p.id.clone()).collect();
+    let card_ids =
+        crate::gestor::plan::approve_proposals(&state.db, &workspace_id, &ids).await?;
+
+    // 4. Surface the fresh cards immediately (the loop re-emits as they flow).
+    let _ = crate::ipc::board::emit_board(&app, &workspace_id, &state.db).await;
+    Ok(card_ids)
+}
+
 /// Send a card to the gestor: create a `queued` agent_task the runtime will pick
 /// up and dispatch. Returns the new task id. (One in-flight task per card.)
 #[tauri::command]

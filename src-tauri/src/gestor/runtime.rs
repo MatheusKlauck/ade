@@ -486,6 +486,12 @@ pub async fn start_runtime<P: GestorProvider>(
                 }
             }
         }
+
+        // Surface board changes from this tick so the user watches cards flow
+        // Backlog→Doing→PR→Done as the FSM moves them (D13). Quiet when idle.
+        if !tasks.is_empty() {
+            let _ = crate::ipc::board::emit_board(&app, &workspace_id, &db).await;
+        }
     }
 }
 

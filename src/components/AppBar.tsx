@@ -15,6 +15,7 @@ const TRAFFIC_INSET = isMac ? 84 : 12;
 interface AppBarProps {
   onOpenSettings: () => void;
   onOpenGestor: () => void;
+  onNewFeature: () => void;
   viewMode: ViewMode;
   onToggleView: () => void;
 }
@@ -49,6 +50,7 @@ const iconBtnStyle: CSSProperties = {
 export default function AppBar({
   onOpenSettings,
   onOpenGestor,
+  onNewFeature,
   viewMode,
   onToggleView,
 }: AppBarProps) {
@@ -100,6 +102,25 @@ export default function AppBar({
         <span>{isLedger ? "Ledger" : "Board"}</span>
       </button>
       <NotificationCenter />
+      <button
+        onClick={onNewFeature}
+        title="Descreva uma feature — o Gestor desdobra em tasks e toca"
+        aria-label="New feature"
+        data-testid="new-feature"
+        style={{
+          ...iconBtnStyle,
+          width: "auto",
+          gap: 6,
+          padding: "0 12px",
+          fontSize: 11,
+          fontFamily: "var(--font-sans)",
+          background: "var(--accent, #5319e7)",
+          borderColor: "transparent",
+          color: "#fff",
+        }}
+      >
+        + New feature
+      </button>
       <button
         onClick={onOpenGestor}
         title="Gestor"
