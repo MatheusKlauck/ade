@@ -17,6 +17,7 @@ import {
 import AppBar, { type ViewMode } from "./components/AppBar";
 import Settings from "./components/Settings";
 import GestorPanel from "./components/GestorPanel";
+import { useAgentStatusSync } from "./store/agentStatus";
 import Ledger from "./components/Ledger";
 import BoardView from "./components/BoardView";
 import StatusBar from "./components/StatusBar";
@@ -26,7 +27,11 @@ import { useTerminalsStore, type OpenTerminal } from "./store/terminals";
 import { useLedgerStore } from "./store/ledger";
 import { useWorkspacesStore } from "./store/workspaces";
 import { useBoardStore } from "./store/board";
-import { useNotificationsStore, type NotifyCode, type NotifyLevel } from "./store/notifications";
+import {
+  useNotificationsStore,
+  type NotifyCode,
+  type NotifyLevel,
+} from "./store/notifications";
 import {
   useSettingsStore,
   getDefaultPreset,
@@ -91,12 +96,13 @@ function joinCommands(cmds: string[]): string {
  */
 function scheduleStartupSequence(
   paneId: string,
-  opts: { preset?: TerminalPreset; injectCardId?: string } = {}
+  opts: { preset?: TerminalPreset; injectCardId?: string } = {},
 ) {
   const { preset, injectCardId } = opts;
   // For card opens with no explicit preset, fall back to the workspace default.
   const effective =
-    preset ?? (injectCardId ? getDefaultPreset(useSettingsStore.getState()) : null);
+    preset ??
+    (injectCardId ? getDefaultPreset(useSettingsStore.getState()) : null);
 
   const openCommands = effective?.openCommands ?? [];
   const delaySecs = Math.max(0, effective?.delaySecs ?? 0);
@@ -134,7 +140,7 @@ function titleForWindow(workspaceId: string, windowId: string): string | null {
   if (!board) return null;
   for (const colId of Object.keys(board.cardsByColumn)) {
     const card = board.cardsByColumn[colId].find(
-      (c) => c.terminal_window_id === windowId
+      (c) => c.terminal_window_id === windowId,
     );
     if (card) {
       return card.github_issue_number != null
@@ -194,13 +200,13 @@ export default function App() {
   // Append a toast to the stack (capped; errors never silently dropped).
   const pushToast = useCallback((data: ToastData) => {
     setToasts((cur) =>
-      capToasts([...cur, { ...data, id: ++toastIdRef.current }])
+      capToasts([...cur, { ...data, id: ++toastIdRef.current }]),
     );
   }, []);
   // Stable so each Toast's auto-dismiss timer isn't reset on every re-render.
   const dismissToast = useCallback(
     (id: number) => setToasts((cur) => cur.filter((t) => t.id !== id)),
-    []
+    [],
   );
 
   // Apply theme at startup using settings store
@@ -232,11 +238,9 @@ export default function App() {
   const addPane = useTerminalsStore((s) => s.addPane);
   const removePane = useTerminalsStore((s) => s.removePane);
   const removePanesForWorkspace = useTerminalsStore(
-    (s) => s.removePanesForWorkspace
+    (s) => s.removePanesForWorkspace,
   );
-  const getPanesForWorkspace = useTerminalsStore(
-    (s) => s.getPanesForWorkspace
-  );
+  const getPanesForWorkspace = useTerminalsStore((s) => s.getPanesForWorkspace);
   const highlightedWindowId = useTerminalsStore((s) => s.highlightedWindowId);
   const focusWindow = useTerminalsStore((s) => s.focusWindow);
   const clearHighlight = useTerminalsStore((s) => s.clearHighlight);
@@ -249,6 +253,7 @@ export default function App() {
   const loadWorkspaces = useWorkspacesStore((s) => s.load);
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const updateSyncStatus = useWorkspacesStore((s) => s.updateSyncStatus);
+  useAgentStatusSync(activeWorkspaceId);
   const setBoard = useBoardStore((s) => s.setBoard);
 
   // Track previous workspace to detect tab switches
@@ -262,12 +267,9 @@ export default function App() {
     async (workspaceId: string) => {
       const workspacePanes = getPanesForWorkspace(workspaceId);
       const windowIds = workspacePanes.map((p) => p.windowId);
-      await uiStateSet(
-        `terminals:${workspaceId}`,
-        JSON.stringify(windowIds)
-      );
+      await uiStateSet(`terminals:${workspaceId}`, JSON.stringify(windowIds));
     },
-    [getPanesForWorkspace]
+    [getPanesForWorkspace],
   );
 
   const notifyPush = useNotificationsStore((s) => s.push);
@@ -275,7 +277,11 @@ export default function App() {
   useEffect(() => {
     const unsub = subscribeNotify((payload) => {
       pushToast(payload);
-      notifyPush(payload.level as NotifyLevel, payload.code as NotifyCode, payload.message);
+      notifyPush(
+        payload.level as NotifyLevel,
+        payload.code as NotifyCode,
+        payload.message,
+      );
     });
     return () => {
       unsub.then((u) => u());
@@ -330,13 +336,17 @@ export default function App() {
       // keeps the active workspace's state accurate for when you switch away.
       if (p.kind === "started") {
         // "started" has no badge/ledger meaning and must not be throttled.
-        useWorkspacesStore.getState().markTerminalStarted(p.workspace_id, p.window_id);
+        useWorkspacesStore
+          .getState()
+          .markTerminalStarted(p.workspace_id, p.window_id);
         return;
       }
       if (p.kind === "gone") {
         // The pane reached EOF (e.g. the shell `exit`ed) without a completion —
         // reconcile the busy flag so the tab's comet doesn't linger. No badge.
-        useWorkspacesStore.getState().clearTerminalBusy(p.workspace_id, p.window_id);
+        useWorkspacesStore
+          .getState()
+          .clearTerminalBusy(p.workspace_id, p.window_id);
         return;
       }
       if (p.kind === "completed") {
@@ -345,7 +355,11 @@ export default function App() {
         const activeId = useWorkspacesStore.getState().activeWorkspaceId;
         useWorkspacesStore
           .getState()
-          .markTerminalDone(p.workspace_id, p.window_id, p.workspace_id !== activeId);
+          .markTerminalDone(
+            p.workspace_id,
+            p.window_id,
+            p.workspace_id !== activeId,
+          );
         // fall through to the existing badge + ledger logic
       }
 
@@ -379,7 +393,9 @@ export default function App() {
             ? "failed"
             : "done"
           : "input";
-      useLedgerStore.getState().setAttention(p.window_id, attentionKind, p.detail);
+      useLedgerStore
+        .getState()
+        .setAttention(p.window_id, attentionKind, p.detail);
     });
     return () => {
       unsub.then((u) => u());
@@ -519,7 +535,7 @@ export default function App() {
       const oldPanes = getPanesForWorkspace(prevId);
       const windowIds = oldPanes.map((p) => p.windowId);
       uiStateSet(`terminals:${prevId}`, JSON.stringify(windowIds)).catch(
-        () => {}
+        () => {},
       );
       // Remove panes from store — this triggers TerminalPane unmount
       // which calls terminalClose (kills viewer, tmux window survives)
@@ -536,15 +552,13 @@ export default function App() {
       if (existing.length > 0) return;
 
       try {
-        const stored = await uiStateGet(
-          `terminals:${activeWorkspaceId}`
-        );
+        const stored = await uiStateGet(`terminals:${activeWorkspaceId}`);
         if (!stored) return;
         const windowIds: string[] = JSON.parse(stored);
         // Reattach in parallel — each window is independent, and a serial loop
         // would make restore latency scale with the number of terminals.
         const results = await Promise.allSettled(
-          windowIds.map((wid) => terminalOpen(activeWorkspaceId, wid))
+          windowIds.map((wid) => terminalOpen(activeWorkspaceId, wid)),
         );
         // Add panes in windowIds order, not Promise-resolution order, so
         // terminals reappear in their saved layout instead of a race.
@@ -572,14 +586,20 @@ export default function App() {
         }
         // Clear stored IDs after successful reattach (they'll be re-persisted on next switch)
         await uiStateSet(`terminals:${activeWorkspaceId}`, "[]").catch(
-          () => {}
+          () => {},
         );
       } catch {
         // No stored terminals, that's fine
       }
     }
     reattach();
-  }, [activeWorkspaceId, addPane, getPanesForWorkspace, removePanesForWorkspace, pushToast]);
+  }, [
+    activeWorkspaceId,
+    addPane,
+    getPanesForWorkspace,
+    removePanesForWorkspace,
+    pushToast,
+  ]);
 
   // Persist window IDs when panes change (for current workspace)
   useEffect(() => {
@@ -607,7 +627,9 @@ export default function App() {
           .setPresetForWindow(activeWorkspaceId, result.windowId, preset.id);
       }
       // Expand the new terminal inline so it shows up right away.
-      useLedgerStore.getState().expandWindow(activeWorkspaceId, result.windowId);
+      useLedgerStore
+        .getState()
+        .expandWindow(activeWorkspaceId, result.windowId);
       scheduleStartupSequence(pane.paneId, { preset });
     } catch (e) {
       console.error(e);
@@ -654,7 +676,7 @@ export default function App() {
               workspaceId: ws,
               channel: result.channel,
             });
-          })
+          }),
         );
         const failed = results.filter((r) => r.status === "rejected").length;
         if (failed > 0) {
@@ -694,7 +716,11 @@ export default function App() {
   };
 
   const handleSettingsSaved = (login: string) => {
-    pushToast({ level: "info", code: "TOKEN_SAVED", message: `GitHub connected as ${login}` });
+    pushToast({
+      level: "info",
+      code: "TOKEN_SAVED",
+      message: `GitHub connected as ${login}`,
+    });
   };
 
   // Until the first workspace load settles, hold a calm themed shell — never the
@@ -702,12 +728,25 @@ export default function App() {
   // frame on every cold start. (Load is local/fast; this is just the seam.)
   if (!workspacesLoaded) {
     return (
-      <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)" }}>
+      <div
+        style={{
+          position: "relative",
+          minHeight: "100vh",
+          background: "var(--bg)",
+        }}
+      >
         {/* titleBarStyle: Overlay removes the native title bar, so keep a drag
             handle even while hydrating. */}
         <div
           data-tauri-drag-region
-          style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 40,
+            zIndex: 1,
+          }}
         />
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>
@@ -717,12 +756,26 @@ export default function App() {
   // Loaded and genuinely empty → the onboarding screen.
   if (workspaces.length === 0) {
     return (
-      <div style={{ position: "relative", minHeight: "100vh", background: "var(--bg)", color: "var(--fg)" }}>
+      <div
+        style={{
+          position: "relative",
+          minHeight: "100vh",
+          background: "var(--bg)",
+          color: "var(--fg)",
+        }}
+      >
         {/* titleBarStyle: Overlay removes the native title bar, so the window
             needs a drag handle even on the onboarding screen. */}
         <div
           data-tauri-drag-region
-          style={{ position: "fixed", top: 0, left: 0, right: 0, height: 40, zIndex: 1 }}
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 40,
+            zIndex: 1,
+          }}
         />
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
         <Onboarding />
@@ -731,9 +784,7 @@ export default function App() {
   }
 
   // Only show panes for the active workspace
-  const activePanes = panes.filter(
-    (p) => p.workspaceId === activeWorkspaceId
-  );
+  const activePanes = panes.filter((p) => p.workspaceId === activeWorkspaceId);
 
   return (
     <div

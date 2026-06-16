@@ -44,7 +44,7 @@ const listeners = new Map<string, Set<Listener>>();
 
 export function mockListen<T>(
   event: string,
-  handler: (ev: { payload: T }) => void
+  handler: (ev: { payload: T }) => void,
 ): Promise<() => void> {
   let set = listeners.get(event);
   if (!set) {
@@ -104,7 +104,7 @@ function mkCard(
   wsId: string,
   columnId: string,
   title: string,
-  extra: Partial<Card> = {}
+  extra: Partial<Card> = {},
 ): Card {
   seq += 1;
   return {
@@ -150,7 +150,7 @@ function colId(wsId: string, name: string): string {
         github_issue_number: i % 2 === 0 ? 100 + i : null,
         github_state: i % 2 === 0 ? "open" : null,
         labels_json: i % 3 === 0 ? JSON.stringify(["bug", "p1"]) : null,
-      })
+      }),
     ),
     mkCard(WS_GH, colId(WS_GH, "Doing"), "Wire mock IPC for QA", {
       source: "github",
@@ -203,7 +203,9 @@ function emitBoard(wsId: string) {
   });
 }
 
-function findCard(cardId: string): { wsId: string; board: Board; card: Card } | null {
+function findCard(
+  cardId: string,
+): { wsId: string; board: Board; card: Card } | null {
   for (const [wsId, board] of boards) {
     const card = board.cards.find((c) => c.id === cardId);
     if (card) return { wsId, board, card };
@@ -346,7 +348,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
               source: "github",
               github_issue_number: n,
               github_state: "open",
-            })
+            }),
           );
           emitBoard(wsId);
           // Reachable notification path: a github sync surfaces a notice in the
@@ -378,8 +380,8 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
         channels.set(paneId, channel);
         channel.push(
           enc(
-            "\x1b[2m[mock terminal — QA mode] digite e veja o eco. Sem PTY real.\x1b[0m\r\n$ "
-          )
+            "\x1b[2m[mock terminal — QA mode] digite e veja o eco. Sem PTY real.\x1b[0m\r\n$ ",
+          ),
         );
       }
       // Drive the working-comet → completion logic on the tab/workspace.
@@ -391,7 +393,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
             kind: "started",
             detail: "",
           }),
-        200
+        200,
       );
       later(
         () =>
@@ -401,7 +403,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
             kind: "completed",
             detail: "0",
           }),
-        1800
+        1800,
       );
       return ok({ pane_id: paneId, window_id: windowId });
     }
@@ -477,8 +479,18 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       ] as GbrainSource[]);
     case "gbrain_recent_pages":
       return ok([
-        { slug: "ade-overview", title: "ADE overview", kind: "doc", updated_at: NOW },
-        { slug: "qa-strategy", title: "QA strategy", kind: "doc", updated_at: NOW },
+        {
+          slug: "ade-overview",
+          title: "ADE overview",
+          kind: "doc",
+          updated_at: NOW,
+        },
+        {
+          slug: "qa-strategy",
+          title: "QA strategy",
+          kind: "doc",
+          updated_at: NOW,
+        },
       ] as GbrainPage[]);
     case "gbrain_query":
       return ok([
@@ -518,7 +530,7 @@ const MOCK_GESTOR_PROPOSALS = [
   {
     id: "prop-1",
     job_id: "job-1",
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     ord: 0,
     title: "Add the Gestor config view to the top bar",
     body: "New surface in App.tsx + store/settings.ts.",
@@ -532,7 +544,7 @@ const MOCK_GESTOR_PROPOSALS = [
   {
     id: "prop-2",
     job_id: "job-1",
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     ord: 1,
     title: "Wire the settings store",
     body: "settings.ts read/write of gestor_enabled.",
@@ -548,7 +560,7 @@ const MOCK_GESTOR_PROPOSALS = [
 const MOCK_GESTOR_TASKS = [
   {
     id: "task-1",
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     card_id: "card-1",
     state: "working",
     attempt: 2,
@@ -560,7 +572,7 @@ const MOCK_GESTOR_TASKS = [
   },
   {
     id: "task-2",
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     card_id: "card-2",
     state: "verifying",
     attempt: 1,
@@ -575,7 +587,7 @@ const MOCK_GESTOR_TASKS = [
 const MOCK_GESTOR_FEED = [
   {
     id: 3,
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     task_id: "task-1",
     job_id: null,
     ts: "2026-06-15T20:06:00Z",
@@ -588,7 +600,7 @@ const MOCK_GESTOR_FEED = [
   },
   {
     id: 2,
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     task_id: "task-2",
     job_id: "job-2",
     ts: "2026-06-15T20:05:30Z",
@@ -601,7 +613,7 @@ const MOCK_GESTOR_FEED = [
   },
   {
     id: 1,
-    workspace_id: "ws1",
+    workspace_id: "ws-mock",
     task_id: "task-1",
     job_id: null,
     ts: "2026-06-15T20:01:00Z",
@@ -615,10 +627,22 @@ const MOCK_GESTOR_FEED = [
 ];
 
 const MOCK_SKILLS: SkillInfo[] = [
-  { name: "qa", description: "Systematically QA test a web app and fix bugs.", category: "Review" },
+  {
+    name: "qa",
+    description: "Systematically QA test a web app and fix bugs.",
+    category: "Review",
+  },
   { name: "review", description: "Pre-landing PR review.", category: "Review" },
-  { name: "spec", description: "Turn vague intent into an executable spec.", category: "Plan" },
-  { name: "impeccable", description: "Improve a frontend interface.", category: "Design" },
+  {
+    name: "spec",
+    description: "Turn vague intent into an executable spec.",
+    category: "Plan",
+  },
+  {
+    name: "impeccable",
+    description: "Improve a frontend interface.",
+    category: "Design",
+  },
 ];
 
 // ---- mock terminal channel ----
