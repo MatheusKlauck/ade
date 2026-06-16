@@ -126,8 +126,22 @@ pub fn can_transition(from: TaskState, to: TaskState) -> bool {
     )
 }
 
+/// The board column a card sits in for a given FSM state (D13: the board is a
+/// projection of the FSM, not a separate store). `transition` moves the card here
+/// on every state change, so the column always reflects what the agent is doing.
+pub fn column_for(state: TaskState) -> &'static str {
+    use TaskState::*;
+    match state {
+        Queued | Preparing | Working | Verifying | Reviewing | NeedsFixes => "Doing",
+        AwaitingInput | Failed | Aborted => "Paused",
+        Pushing | PrOpen | CiWait | ReadyToMerge | Merging => "PR",
+        Merged | Cleanup | Done => "Done",
+    }
+}
+
 /// Apply a transition: validate it's legal, mutate the task's lifecycle fields,
-/// persist, and record an `agent_event`. The single mutation path for state.
+/// persist, project onto the board (D13), and record an `agent_event`. The single
+/// mutation path for state.
 pub async fn transition(
     db: &DbPool,
     task_id: &str,
@@ -169,6 +183,20 @@ pub async fn transition(
     }
 
     repo::update_agent_task(db, &task).await?;
+
+    // D13: project the new state onto the board. The transition is already
+    // persisted; a missing column or DB hiccup here must not undo it, so surface
+    // it on stderr (no AppHandle at this layer to emit a notify) rather than fail.
+    match repo::move_card_to_column(db, &task.card_id, &task.workspace_id, column_for(to), &ts).await
+    {
+        Ok(true) => {}
+        Ok(false) => eprintln!(
+            "card projection: column '{}' not found for workspace {}",
+            column_for(to),
+            task.workspace_id
+        ),
+        Err(e) => eprintln!("card projection failed for task {}: {e}", task.id),
+    }
 
     let level = match to {
         TaskState::Failed | TaskState::Aborted => "error",
@@ -278,6 +306,64 @@ mod tests {
         pool
     }
 
+    /// A board with all five columns and a card starting in Backlog, so the D13
+    /// projection has a column to land each state in.
+    async fn pool_with_board() -> DbPool {
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workspace (id, name, slug, root_path, created_at) VALUES ('w1','W','w','/tmp','t')").execute(&pool).await.unwrap();
+        for (i, name) in ["Backlog", "Doing", "Paused", "PR", "Done"]
+            .iter()
+            .enumerate()
+        {
+            sqlx::query(
+                "INSERT INTO board_column (id, workspace_id, name, position) VALUES (?, 'w1', ?, ?)",
+            )
+            .bind(format!("col{i}"))
+            .bind(name)
+            .bind(i as i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES ('card1','w1','col0','T',1.0,'local','t','t')").execute(&pool).await.unwrap();
+        let t = AgentTask {
+            id: "task1".into(),
+            workspace_id: "w1".into(),
+            card_id: "card1".into(),
+            state: "queued".into(),
+            attempt: 1,
+            max_attempts: 3,
+            branch: None,
+            worktree_path: None,
+            window_id: None,
+            events_file: None,
+            fail_reason: None,
+            last_event_at: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        };
+        repo::insert_agent_task(&pool, &t).await.unwrap();
+        pool
+    }
+
+    async fn card_col(db: &DbPool, card_id: &str) -> String {
+        sqlx::query_scalar::<_, String>("SELECT column_id FROM card WHERE id = ?")
+            .bind(card_id)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
     #[test]
     fn happy_path_edges_are_legal() {
         use TaskState::*;
@@ -375,6 +461,56 @@ mod tests {
         assert_eq!(t.state, "failed");
         assert_eq!(t.fail_reason.as_deref(), Some("boom"));
         assert!(t.finished_at.is_some());
+    }
+
+    #[test]
+    fn column_projection_map() {
+        use TaskState::*;
+        assert_eq!(column_for(Queued), "Doing");
+        assert_eq!(column_for(Working), "Doing");
+        assert_eq!(column_for(NeedsFixes), "Doing");
+        assert_eq!(column_for(AwaitingInput), "Paused");
+        assert_eq!(column_for(Failed), "Paused");
+        assert_eq!(column_for(Aborted), "Paused");
+        assert_eq!(column_for(PrOpen), "PR");
+        assert_eq!(column_for(Merging), "PR");
+        assert_eq!(column_for(Done), "Done");
+    }
+
+    #[tokio::test]
+    async fn transition_projects_card_onto_board() {
+        let db = pool_with_board().await;
+        // queued→preparing→working ⇒ Doing (col1)
+        transition(&db, "task1", TaskState::Preparing, None)
+            .await
+            .unwrap();
+        transition(&db, "task1", TaskState::Working, None)
+            .await
+            .unwrap();
+        assert_eq!(card_col(&db, "card1").await, "col1");
+
+        // working→awaiting_input ⇒ Paused (col2)
+        transition(&db, "task1", TaskState::AwaitingInput, None)
+            .await
+            .unwrap();
+        assert_eq!(card_col(&db, "card1").await, "col2");
+
+        // …→pushing ⇒ PR (col3)
+        for s in [
+            TaskState::Working,
+            TaskState::Verifying,
+            TaskState::Reviewing,
+            TaskState::Pushing,
+        ] {
+            transition(&db, "task1", s, None).await.unwrap();
+        }
+        assert_eq!(card_col(&db, "card1").await, "col3");
+
+        // terminal failure ⇒ Paused (needs a human)
+        transition(&db, "task1", TaskState::Failed, Some("x"))
+            .await
+            .unwrap();
+        assert_eq!(card_col(&db, "card1").await, "col2");
     }
 
     #[test]
