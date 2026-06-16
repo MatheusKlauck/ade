@@ -53,19 +53,16 @@ guardado no Keychain **por workspace**. Sem token, o loop trava em `pushing`.
 | Exigir CI verde | ⬜ (ou ✅ se o repo tem Actions) | espera os checks |
 | Comandos de gate | ex. `cargo test` / vazio | build/test antes do review |
 
-## 5. **Reinicia o app** ⚠️
+Ligar o "Gestor ligado" **aplica na hora** — o loop sobe assim que você marca
+o toggle (sem reiniciar). Desligar derruba o loop.
 
-`gestor_enabled` só é lido no **boot** — o runtime é spawnado uma vez no
-startup (sem hot-toggle ainda). Feche e reabra o `tauri:dev`. Sem isso, nada
-roda.
-
-## 6. Dá trabalho pro loop
+## 5. Dá trabalho pro loop
 
 Crie um card no **Backlog** descrevendo a tarefa (ou use "Enviar para o
 Gestor" no menu de um card). Em L2 a ponte autônoma puxa cards do Backlog
 sozinha a cada tick (~3s).
 
-## 7. Observa o loop andar
+## 6. Observa o loop andar
 
 O badge do card + o painel do Gestor mostram o estado. Caminho esperado:
 
@@ -81,7 +78,7 @@ queued → preparing → working → verifying → reviewing → pushing → pr_
 - **ready_to_merge**: o PR está aberto no GitHub. **Você** clica merge (ou a
   ação de merge na UI). Em L3 isso seria automático.
 
-## 8. Fecha
+## 7. Fecha
 
 Aprove o merge → o card vai pra `merged → cleanup → done`, o worktree e a
 janela tmux somem. Confirme no GitHub que o PR mergeou.
@@ -94,7 +91,8 @@ janela tmux somem. Confirme no GitHub que o PR mergeou.
   ajuda. Olhe `fail_reason` no painel; é o gate ou o review reprovando.
 - **Trava em `pushing`**: token ausente/sem escopo `repo`, ou owner/repo não
   detectado. Cheque o passo 3.
-- **Nada sai de `queued`**: autonomia < L2, ou esqueceu de reiniciar (passo 5).
+- **Nada sai de `queued`**: autonomia < L2 (a ponte autônoma só puxa do Backlog
+  em L2+).
 - **Worker não sobe (`failed` no dispatch)**: `tmux`/`claude` fora do PATH do
   app — veja `ensure_path_env` em `src-tauri/src/lib.rs`.
 - **Aborta tudo**: baixe pra L0 na aba Gestor e reinicie; ou feche o

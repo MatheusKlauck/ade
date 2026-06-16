@@ -110,7 +110,7 @@ export default function GestorSettings({
     <div style={{ maxWidth: 560, display: "grid", gap: 18 }}>
       <Row
         label="Gestor ligado"
-        hint="Liga o loop autônomo deste workspace. Aplica no próximo restart do app."
+        hint="Liga o loop autônomo deste workspace. Aplica na hora."
       >
         <input
           type="checkbox"

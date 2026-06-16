@@ -50,6 +50,7 @@ pub async fn setting_get(
 #[tauri::command]
 pub async fn setting_set(
     state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
     workspace_id: String,
     key: String,
     value: String,
@@ -63,6 +64,22 @@ pub async fn setting_set(
     .execute(&state.db)
     .await
     .map_err(AdeError::Db)?;
+
+    // Hot-toggle the gestor loop so enabling it in the UI takes effect live,
+    // without an app restart (the loop is otherwise only spawned at boot).
+    if key == "gestor_enabled" {
+        if value == "true" {
+            crate::spawn_gestor_for_workspace(
+                workspace_id.clone(),
+                state.db.clone(),
+                app,
+                &state.gestor,
+            )
+            .await;
+        } else {
+            crate::stop_gestor_for_workspace(&workspace_id, &state.gestor).await;
+        }
+    }
 
     Ok(())
 }
