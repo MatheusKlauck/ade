@@ -425,3 +425,34 @@ polling dispensa notify). Binários externos: `tmux ≥ 3.2` (já exigido) e `cl
 Validar D1–D10 e as questões §12 → explodir este plano no padrão da casa:
 `plan/00-CONTRACTS-GESTOR.md` (tipos, schema final, IPC, prompts, decision tables) +
 `plan/G0.md … G6.md` + `PROGRESS.md`, e seguir o AGENTS.md task a task.
+
+---
+
+## 14. Reframe v1.1 — o gestor é o substrato, não um módulo (2026-06-16)
+
+A v1 acabou implementada como **módulo ao lado** do ADE: um loop spawnado sob um
+toggle `gestor_enabled`, com despacho próprio (`dispatch_task`) paralelo ao do
+humano (`on_moved_to_doing`), e `agent_task` como store separado do `card`,
+sincronizado por uma ponte Backlog→queued. Resultado: arrastar um card pra Doing
+dava o ADE pré-gestor (terminal no checkout, prompt pelo frontend, sem FSM); o
+gestor só agia no seu próprio trilho. Isso contradiz a tese D1 ("a FSM coordena o
+fluxo completo do ADE"). A correção é **inversão de controle**: a UI passa a
+operar a FSM do gestor, e a FSM projeta no board. Uma superfície de ação, dois
+operadores (humano e gestor), diferenciados só pela autonomia.
+
+| # | Decisão | Racional / o que reverte |
+|---|---|---|
+| D11 | **Autonomia é o único dial; não há on/off.** Remove `gestor_enabled`. L0 = presente mas 100% manual; L1 jobs sob demanda; L2+ o loop despacha. O loop autônomo sobe em L2+ (`can_dispatch`). | O toggle era o sinal mais forte de "plugin opcional". Capacidades já eram graduadas por nível (`autonomy.rs`); o on/off era redundante e enganoso. |
+| D12 | **Default de autonomia: L0** (era L2). | Reverte o default de D6. Sem o on/off, L2-por-padrão = auto-despacho em todo workspace na primeira vez — inseguro. Substrato presente, ação opt-up. |
+| D13 | **A coluna do card é projeção do estado da FSM**, não uma camada de badge à parte. `transition()` move o card pra coluna mapeada; arrastar um card é pedir uma transição. | Reverte D7. Uma verdade só (sem ponte `card`↔`agent_task`). O badge vira detalhe dentro da coluna, não a única superfície do estado agêntico. |
+
+**Mapa estado→coluna (D13):** `queued/preparing/working/verifying/reviewing/needs_fixes`
+→ Doing · `awaiting_input` → Paused · `pushing/pr_open/ci_wait/ready_to_merge/merging`
+→ PR · `merged/cleanup/done` → Done · `failed/aborted` → Paused (precisa de humano).
+Card sem `agent_task` continua de coluna livre (controle do humano); a projeção só
+rege cards sob gestão.
+
+**Superfície única (consequência):** `on_moved_to_doing` e `dispatch_task` colapsam
+numa só ação — entrar em Doing (humano ou gestor) cria/avança a task e despacha o
+worker pelo mesmo caminho (worktree + terminal + prompt). A ponte Backlog→queued
+deixa de ser necessária: arrastar pra Doing já é o enqueue.
