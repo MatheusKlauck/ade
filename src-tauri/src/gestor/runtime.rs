@@ -594,4 +594,142 @@ mod tests {
         std::fs::write(&path, "line1\nline2\nline3\npartial\n").unwrap();
         assert_eq!(cur.read_new(&path), vec!["partial"]);
     }
+
+    // --- E2E smoke: the local half of the loop on a REAL git repo ---
+    // Drives the stage processors in the exact order start_runtime calls them
+    // (Stop decision → verify gates → review), proving they compose end-to-end:
+    // working → verifying → reviewing → pushing. The GitHub half (push/PR/CI/
+    // merge) needs a live remote + token and is out of scope for a unit run.
+
+    use crate::error::AdeError;
+    use crate::gestor::fsm::{self, TaskState};
+    use crate::gestor::provider::{GestorProvider, JobKind, JobResult, ProviderInfo};
+    use crate::repo;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::sync::Mutex;
+
+    struct FakeProvider(Mutex<Vec<String>>);
+    impl GestorProvider for FakeProvider {
+        async fn run_job(
+            &self,
+            _k: JobKind,
+            _p: String,
+            _c: &Path,
+            _t: &[&str],
+        ) -> Result<JobResult, AdeError> {
+            Ok(JobResult {
+                output: self.0.lock().unwrap().remove(0),
+                cost_usd: None,
+                num_turns: None,
+                duration_ms: None,
+            })
+        }
+        fn probe(&self) -> Result<ProviderInfo, AdeError> {
+            Ok(ProviderInfo {
+                version: "fake".into(),
+            })
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    #[tokio::test]
+    async fn loop_local_half_walks_working_to_pushing_on_real_git() {
+        // A real repo: base commit on `main`, then a feature commit ahead of it
+        // (this stands in for what a worker produces in its worktree).
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path();
+        git(wt, &["init", "-q", "-b", "main"]);
+        git(wt, &["config", "user.email", "t@t"]);
+        git(wt, &["config", "user.name", "t"]);
+        std::fs::write(wt.join("README.md"), "base\n").unwrap();
+        git(wt, &["add", "."]);
+        git(wt, &["commit", "-qm", "base"]);
+        git(wt, &["checkout", "-q", "-b", "ade/task1"]);
+        std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
+        git(wt, &["add", "."]);
+        git(wt, &["commit", "-qm", "feature"]);
+
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT INTO workspace (id, name, slug, root_path, created_at) VALUES ('w1','W','w','/tmp','t')").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO board_column (id, workspace_id, name, position) VALUES ('c1','w1','Doing',0)").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO card (id, workspace_id, column_id, title, position, source, created_at, updated_at) VALUES ('card1','w1','c1','add feature',1.0,'local','t','t')").execute(&db).await.unwrap();
+        let mut t = task("task1", "working", "t");
+        t.workspace_id = "w1".into();
+        t.card_id = "card1".into();
+        t.worktree_path = Some(wt.to_string_lossy().into());
+        repo::insert_agent_task(&db, &t).await.unwrap();
+
+        // 1. Stop decision from real git state (loop step 3): clean tree + commits
+        //    ahead of main ⇒ ToVerifying.
+        let sig = fsm::WorkerSignals {
+            marker_done: false,
+            tree_clean: crate::gitlocal::tree_clean(&wt.to_string_lossy()),
+            commits_ahead: crate::gitlocal::commits_ahead(&wt.to_string_lossy(), "main"),
+        };
+        assert!(sig.tree_clean && sig.commits_ahead, "real git state wrong");
+        assert!(matches!(
+            fsm::decide_on_stop(&sig),
+            fsm::StopOutcome::ToVerifying { .. }
+        ));
+        fsm::transition(&db, "task1", TaskState::Verifying, None)
+            .await
+            .unwrap();
+
+        // 2. Verify gates (loop step 5): a real passing gate against the worktree.
+        let task = repo::agent_task_by_id(&db, "task1").await.unwrap().unwrap();
+        crate::gestor::gates::process_verifying(
+            &db,
+            &task,
+            wt,
+            None,
+            &["true".into()],
+            crate::gestor::gates::GATE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo::agent_task_by_id(&db, "task1")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "reviewing"
+        );
+
+        // 3. Review (loop step 6): LLM judges the real diff; approve ⇒ pushing.
+        let task = repo::agent_task_by_id(&db, "task1").await.unwrap().unwrap();
+        let diff = crate::gitlocal::diff(&wt.to_string_lossy(), "main");
+        assert!(diff.contains("feature.txt"), "diff should carry the work");
+        let p = FakeProvider(Mutex::new(vec![r#"{"verdict":"approve"}"#.into()]));
+        crate::gestor::review::process_reviewing(&db, &p, "w1", &task, wt, &diff)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo::agent_task_by_id(&db, "task1")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "pushing"
+        );
+    }
 }
