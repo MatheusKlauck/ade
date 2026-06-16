@@ -513,7 +513,13 @@ pub async fn card_update_github(
     // 5. Create GitHubClient and PATCH the issue
     let gh = GitHubClient::new(crate::gh::client::GITHUB_API_BASE.to_string(), token);
     let issue = gh
-        .update_issue(&owner, &repo, issue_number, title.as_deref(), body.as_deref())
+        .update_issue(
+            &owner,
+            &repo,
+            issue_number,
+            title.as_deref(),
+            body.as_deref(),
+        )
         .await
         .map_err(|e| AdeError::Other(format!("failed to update GitHub issue: {e}")))?;
 

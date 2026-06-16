@@ -41,7 +41,11 @@ impl McpClient {
         }
     }
 
-    async fn post(&self, session: Option<&str>, payload: &Value) -> Result<reqwest::Response, AdeError> {
+    async fn post(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+    ) -> Result<reqwest::Response, AdeError> {
         let mut req = self
             .http
             .post(&self.endpoint)
@@ -197,7 +201,11 @@ fn tool_result_text(result: &Value) -> Result<String, AdeError> {
         .filter_map(|block| block.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("");
-    if result.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+    if result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Err(AdeError::Other(format!("tool reported error: {text}")));
     }
     if text.is_empty() {
@@ -215,7 +223,11 @@ mod tests {
 
     #[test]
     fn extract_jsonrpc_parses_plain_json() {
-        let v = extract_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#, "application/json").unwrap();
+        let v = extract_jsonrpc(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
+            "application/json",
+        )
+        .unwrap();
         assert_eq!(v["result"]["ok"], json!(true));
     }
 
@@ -233,14 +245,16 @@ mod tests {
 
     #[test]
     fn check_rpc_error_surfaces_message() {
-        let rpc = json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}});
+        let rpc =
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}});
         let err = check_rpc_error(&rpc).unwrap_err();
         assert!(err.to_string().contains("method not found"));
     }
 
     #[test]
     fn tool_result_text_joins_blocks() {
-        let result = json!({"content":[{"type":"text","text":"{\"a\":"},{"type":"text","text":"1}"}]});
+        let result =
+            json!({"content":[{"type":"text","text":"{\"a\":"},{"type":"text","text":"1}"}]});
         assert_eq!(tool_result_text(&result).unwrap(), "{\"a\":1}");
     }
 
@@ -307,7 +321,10 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        let err = client.call_tool_json("get_status_snapshot", json!({})).await.unwrap_err();
+        let err = client
+            .call_tool_json("get_status_snapshot", json!({}))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("unreachable") || err.to_string().contains("failed"));
     }
 }

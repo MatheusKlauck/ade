@@ -67,7 +67,9 @@ pub async fn gbrain_identity(state: State<'_, Arc<AppState>>) -> Result<GbrainId
 
 /// Per-source sync state, for the "stale" panel's source list.
 #[tauri::command]
-pub async fn gbrain_sources(state: State<'_, Arc<AppState>>) -> Result<Vec<GbrainSource>, AdeError> {
+pub async fn gbrain_sources(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<GbrainSource>, AdeError> {
     let (base, token) = endpoint(&state)?;
     crate::gbrain::sources(&base, &token).await
 }

@@ -28,6 +28,23 @@ pub struct RemoteIssue {
     pub assignee_avatar_url: Option<String>,
 }
 
+/// A GitHub pull request, as the gestor needs it (PLANO §6 publish/CI). Minimal:
+/// number to track, html_url for the card, state for CI/merge polling.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PullRequest {
+    pub number: u64,
+    pub html_url: String,
+    pub state: String, // "open" | "closed"
+}
+
+/// A CI check run on a commit (GitHub check-runs API). The gestor polls these to
+/// decide when a PR is mergeable (#55).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CheckRun {
+    pub status: String,             // queued | in_progress | completed
+    pub conclusion: Option<String>, // success | failure | neutral | skipped | ...
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncAction {
     CreateCard {

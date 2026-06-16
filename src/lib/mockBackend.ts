@@ -44,7 +44,7 @@ const listeners = new Map<string, Set<Listener>>();
 
 export function mockListen<T>(
   event: string,
-  handler: (ev: { payload: T }) => void
+  handler: (ev: { payload: T }) => void,
 ): Promise<() => void> {
   let set = listeners.get(event);
   if (!set) {
@@ -98,13 +98,16 @@ interface Board {
 
 const COL_NAMES = ["Backlog", "Doing", "Paused", "PR", "Done"];
 const boards = new Map<string, Board>();
+// Per-session workspace_setting store (key: `${workspaceId}:${key}`) so the
+// Gestor settings tab round-trips in browser/QA mode.
+const mockSettings = new Map<string, string>();
 
 let seq = 0;
 function mkCard(
   wsId: string,
   columnId: string,
   title: string,
-  extra: Partial<Card> = {}
+  extra: Partial<Card> = {},
 ): Card {
   seq += 1;
   return {
@@ -150,7 +153,7 @@ function colId(wsId: string, name: string): string {
         github_issue_number: i % 2 === 0 ? 100 + i : null,
         github_state: i % 2 === 0 ? "open" : null,
         labels_json: i % 3 === 0 ? JSON.stringify(["bug", "p1"]) : null,
-      })
+      }),
     ),
     mkCard(WS_GH, colId(WS_GH, "Doing"), "Wire mock IPC for QA", {
       source: "github",
@@ -203,7 +206,9 @@ function emitBoard(wsId: string) {
   });
 }
 
-function findCard(cardId: string): { wsId: string; board: Board; card: Card } | null {
+function findCard(
+  cardId: string,
+): { wsId: string; board: Board; card: Card } | null {
   for (const [wsId, board] of boards) {
     const card = board.cards.find((c) => c.id === cardId);
     if (card) return { wsId, board, card };
@@ -228,7 +233,24 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return ok(snapshot(a.workspaceId));
     case "skills_list":
       return ok(MOCK_SKILLS);
+    // ---- gestor (#56): representative data so the panel's populated states
+    // (proposals, feed rows, tasks) are exercisable in browser QA ----
+    case "gestor_tasks_list":
+      return ok(MOCK_GESTOR_TASKS);
+    case "gestor_feed_list":
+      return ok(MOCK_GESTOR_FEED);
+    case "gestor_plan":
+      return ok(MOCK_GESTOR_PROPOSALS);
+    case "proposal_approve":
+      return ok((a.proposalIds as string[]) ?? []);
+    case "gestor_build_feature":
+      return ok(MOCK_GESTOR_PROPOSALS);
+    case "gestor_enqueue_card":
+      return ok("mock-task");
+    case "gestor_release_notes":
+      return ok("_No changes since the last tag._");
     case "setting_get":
+      return ok(mockSettings.get(`${a.workspaceId}:${a.key}`) ?? null);
     case "ui_state_get":
       return ok(null);
     case "card_detail": {
@@ -332,7 +354,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
               source: "github",
               github_issue_number: n,
               github_state: "open",
-            })
+            }),
           );
           emitBoard(wsId);
           // Reachable notification path: a github sync surfaces a notice in the
@@ -364,8 +386,8 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
         channels.set(paneId, channel);
         channel.push(
           enc(
-            "\x1b[2m[mock terminal — QA mode] digite e veja o eco. Sem PTY real.\x1b[0m\r\n$ "
-          )
+            "\x1b[2m[mock terminal — QA mode] digite e veja o eco. Sem PTY real.\x1b[0m\r\n$ ",
+          ),
         );
       }
       // Drive the working-comet → completion logic on the tab/workspace.
@@ -377,7 +399,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
             kind: "started",
             detail: "",
           }),
-        200
+        200,
       );
       later(
         () =>
@@ -387,7 +409,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
             kind: "completed",
             detail: "0",
           }),
-        1800
+        1800,
       );
       return ok({ pane_id: paneId, window_id: windowId });
     }
@@ -463,8 +485,18 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       ] as GbrainSource[]);
     case "gbrain_recent_pages":
       return ok([
-        { slug: "ade-overview", title: "ADE overview", kind: "doc", updated_at: NOW },
-        { slug: "qa-strategy", title: "QA strategy", kind: "doc", updated_at: NOW },
+        {
+          slug: "ade-overview",
+          title: "ADE overview",
+          kind: "doc",
+          updated_at: NOW,
+        },
+        {
+          slug: "qa-strategy",
+          title: "QA strategy",
+          kind: "doc",
+          updated_at: NOW,
+        },
       ] as GbrainPage[]);
     case "gbrain_query":
       return ok([
@@ -484,8 +516,11 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
     case "workspace_create":
       return ok(workspaces[0]);
 
-    // ---- fire-and-forget writes / no-ops ----
     case "setting_set":
+      mockSettings.set(`${a.workspaceId}:${a.key}`, a.value as string);
+      return ok(undefined);
+
+    // ---- fire-and-forget writes / no-ops ----
     case "ui_state_set":
     case "terminal_resize":
     case "terminal_kill_window":
@@ -500,11 +535,123 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
   }
 }
 
+const MOCK_GESTOR_PROPOSALS = [
+  {
+    id: "prop-1",
+    job_id: "job-1",
+    workspace_id: "ws-mock",
+    ord: 0,
+    title: "Add the Gestor config view to the top bar",
+    body: "New surface in App.tsx + store/settings.ts.",
+    labels_json: '["ui"]',
+    depends_on_json: "[]",
+    acceptance_json: '["renders in the top bar","persists toggle"]',
+    priority: "high",
+    status: "proposed",
+    card_id: null,
+  },
+  {
+    id: "prop-2",
+    job_id: "job-1",
+    workspace_id: "ws-mock",
+    ord: 1,
+    title: "Wire the settings store",
+    body: "settings.ts read/write of gestor_enabled.",
+    labels_json: "[]",
+    depends_on_json: "[0]",
+    acceptance_json: '["round-trips through the DB"]',
+    priority: "medium",
+    status: "proposed",
+    card_id: null,
+  },
+];
+
+const MOCK_GESTOR_TASKS = [
+  {
+    id: "task-1",
+    workspace_id: "ws-mock",
+    card_id: "card-1",
+    state: "working",
+    attempt: 2,
+    max_attempts: 3,
+    branch: "issue-42",
+    fail_reason: null,
+    created_at: "2026-06-15T20:00:00Z",
+    updated_at: "2026-06-15T20:05:00Z",
+  },
+  {
+    id: "task-2",
+    workspace_id: "ws-mock",
+    card_id: "card-2",
+    state: "verifying",
+    attempt: 1,
+    max_attempts: 3,
+    branch: "issue-43",
+    fail_reason: null,
+    created_at: "2026-06-15T20:01:00Z",
+    updated_at: "2026-06-15T20:06:00Z",
+  },
+];
+
+const MOCK_GESTOR_FEED = [
+  {
+    id: 3,
+    workspace_id: "ws-mock",
+    task_id: "task-1",
+    job_id: null,
+    ts: "2026-06-15T20:06:00Z",
+    kind: "task_transition",
+    level: "info",
+    payload_json: '{"from":"working","to":"verifying"}',
+    cost_usd: null,
+    num_turns: null,
+    duration_ms: null,
+  },
+  {
+    id: 2,
+    workspace_id: "ws-mock",
+    task_id: "task-2",
+    job_id: "job-2",
+    ts: "2026-06-15T20:05:30Z",
+    kind: "job_done",
+    level: "info",
+    payload_json: '{"verdict":"approve"}',
+    cost_usd: 0.042,
+    num_turns: 5,
+    duration_ms: 1234,
+  },
+  {
+    id: 1,
+    workspace_id: "ws-mock",
+    task_id: "task-1",
+    job_id: null,
+    ts: "2026-06-15T20:01:00Z",
+    kind: "job_failed",
+    level: "error",
+    payload_json: '{"error":"schema validation failed"}',
+    cost_usd: null,
+    num_turns: null,
+    duration_ms: null,
+  },
+];
+
 const MOCK_SKILLS: SkillInfo[] = [
-  { name: "qa", description: "Systematically QA test a web app and fix bugs.", category: "Review" },
+  {
+    name: "qa",
+    description: "Systematically QA test a web app and fix bugs.",
+    category: "Review",
+  },
   { name: "review", description: "Pre-landing PR review.", category: "Review" },
-  { name: "spec", description: "Turn vague intent into an executable spec.", category: "Plan" },
-  { name: "impeccable", description: "Improve a frontend interface.", category: "Design" },
+  {
+    name: "spec",
+    description: "Turn vague intent into an executable spec.",
+    category: "Plan",
+  },
+  {
+    name: "impeccable",
+    description: "Improve a frontend interface.",
+    category: "Design",
+  },
 ];
 
 // ---- mock terminal channel ----

@@ -2,6 +2,7 @@ pub mod board_pos;
 pub mod db;
 pub mod error;
 pub mod gbrain;
+pub mod gestor;
 pub mod notify;
 
 mod gh;
@@ -31,6 +32,9 @@ pub struct AppState {
     pub pty: crate::pty::PtyRegistry,
     pub db: db::DbPool,
     pub workers: tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
+    /// Running gestor loops, keyed by workspace id, so changing `autonomy_level`
+    /// in the UI starts/stops the loop live — no app restart (see `setting_set`).
+    pub gestor: tokio::sync::Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     /// Window ids with a live completion monitor (see `term_monitor`).
     pub monitors: term_monitor::Monitors,
     /// The app-owned `gbrain serve --http` connection, populated asynchronously
@@ -139,18 +143,21 @@ async fn spawn_sync_workers(
     app: tauri::AppHandle,
     workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 ) {
-    let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
-        concat!("SELECT ", crate::repo::workspace_cols!(), " FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL"),
-    )
-    .fetch_all(&pool)
-    .await
-    {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("failed to query workspaces for sync: {}", e);
-            return;
-        }
-    };
+    let workspaces: Vec<crate::models::Workspace> =
+        match sqlx::query_as::<_, crate::models::Workspace>(concat!(
+            "SELECT ",
+            crate::repo::workspace_cols!(),
+            " FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL"
+        ))
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("failed to query workspaces for sync: {}", e);
+                return;
+            }
+        };
 
     for ws in workspaces {
         // Each workspace uses its own token (falling back to the legacy global
@@ -160,14 +167,74 @@ async fn spawn_sync_workers(
             Ok(Some(t)) => t,
             _ => String::new(),
         };
-        spawn_worker_for_workspace(
-            ws.id.clone(),
-            token,
-            pool.clone(),
-            app.clone(),
-            workers,
-        )
-        .await;
+        spawn_worker_for_workspace(ws.id.clone(), token, pool.clone(), app.clone(), workers).await;
+    }
+}
+
+/// Spawn the Gestor runtime loop at boot for every open workspace at autonomy
+/// L2+ (D11: the dial is the only control; L2 is the first level that dispatches).
+/// Each loop probes `claude` and, if present, drives that workspace's tasks; a
+/// missing provider disables only that loop. Handles are registered in
+/// `AppState.gestor` so `setting_set` can start/stop a loop live when
+/// `autonomy_level` changes (no restart).
+async fn spawn_gestor_runtimes(pool: db::DbPool, app: tauri::AppHandle, handles: &GestorHandles) {
+    let workspaces: Vec<crate::models::Workspace> =
+        match sqlx::query_as::<_, crate::models::Workspace>(concat!(
+            "SELECT ",
+            crate::repo::workspace_cols!(),
+            " FROM workspace WHERE closed_at IS NULL"
+        ))
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("failed to query workspaces for gestor: {}", e);
+                return;
+            }
+        };
+
+    for ws in workspaces {
+        // D11: the autonomy dial is the only control. The autonomous loop runs
+        // at L2+ (can_dispatch); L0/L1 need no loop (L0 is manual, L1's jobs are
+        // on-demand via IPC). No `gestor_enabled` toggle.
+        if crate::gestor::autonomy::load(&pool, &ws.id)
+            .await
+            .can_dispatch()
+        {
+            spawn_gestor_for_workspace(ws.id, pool.clone(), app.clone(), handles).await;
+        }
+    }
+}
+
+type GestorHandles = tokio::sync::Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>;
+
+/// Start one workspace's gestor loop and register its handle so a toggle-off can
+/// stop it. Replaces (aborts) any existing handle for the workspace, so calling
+/// it on an already-running loop is a clean restart — `start_runtime` reconciles
+/// orphaned worker tasks on entry. The loop self-disables if `claude` is absent.
+pub(crate) async fn spawn_gestor_for_workspace(
+    workspace_id: String,
+    pool: db::DbPool,
+    app: tauri::AppHandle,
+    handles: &GestorHandles,
+) {
+    let provider = Arc::new(crate::gestor::provider::ClaudeCli::new());
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let (db2, app2, ws_id) = (pool, app, workspace_id.clone());
+    let handle = tauri::async_runtime::spawn(async move {
+        crate::gestor::runtime::start_runtime(db2, provider, ws_id, app2, notify, 3).await;
+    });
+    if let Some(old) = handles.lock().await.insert(workspace_id, handle) {
+        old.abort();
+    }
+}
+
+/// Stop a workspace's gestor loop (toggle-off). In-flight tmux workers keep
+/// running; their tasks are reconciled if the loop is started again later.
+pub(crate) async fn stop_gestor_for_workspace(workspace_id: &str, handles: &GestorHandles) {
+    if let Some(h) = handles.lock().await.remove(workspace_id) {
+        h.abort();
     }
 }
 
@@ -239,11 +306,17 @@ pub fn run() {
                         std::collections::HashMap::new(),
                     )),
                     workers: tokio::sync::Mutex::new(HashMap::new()),
+                    gestor: tokio::sync::Mutex::new(HashMap::new()),
                     monitors: Arc::new(std::sync::Mutex::new(HashSet::new())),
                     gbrain: std::sync::Mutex::new(None),
                 });
 
                 spawn_sync_workers(pool, handle.clone(), &state.workers).await;
+
+                // Gestor: spawn the autonomous loop for workspaces dialed to L2+
+                // (D11). L0/L1 run no loop; the rest of the app is untouched when
+                // the gestor is manual or `claude` is absent.
+                spawn_gestor_runtimes(state.db.clone(), handle.clone(), &state.gestor).await;
 
                 // Bring up the shared gbrain serve off the startup path so it
                 // doesn't delay first paint; it publishes into state.gbrain once
@@ -290,6 +363,14 @@ pub fn run() {
             ipc::gbrain::gbrain_liveness,
             ipc::gbrain::gbrain_sync,
             ipc::gbrain::gbrain_restart,
+            ipc::gestor::gestor_plan,
+            ipc::gestor::proposal_approve,
+            ipc::gestor::gestor_build_feature,
+            ipc::gestor::gestor_enqueue_card,
+            ipc::gestor::gestor_tasks_list,
+            ipc::gestor::gestor_feed_list,
+            ipc::gestor::gestor_release_notes,
+            ipc::gestor::pr_merge,
         ])
         .build(tauri::generate_context!());
 

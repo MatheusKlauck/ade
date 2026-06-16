@@ -9,6 +9,7 @@ import { useSettingsStore } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useCommandFreqStore } from "../store/commandFrequency";
 import { useModalFocus } from "../lib/useModalFocus";
+import GestorSettings from "./GestorSettings";
 import AppearanceTab from "./settings/AppearanceTab";
 import TerminalAppearanceTab from "./settings/TerminalAppearanceTab";
 import PresetsEditor from "./settings/PresetsEditor";
@@ -27,12 +28,13 @@ interface SettingsProps {
 
 /** The settings modal is split into one tab per concern-domain so the panel
  * never becomes a single scrolling wall of unrelated controls. */
-type TabId = "appearance" | "terminal" | "sync" | "account";
+type TabId = "appearance" | "terminal" | "sync" | "account" | "gestor";
 const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
   { id: "sync", label: "Sync" },
   { id: "account", label: "Account" },
+  { id: "gestor", label: "Gestor" },
 ];
 
 /** Normalize anything thrown across the IPC boundary into a readable string.
@@ -98,7 +100,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
         });
         statusTimers.current.delete(field);
       },
-      state === "saved" ? 1800 : 4000
+      state === "saved" ? 1800 : 4000,
     );
     statusTimers.current.set(field, id);
   }, []);
@@ -135,7 +137,9 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
   const handleSyncIntervalBlur = useCallback(async () => {
     const val = parseInt(localSyncInterval, 10);
     if (isNaN(val) || val < 10) {
-      setSyncError("Enter 10 seconds or more — faster polling hits GitHub rate limits.");
+      setSyncError(
+        "Enter 10 seconds or more — faster polling hits GitHub rate limits.",
+      );
       return;
     }
     setSyncError(null);
@@ -174,7 +178,7 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
 
   const handleTabKeyDown = (
     e: ReactKeyboardEvent<HTMLButtonElement>,
-    idx: number
+    idx: number,
   ) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
@@ -361,9 +365,19 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                   Suggested Commands
                   <FieldStatus state={fieldStatus.suggestions} />
                 </label>
-                <p style={{ margin: "0 0 10px", fontSize: 11, lineHeight: 1.5, color: "var(--muted)" }}>
+                <p
+                  style={{
+                    margin: "0 0 10px",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    color: "var(--muted)",
+                  }}
+                >
                   The quick-command bar learns the commands you run most in{" "}
-                  {activeWorkspaceName ? `“${activeWorkspaceName}”` : "this workspace"}. Reset to clear them.
+                  {activeWorkspaceName
+                    ? `“${activeWorkspaceName}”`
+                    : "this workspace"}
+                  . Reset to clear them.
                 </p>
                 <button
                   onClick={() => {
@@ -437,7 +451,8 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                 >
                   Needs the <strong style={{ fontWeight: 600 }}>repo</strong>{" "}
                   scope so ADE can read and update your issues. Generate one in
-                  GitHub → Settings → Developer settings → Personal access tokens.
+                  GitHub → Settings → Developer settings → Personal access
+                  tokens.
                 </p>
                 {!tokenInputVisible ? (
                   <div
@@ -537,6 +552,16 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                   </div>
                 )}
                 {tokenError && <p style={errorTextStyle}>{tokenError}</p>}
+              </div>
+            )}
+
+            {activeTab === "gestor" && (
+              <div
+                role="tabpanel"
+                id="settings-panel-gestor"
+                aria-labelledby="settings-tab-gestor"
+              >
+                <GestorSettings workspaceId={activeWorkspaceId} />
               </div>
             )}
           </div>

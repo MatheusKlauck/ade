@@ -173,9 +173,241 @@ pub fn prepare_branch(repo_path: &str, issue_number: u64) -> Result<BranchOutcom
     Ok(BranchOutcome::Created)
 }
 
+/// Add a git worktree at `worktree_path` on a fresh branch `branch` cut from
+/// `base` (PLANO §3 dispatch). Shells out to `git worktree add` — argv only, no
+/// shell string. Used by the gestor to give each task an isolated checkout.
+#[allow(dead_code)]
+pub fn worktree_add(
+    repo_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    base: &str,
+) -> Result<(), AdeError> {
+    if let Some(parent) = Path::new(worktree_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("worktree")
+        .arg("add")
+        .arg("-b")
+        .arg(branch)
+        .arg(worktree_path)
+        .arg(base)
+        .output()
+        .map_err(|e| AdeError::Other(format!("git worktree add: {e}")))?;
+    if !out.status.success() {
+        return Err(AdeError::Other(format!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Remove a git worktree (PLANO §3 cleanup). `--force` so a dirty/abandoned
+/// worktree still gets cleaned. Best-effort prune of the now-stale admin entry.
+#[allow(dead_code)]
+pub fn worktree_remove(repo_path: &str, worktree_path: &str) -> Result<(), AdeError> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(worktree_path)
+        .output()
+        .map_err(|e| AdeError::Other(format!("git worktree remove: {e}")))?;
+    if !out.status.success() {
+        return Err(AdeError::Other(format!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Push `branch` to `origin` over HTTPS using a PAT supplied through git2's
+/// credentials callback (PLANO D5/D9: the token is never an argv/URL component,
+/// and the worker never has it — push is core-only). Requires an HTTPS `origin`.
+#[allow(dead_code)]
+pub fn push(repo_path: &str, branch: &str, token: &str) -> Result<(), AdeError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let mut remote = repo.find_remote("origin")?;
+
+    let mut cbs = git2::RemoteCallbacks::new();
+    cbs.credentials(move |_url, _username, _allowed| {
+        // GitHub accepts a PAT as the HTTPS Basic-auth username.
+        git2::Cred::userpass_plaintext("x-access-token", token)
+    });
+    let mut opts = git2::PushOptions::new();
+    opts.remote_callbacks(cbs);
+
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    remote.push(&[&refspec], Some(&mut opts))?;
+    Ok(())
+}
+
+/// The commit SHA at the tip of `branch` (the pushed head, for CI polling #55).
+#[allow(dead_code)]
+pub fn head_sha(repo_path: &str, branch: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["-C", repo_path, "rev-parse", branch])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// One-line-per-commit log since the most recent tag (or all history if there's
+/// no tag). Feeds release_notes (#54). Empty if the command fails.
+#[allow(dead_code)]
+pub fn log_since_last_tag(repo_path: &str) -> String {
+    let tag = std::process::Command::new("git")
+        .args(["-C", repo_path, "describe", "--tags", "--abbrev=0"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty());
+    let range = match &tag {
+        Some(t) => format!("{t}..HEAD"),
+        None => "HEAD".to_string(),
+    };
+    std::process::Command::new("git")
+        .args(["-C", repo_path, "log", &range, "--pretty=format:- %s"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The diff of a worktree's branch against `base` (`git diff base...HEAD` — the
+/// changes introduced on the branch). Used to feed `review_diff` (#39). Empty
+/// string if the command fails or there's nothing to diff.
+#[allow(dead_code)]
+pub fn diff(worktree: &str, base: &str) -> String {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("diff")
+        .arg(format!("{base}...HEAD"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether a worktree has no uncommitted changes (untracked files count as
+/// dirty here, unlike `prepare_branch`, since a worker may have created new
+/// files it forgot to commit). Used by the Stop decision (PLANO §2.3).
+#[allow(dead_code)]
+pub fn tree_clean(worktree: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+        .map(|o| o.status.success() && o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Whether `worktree`'s HEAD has commits ahead of `base` (PLANO §2.3). False if
+/// `base` can't be resolved (can't confirm progress → don't advance).
+#[allow(dead_code)]
+pub fn commits_ahead(worktree: &str, base: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .arg("rev-list")
+        .arg("--count")
+        .arg(format!("{base}..HEAD"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_since_last_tag_lists_commits() {
+        let (repo, _dir) = init_test_repo();
+        let path = repo.path().parent().unwrap().to_str().unwrap();
+        // no tag yet → full history (the single initial commit)
+        let log = log_since_last_tag(path);
+        assert!(log.contains("- initial commit"));
+    }
+
+    #[test]
+    fn push_without_origin_errors_not_panics() {
+        let (repo, _dir) = init_test_repo();
+        let path = repo.path().parent().unwrap().to_str().unwrap();
+        // no `origin` remote configured → graceful Err
+        assert!(push(path, "main", "tok").is_err());
+    }
+
+    #[test]
+    fn worktree_git_state_helpers() {
+        let (repo, dir) = init_test_repo();
+        let repo_path = repo.path().parent().unwrap().to_str().unwrap();
+        let base = repo.head().unwrap().shorthand().unwrap().to_string();
+        let wt = dir.path().join("wt-state");
+        let wt_str = wt.to_str().unwrap();
+        worktree_add(repo_path, wt_str, "gestor/state", &base).expect("add");
+
+        // fresh worktree: clean, no commits ahead of base
+        assert!(tree_clean(wt_str));
+        assert!(!commits_ahead(wt_str, &base));
+
+        // dirty it
+        std::fs::write(wt.join("new.txt"), "x").unwrap();
+        assert!(!tree_clean(wt_str));
+
+        // commit → clean again + ahead of base
+        let out = std::process::Command::new("git")
+            .args(["-C", wt_str, "add", "-A"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let out = std::process::Command::new("git")
+            .args([
+                "-C",
+                wt_str,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "work",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(tree_clean(wt_str));
+        assert!(commits_ahead(wt_str, &base));
+
+        worktree_remove(repo_path, wt_str).ok();
+    }
 
     #[test]
     fn slugify_fix_login_broken() {
@@ -276,6 +508,20 @@ mod tests {
     }
 
     #[test]
+    fn worktree_add_and_remove_roundtrip() {
+        let (repo, dir) = init_test_repo();
+        let repo_path = repo.path().parent().unwrap().to_str().unwrap();
+        let wt = dir.path().join("wt-task1");
+        let wt_str = wt.to_str().unwrap();
+
+        worktree_add(repo_path, wt_str, "gestor/task1", "HEAD").expect("worktree add");
+        assert!(wt.join("hello.txt").exists(), "worktree has the checkout");
+
+        worktree_remove(repo_path, wt_str).expect("worktree remove");
+        assert!(!wt.exists(), "worktree dir removed");
+    }
+
+    #[test]
     fn branch_clean_creates() {
         let (repo, _dir) = init_test_repo();
         let path = repo.path().parent().unwrap().to_str().unwrap();
@@ -347,8 +593,7 @@ mod tests {
         std::fs::create_dir(&sub).expect("mkdir sub");
         git2::Repository::init(&sub).expect("git init sub");
 
-        let found =
-            find_repo_path(container.path().to_str().unwrap()).expect("repo in subdir");
+        let found = find_repo_path(container.path().to_str().unwrap()).expect("repo in subdir");
         assert_eq!(found, canon(&sub));
     }
 

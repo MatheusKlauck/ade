@@ -14,10 +14,10 @@ use tauri::Emitter;
 
 // The Notifier impls live in sync/notifier.rs and RateBudget in sync/rate.rs;
 // re-export here so existing `crate::sync::worker::{...}` paths keep working.
-pub use crate::sync::notifier::Notifier;
-pub use crate::sync::rate::RateBudget;
 #[cfg(test)]
 pub use crate::sync::notifier::CaptureNotifier;
+pub use crate::sync::notifier::Notifier;
+pub use crate::sync::rate::RateBudget;
 
 use crate::sync::notifier::AppNotifier;
 
@@ -408,9 +408,9 @@ pub async fn start_worker(
                 // "idle" emit, or the UI stays stuck on "syncing".
                 let ws: Option<crate::models::Workspace> =
                     crate::repo::workspace_by_id(&db, &workspace_id).await.ok();
-                let owner_repo = ws.as_ref().and_then(|ws| {
-                    Some((ws.github_owner.as_ref()?, ws.github_repo.as_ref()?))
-                });
+                let owner_repo = ws
+                    .as_ref()
+                    .and_then(|ws| Some((ws.github_owner.as_ref()?, ws.github_repo.as_ref()?)));
 
                 // If seed, ensure labels once
                 if result.was_seed {
@@ -1205,12 +1205,13 @@ mod tests {
         );
 
         // The stranded issue was recovered as a card.
-        let card_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM card WHERE workspace_id = ? AND github_issue_number = 200")
-                .bind(&ws_id)
-                .fetch_one(&pool)
-                .await
-                .expect("card count");
+        let card_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM card WHERE workspace_id = ? AND github_issue_number = 200",
+        )
+        .bind(&ws_id)
+        .fetch_one(&pool)
+        .await
+        .expect("card count");
         assert_eq!(card_count, 1, "full sync should recover the stranded issue");
 
         // The full fetch must NOT carry a `since` watermark.

@@ -24,6 +24,102 @@ export async function subscribeNotify(
   });
 }
 
+// ---- gestor (#56) ----
+export interface IssueProposal {
+  id: string;
+  job_id: string;
+  workspace_id: string;
+  ord: number;
+  title: string;
+  body: string;
+  labels_json: string | null;
+  depends_on_json: string | null;
+  acceptance_json: string | null;
+  priority: string | null;
+  status: string;
+  card_id: string | null;
+}
+
+export interface AgentTask {
+  id: string;
+  workspace_id: string;
+  card_id: string;
+  state: string;
+  attempt: number;
+  max_attempts: number;
+  branch: string | null;
+  fail_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentEvent {
+  id: number;
+  workspace_id: string;
+  task_id: string | null;
+  job_id: string | null;
+  ts: string;
+  kind: string;
+  level: string;
+  payload_json: string | null;
+  cost_usd: number | null;
+  num_turns: number | null;
+  duration_ms: number | null;
+}
+
+export function gestorPlan(
+  workspaceId: string,
+  brief: string
+): Promise<IssueProposal[]> {
+  return invoke("gestor_plan", { workspaceId, brief });
+}
+
+export function proposalApprove(
+  workspaceId: string,
+  proposalIds: string[]
+): Promise<string[]> {
+  return invoke("proposal_approve", { workspaceId, proposalIds });
+}
+
+/** Hero intake: brief → N Backlog cards that auto-flow to Doing (ensures L2).
+ * Returns the proposals it unfolded so the UI can reveal them. */
+export function gestorBuildFeature(
+  workspaceId: string,
+  brief: string
+): Promise<IssueProposal[]> {
+  return invoke("gestor_build_feature", { workspaceId, brief });
+}
+
+export function gestorEnqueueCard(
+  workspaceId: string,
+  cardId: string
+): Promise<string> {
+  return invoke("gestor_enqueue_card", { workspaceId, cardId });
+}
+
+export function gestorTasksList(workspaceId: string): Promise<AgentTask[]> {
+  return invoke("gestor_tasks_list", { workspaceId });
+}
+
+export function gestorFeedList(
+  workspaceId: string,
+  limit: number
+): Promise<AgentEvent[]> {
+  return invoke("gestor_feed_list", { workspaceId, limit });
+}
+
+export function gestorReleaseNotes(workspaceId: string): Promise<string> {
+  return invoke("gestor_release_notes", { workspaceId });
+}
+
+export function prMerge(workspaceId: string, taskId: string): Promise<void> {
+  return invoke("pr_merge", { workspaceId, taskId });
+}
+
+export async function subscribeFeed(cb: (ev: AgentEvent) => void) {
+  return listen<AgentEvent>("evt:feed", (ev) => cb(ev.payload));
+}
+
 // ---- settings (per-workspace) ----
 export function githubSetToken(
   workspaceId: string,

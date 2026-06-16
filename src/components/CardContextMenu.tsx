@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { CSSProperties, MouseEvent } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { cardDelete, cardPromote } from "../lib/ipc";
+import { cardDelete, cardPromote, gestorEnqueueCard } from "../lib/ipc";
 import type { Card as CardType, BoardColumn } from "../lib/ipc";
 import type { TerminalPreset } from "../store/settings";
 import { useWorkspacesStore } from "../store/workspaces";
@@ -59,7 +59,9 @@ export function useCardDeleteConfirm() {
       onConfirm={() => {
         const card = pending;
         setPending(null);
-        cardDelete(card.id).catch((e) => console.error("card_delete failed", e));
+        cardDelete(card.id).catch((e) =>
+          console.error("card_delete failed", e),
+        );
       }}
       onCancel={() => setPending(null)}
     />
@@ -94,12 +96,12 @@ export default function CardContextMenu({
   onDelete,
 }: CardContextMenuProps) {
   const sortedCols = [...columns].sort(
-    (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name)
+    (a, b) => COLUMN_ORDER.indexOf(a.name) - COLUMN_ORDER.indexOf(b.name),
   );
 
   // Workspace owns the repo coordinates needed to build the github.com URL.
   const workspace = useWorkspacesStore(
-    (s) => s.workspaces.find((w) => w.id === card.workspace_id) ?? null
+    (s) => s.workspaces.find((w) => w.id === card.workspace_id) ?? null,
   );
   const isGithub = card.github_issue_number != null;
   const githubUrl =
@@ -150,7 +152,7 @@ export default function CardContextMenu({
           onMouseLeave={leave}
           onClick={() => {
             cardPromote(card.id).catch((e) =>
-              console.error("card_promote failed", e)
+              console.error("card_promote failed", e),
             );
             onClose();
           }}
@@ -158,6 +160,21 @@ export default function CardContextMenu({
           Promote to GitHub issue
         </button>
       )}
+
+      <button
+        style={menuItemStyle}
+        data-testid="card-send-gestor"
+        onMouseEnter={enter}
+        onMouseLeave={leave}
+        onClick={() => {
+          gestorEnqueueCard(card.workspace_id, card.id).catch((e) =>
+            console.error("gestor_enqueue_card failed", e),
+          );
+          onClose();
+        }}
+      >
+        Enviar para o Gestor
+      </button>
 
       <button
         style={menuItemStyle}
@@ -179,7 +196,13 @@ export default function CardContextMenu({
           <div style={dividerStyle} />
           <div style={sectionHeaderStyle}>Run with</div>
           {presets.length === 0 ? (
-            <div style={{ padding: "6px 10px", fontSize: 13, color: "var(--muted)" }}>
+            <div
+              style={{
+                padding: "6px 10px",
+                fontSize: 13,
+                color: "var(--muted)",
+              }}
+            >
               No presets — add one in Settings
             </div>
           ) : (

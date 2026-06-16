@@ -152,8 +152,7 @@ impl Scanner {
             // for progress ("9;4;..") — skip that numeric sub-command form.
             let is_progress = {
                 let mut it = text.chars();
-                matches!(it.next(), Some(c) if c.is_ascii_digit())
-                    && matches!(it.next(), Some(';'))
+                matches!(it.next(), Some(c) if c.is_ascii_digit()) && matches!(it.next(), Some(';'))
             };
             if !is_progress && !text.is_empty() {
                 emit(Alert::App(clip(text)));
@@ -387,9 +386,6 @@ mod tests {
     #[test]
     fn mixed_stream() {
         let out = collect(&[b"\x1b]0;title\x07npm run build\r\n\x1b]133;D;0\x07\x07"]);
-        assert_eq!(
-            out,
-            vec![Alert::Completed(Some("0".into())), Alert::Bell]
-        );
+        assert_eq!(out, vec![Alert::Completed(Some("0".into())), Alert::Bell]);
     }
 }
