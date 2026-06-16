@@ -90,12 +90,22 @@ pub async fn load_dispatch_config(db: &DbPool, workspace_id: &str) -> DispatchCo
 
 /// Create a `queued` agent_task for a card — the scheduler picks it up next tick.
 /// Shared by the manual "send to gestor" IPC and the autonomous Backlog bridge.
-/// Returns the new task id.
+/// Idempotent: if the card already has a non-terminal task, returns its id rather
+/// than spawning a second worker on the same branch. Returns the task id.
 pub async fn enqueue_card(
     db: &DbPool,
     workspace_id: &str,
     card_id: &str,
 ) -> Result<String, AdeError> {
+    let existing = crate::repo::agent_tasks_for_workspace(db, workspace_id).await?;
+    if let Some(t) = existing.iter().find(|t| {
+        t.card_id == card_id
+            && !fsm::TaskState::parse(&t.state)
+                .map(|s| s.is_terminal())
+                .unwrap_or(false)
+    }) {
+        return Ok(t.id.clone());
+    }
     let cfg = load_dispatch_config(db, workspace_id).await;
     let now = chrono::Utc::now().to_rfc3339();
     let task = crate::models::AgentTask {
