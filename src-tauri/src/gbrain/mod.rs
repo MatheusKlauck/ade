@@ -176,7 +176,10 @@ pub struct GbrainHit {
 /// lacks admin (older topology), which still yields counts + reachability.
 pub async fn status(base_url: &str, token: &str) -> GbrainStatus {
     let client = McpClient::new(base_url, token);
-    if let Ok(v) = client.call_tool_json("get_status_snapshot", json!({})).await {
+    if let Ok(v) = client
+        .call_tool_json("get_status_snapshot", json!({}))
+        .await
+    {
         return map_status_from_snapshot(&v);
     }
     match client.call_tool_json("get_brain_identity", json!({})).await {
@@ -188,22 +191,33 @@ pub async fn status(base_url: &str, token: &str) -> GbrainStatus {
 /// Brain identity (version, engine, update availability) for the panel header.
 pub async fn identity(base_url: &str, token: &str) -> Result<GbrainIdentity, AdeError> {
     let client = McpClient::new(base_url, token);
-    let v = client.call_tool_json("get_brain_identity", json!({})).await?;
+    let v = client
+        .call_tool_json("get_brain_identity", json!({}))
+        .await?;
     Ok(map_identity(&v))
 }
 
 /// Per-source sync state, from `get_status_snapshot`'s `sync.sources[]`.
 pub async fn sources(base_url: &str, token: &str) -> Result<Vec<GbrainSource>, AdeError> {
     let client = McpClient::new(base_url, token);
-    let v = client.call_tool_json("get_status_snapshot", json!({})).await?;
+    let v = client
+        .call_tool_json("get_status_snapshot", json!({}))
+        .await?;
     Ok(snapshot_sources(&v).iter().map(map_source).collect())
 }
 
 /// Recently-updated pages for the explore/browse list (no text query).
-pub async fn recent_pages(base_url: &str, token: &str, limit: u32) -> Result<Vec<GbrainPage>, AdeError> {
+pub async fn recent_pages(
+    base_url: &str,
+    token: &str,
+    limit: u32,
+) -> Result<Vec<GbrainPage>, AdeError> {
     let client = McpClient::new(base_url, token);
     let v = client
-        .call_tool_json("list_pages", json!({ "limit": limit, "sort": "updated_desc" }))
+        .call_tool_json(
+            "list_pages",
+            json!({ "limit": limit, "sort": "updated_desc" }),
+        )
         .await?;
     Ok(hits_array(&v).iter().map(map_page).collect())
 }
@@ -235,7 +249,10 @@ pub async fn liveness(base_url: &str) -> GbrainLiveness {
                 engine: first_str(&v, &["engine"]),
             },
             // Answered but not JSON — still reachable.
-            Err(_) => GbrainLiveness { reachable: true, ..Default::default() },
+            Err(_) => GbrainLiveness {
+                reachable: true,
+                ..Default::default()
+            },
         },
         Err(_) => GbrainLiveness::default(),
     }
@@ -248,14 +265,22 @@ pub async fn liveness(base_url: &str) -> GbrainLiveness {
 pub async fn trigger_sync(base_url: &str, token: &str, full: bool) -> Result<String, AdeError> {
     let client = McpClient::new(base_url, token);
     let v = client
-        .call_tool_json("submit_job", json!({ "name": "sync", "data": { "full": full } }))
+        .call_tool_json(
+            "submit_job",
+            json!({ "name": "sync", "data": { "full": full } }),
+        )
         .await?;
     Ok(first_str(&v, &["job_id", "id", "jobId"]).unwrap_or_else(|| "queued".to_string()))
 }
 
 /// Semantic/hybrid search over the brain (+ indexed code). Errors propagate so
 /// the popover can show why a query failed.
-pub async fn query(base_url: &str, token: &str, q: &str, limit: u32) -> Result<Vec<GbrainHit>, AdeError> {
+pub async fn query(
+    base_url: &str,
+    token: &str,
+    q: &str,
+    limit: u32,
+) -> Result<Vec<GbrainHit>, AdeError> {
     let client = McpClient::new(base_url, token);
     let v = client
         .call_tool_json("query", json!({ "query": q, "limit": limit }))
@@ -324,14 +349,21 @@ fn map_status_from_snapshot(v: &Value) -> GbrainStatus {
     let sources: Vec<GbrainSource> = snapshot_sources(v).iter().map(map_source).collect();
     let sum = |f: fn(&GbrainSource) -> Option<u64>| {
         let vals: Vec<u64> = sources.iter().filter_map(f).collect();
-        if vals.is_empty() { None } else { Some(vals.iter().sum()) }
+        if vals.is_empty() {
+            None
+        } else {
+            Some(vals.iter().sum())
+        }
     };
     let staleness = sources
         .iter()
         .filter_map(|s| s.staleness.clone())
         .max_by_key(|c| staleness_rank(c));
     let last_sync_at = sources.iter().filter_map(|s| s.last_sync_at.clone()).max();
-    let embedding_coverage_pct = sources.iter().filter_map(|s| s.embedding_coverage_pct).min();
+    let embedding_coverage_pct = sources
+        .iter()
+        .filter_map(|s| s.embedding_coverage_pct)
+        .min();
     GbrainStatus {
         healthy: true,
         pages: sum(|s| s.pages),
@@ -412,8 +444,18 @@ fn map_hits(v: &Value) -> Vec<GbrainHit> {
             title: first_str(h, &["title", "name", "heading"]).unwrap_or_default(),
             // gbrain's SearchResult carries the matched text in `chunk_text`;
             // the others are tolerated for other tools / versions.
-            snippet: first_str(h, &["chunk_text", "snippet", "excerpt", "preview", "text", "content"])
-                .unwrap_or_default(),
+            snippet: first_str(
+                h,
+                &[
+                    "chunk_text",
+                    "snippet",
+                    "excerpt",
+                    "preview",
+                    "text",
+                    "content",
+                ],
+            )
+            .unwrap_or_default(),
             source: first_str(h, &["source", "source_id", "corpus"]),
             score: ["score", "similarity", "rank"]
                 .iter()

@@ -140,18 +140,21 @@ async fn spawn_sync_workers(
     app: tauri::AppHandle,
     workers: &tokio::sync::Mutex<HashMap<String, WorkerHandle>>,
 ) {
-    let workspaces: Vec<crate::models::Workspace> = match sqlx::query_as::<_, crate::models::Workspace>(
-        concat!("SELECT ", crate::repo::workspace_cols!(), " FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL"),
-    )
-    .fetch_all(&pool)
-    .await
-    {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("failed to query workspaces for sync: {}", e);
-            return;
-        }
-    };
+    let workspaces: Vec<crate::models::Workspace> =
+        match sqlx::query_as::<_, crate::models::Workspace>(concat!(
+            "SELECT ",
+            crate::repo::workspace_cols!(),
+            " FROM workspace WHERE github_owner IS NOT NULL AND closed_at IS NULL"
+        ))
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("failed to query workspaces for sync: {}", e);
+                return;
+            }
+        };
 
     for ws in workspaces {
         // Each workspace uses its own token (falling back to the legacy global
@@ -161,14 +164,47 @@ async fn spawn_sync_workers(
             Ok(Some(t)) => t,
             _ => String::new(),
         };
-        spawn_worker_for_workspace(
-            ws.id.clone(),
-            token,
-            pool.clone(),
-            app.clone(),
-            workers,
-        )
-        .await;
+        spawn_worker_for_workspace(ws.id.clone(), token, pool.clone(), app.clone(), workers).await;
+    }
+}
+
+/// Spawn the Gestor runtime loop for every open workspace that has opted in
+/// (`gestor_enabled = "true"`). Each loop probes `claude` and, if present, drives
+/// that workspace's tasks; a missing provider disables only that loop. Spawned
+/// detached — the process exit reaps them (clean per-workspace shutdown is a
+/// follow-up; ponytail: detached for v1, track handles if hot-toggle is needed).
+async fn spawn_gestor_runtimes(pool: db::DbPool, app: tauri::AppHandle) {
+    let workspaces: Vec<crate::models::Workspace> =
+        match sqlx::query_as::<_, crate::models::Workspace>(concat!(
+            "SELECT ",
+            crate::repo::workspace_cols!(),
+            " FROM workspace WHERE closed_at IS NULL"
+        ))
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("failed to query workspaces for gestor: {}", e);
+                return;
+            }
+        };
+
+    for ws in workspaces {
+        let enabled =
+            crate::ipc::settings::workspace_setting_value(&pool, &ws.id, "gestor_enabled")
+                .await
+                .map(|v| v == "true")
+                .unwrap_or(false);
+        if !enabled {
+            continue;
+        }
+        let provider = Arc::new(crate::gestor::provider::ClaudeCli::new());
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let (db2, app2, ws_id) = (pool.clone(), app.clone(), ws.id.clone());
+        tauri::async_runtime::spawn(async move {
+            crate::gestor::runtime::start_runtime(db2, provider, ws_id, app2, notify, 3).await;
+        });
     }
 }
 
@@ -246,6 +282,11 @@ pub fn run() {
 
                 spawn_sync_workers(pool, handle.clone(), &state.workers).await;
 
+                // Gestor: spawn the autonomous loop for opt-in workspaces
+                // (gestor_enabled). Off by default — the rest of the app is
+                // untouched when the gestor is disabled or `claude` is absent.
+                spawn_gestor_runtimes(state.db.clone(), handle.clone()).await;
+
                 // Bring up the shared gbrain serve off the startup path so it
                 // doesn't delay first paint; it publishes into state.gbrain once
                 // the HTTP serve is reachable.
@@ -291,6 +332,13 @@ pub fn run() {
             ipc::gbrain::gbrain_liveness,
             ipc::gbrain::gbrain_sync,
             ipc::gbrain::gbrain_restart,
+            ipc::gestor::gestor_plan,
+            ipc::gestor::proposal_approve,
+            ipc::gestor::gestor_enqueue_card,
+            ipc::gestor::gestor_tasks_list,
+            ipc::gestor::gestor_feed_list,
+            ipc::gestor::gestor_release_notes,
+            ipc::gestor::pr_merge,
         ])
         .build(tauri::generate_context!());
 

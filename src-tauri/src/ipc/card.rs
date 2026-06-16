@@ -518,7 +518,13 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
         let issue = gh
-            .update_issue("testowner", "testrepo", 5, Some("New title"), Some("New body"))
+            .update_issue(
+                "testowner",
+                "testrepo",
+                5,
+                Some("New title"),
+                Some("New body"),
+            )
             .await
             .expect("update_issue should succeed");
         assert_eq!(issue.title, "New title");
@@ -545,7 +551,10 @@ mod tests {
             .await;
 
         let gh = GitHubClient::new(server.uri(), "testtoken".to_string());
-        let result = gh.get_issue_comments("testowner", "testrepo", 9).await.unwrap();
+        let result = gh
+            .get_issue_comments("testowner", "testrepo", 9)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].user_login, "alice");
         assert_eq!(

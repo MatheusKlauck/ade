@@ -114,8 +114,8 @@ fn rewire_at(path: &std::path::Path, port: u16, token: &str) -> Result<bool, Ade
         Some(_) => {
             std::fs::write(path.with_extension("json.bak"), &raw)?;
             cfg["mcpServers"]["gbrain"] = desired;
-            let pretty = serde_json::to_string_pretty(&cfg)
-                .map_err(|e| AdeError::Other(e.to_string()))?;
+            let pretty =
+                serde_json::to_string_pretty(&cfg).map_err(|e| AdeError::Other(e.to_string()))?;
             std::fs::write(path, pretty)?;
             Ok(true)
         }
@@ -154,8 +154,7 @@ mod tests {
         let changed = rewire_at(&cfg, 7777, "tok").unwrap();
         assert!(changed);
 
-        let after: Value =
-            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(after["mcpServers"]["gbrain"]["type"], "http");
         assert_eq!(
             after["mcpServers"]["gbrain"]["url"],

@@ -228,6 +228,16 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return ok(snapshot(a.workspaceId));
     case "skills_list":
       return ok(MOCK_SKILLS);
+    // ---- gestor (#56): empty/no-op mocks so the panel is interactive in QA ----
+    case "gestor_tasks_list":
+    case "gestor_feed_list":
+    case "gestor_plan":
+    case "proposal_approve":
+      return ok([]);
+    case "gestor_enqueue_card":
+      return ok("mock-task");
+    case "gestor_release_notes":
+      return ok("_No changes since the last tag._");
     case "setting_get":
     case "ui_state_get":
       return ok(null);

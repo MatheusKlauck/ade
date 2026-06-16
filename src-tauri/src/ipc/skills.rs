@@ -30,7 +30,14 @@ fn categorize(name: &str, frontmatter: Option<String>) -> String {
         "iOS"
     } else if n.starts_with("plan")
         || has(&[
-            "spec", "office-hours", "grill", "prd", "to-issues", "prototype", "triage", "autoplan",
+            "spec",
+            "office-hours",
+            "grill",
+            "prd",
+            "to-issues",
+            "prototype",
+            "triage",
+            "autoplan",
         ])
     {
         "Plan"
@@ -47,16 +54,39 @@ fn categorize(name: &str, frontmatter: Option<String>) -> String {
     } else if has(&["doc", "make-pdf", "handoff"]) {
         "Docs"
     } else if has(&[
-        "research", "competitor", "customer", "influencer", "scrape", "sales",
+        "research",
+        "competitor",
+        "customer",
+        "influencer",
+        "scrape",
+        "sales",
     ]) {
         "Research"
     } else if has(&[
-        "browse", "chrome", "cookies", "run", "benchmark", "skillify", "pair-agent",
+        "browse",
+        "chrome",
+        "cookies",
+        "run",
+        "benchmark",
+        "skillify",
+        "pair-agent",
     ]) {
         "Browser"
     } else if has(&[
-        "setup", "config", "gbrain", "upgrade", "write-a-skill", "find-skills", "learn",
-        "statusline", "keybind", "schedule", "loop", "freeze", "guard", "careful",
+        "setup",
+        "config",
+        "gbrain",
+        "upgrade",
+        "write-a-skill",
+        "find-skills",
+        "learn",
+        "statusline",
+        "keybind",
+        "schedule",
+        "loop",
+        "freeze",
+        "guard",
+        "careful",
     ]) {
         "Setup"
     } else {
@@ -125,14 +155,12 @@ fn scan_skills(dirs: &[PathBuf]) -> Vec<SkillInfo> {
                 continue;
             }
             let Some(md) = std::fs::read_dir(&path).ok().and_then(|sub| {
-                sub.flatten()
-                    .map(|e| e.path())
-                    .find(|p| {
-                        p.is_file()
-                            && p.file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.eq_ignore_ascii_case("skill.md"))
-                    })
+                sub.flatten().map(|e| e.path()).find(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.eq_ignore_ascii_case("skill.md"))
+                })
             }) else {
                 continue;
             };
@@ -222,7 +250,12 @@ mod tests {
     #[test]
     fn falls_back_to_dir_name_without_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
-        write_skill(tmp.path(), "skills", "my-skill", "Just a body, no frontmatter.");
+        write_skill(
+            tmp.path(),
+            "skills",
+            "my-skill",
+            "Just a body, no frontmatter.",
+        );
         let skills = scan_skills(&project_skill_dirs(tmp.path()));
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-skill");

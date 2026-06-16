@@ -75,15 +75,13 @@ pub async fn workspace_create(
         if existing.github_owner.is_none() {
             let mut remote_not_github = false;
             if let Some((owner, repo)) = detect_github(dir, &mut remote_not_github) {
-                sqlx::query(
-                    "UPDATE workspace SET github_owner = ?, github_repo = ? WHERE id = ?",
-                )
-                .bind(&owner)
-                .bind(&repo)
-                .bind(&existing.id)
-                .execute(&state.db)
-                .await
-                .map_err(AdeError::Db)?;
+                sqlx::query("UPDATE workspace SET github_owner = ?, github_repo = ? WHERE id = ?")
+                    .bind(&owner)
+                    .bind(&repo)
+                    .bind(&existing.id)
+                    .execute(&state.db)
+                    .await
+                    .map_err(AdeError::Db)?;
             }
         }
 

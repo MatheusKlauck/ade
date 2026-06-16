@@ -26,14 +26,15 @@ pub async fn workspace_setting_value(
     workspace_id: &str,
     key: &str,
 ) -> Option<String> {
-    let stored = sqlx::query("SELECT value FROM workspace_setting WHERE workspace_id = ? AND key = ?")
-        .bind(workspace_id)
-        .bind(key)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| r.get::<String, _>("value"));
+    let stored =
+        sqlx::query("SELECT value FROM workspace_setting WHERE workspace_id = ? AND key = ?")
+            .bind(workspace_id)
+            .bind(key)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.get::<String, _>("value"));
     stored.or_else(|| default_setting(key))
 }
 
@@ -135,10 +136,12 @@ mod tests {
     #[tokio::test]
     async fn setting_set_get_roundtrip() {
         let (pool, _tmp) = test_pool().await;
-        sqlx::query("INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('ws1', 'x', '1')")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO workspace_setting (workspace_id, key, value) VALUES ('ws1', 'x', '1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Same key in a different workspace is independent.
         let v = workspace_setting_value(&pool, "ws1", "x").await;
