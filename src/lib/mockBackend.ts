@@ -98,6 +98,9 @@ interface Board {
 
 const COL_NAMES = ["Backlog", "Doing", "Paused", "PR", "Done"];
 const boards = new Map<string, Board>();
+// Per-session workspace_setting store (key: `${workspaceId}:${key}`) so the
+// Gestor settings tab round-trips in browser/QA mode.
+const mockSettings = new Map<string, string>();
 
 let seq = 0;
 function mkCard(
@@ -245,6 +248,7 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
     case "gestor_release_notes":
       return ok("_No changes since the last tag._");
     case "setting_get":
+      return ok(mockSettings.get(`${a.workspaceId}:${a.key}`) ?? null);
     case "ui_state_get":
       return ok(null);
     case "card_detail": {
@@ -510,8 +514,11 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
     case "workspace_create":
       return ok(workspaces[0]);
 
-    // ---- fire-and-forget writes / no-ops ----
     case "setting_set":
+      mockSettings.set(`${a.workspaceId}:${a.key}`, a.value as string);
+      return ok(undefined);
+
+    // ---- fire-and-forget writes / no-ops ----
     case "ui_state_set":
     case "terminal_resize":
     case "terminal_kill_window":
