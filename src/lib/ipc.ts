@@ -196,6 +196,26 @@ export function terminalKillWindow(
   return invoke("terminal_kill_window", { workspaceId, windowId });
 }
 
+// ---- claude sessions ----
+export interface ClaudeSession {
+  id: string;
+  title: string;
+  lastActive: number; // epoch seconds
+  gitBranch: string | null;
+}
+
+/** Resumable Claude Code sessions recorded for the workspace's cwd, newest first. */
+export function claudeSessions(workspaceId: string): Promise<ClaudeSession[]> {
+  return invoke("claude_sessions", { workspaceId }).then((res: unknown) =>
+    (res as Array<Record<string, unknown>>).map((s) => ({
+      id: s.id as string,
+      title: s.title as string,
+      lastActive: s.last_active as number,
+      gitBranch: (s.git_branch as string | null) ?? null,
+    }))
+  );
+}
+
 // ---- board ----
 export interface BoardGetResult {
   columns: BoardColumn[];

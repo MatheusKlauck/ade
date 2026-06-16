@@ -354,6 +354,7 @@ pub fn run() {
             ipc::terminal::terminal_kill_window,
             ipc::sync::sync_now,
             ipc::skills::skills_list,
+            ipc::claude_sessions::claude_sessions,
             ipc::gbrain::gbrain_status,
             ipc::gbrain::gbrain_query,
             ipc::gbrain::gbrain_identity,

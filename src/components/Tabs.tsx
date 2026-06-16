@@ -4,7 +4,6 @@ import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
 import { boardGet, type Workspace } from "../lib/ipc";
-import SyncIndicator from "./SyncIndicator";
 import ConfirmDialog from "./ConfirmDialog";
 import { CheckIcon, CloseIcon, PlusIcon } from "./icons";
 
@@ -172,22 +171,6 @@ export default function Tabs() {
               >
                 {ws.name}
               </span>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: ws.github_owner
-                    ? "var(--source-github)"
-                    : "var(--source-local)",
-                  fontFamily: "var(--font-mono)",
-                  flexShrink: 0,
-                  maxWidth: 120,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {ws.github_owner ? `${ws.github_owner}/${ws.github_repo}` : "local"}
-              </span>
-              <SyncIndicator workspaceId={ws.id} />
               {alerts && alerts.count > 0 && (
                 <span
                   title={alerts.messages.join("\n")}

@@ -8,6 +8,11 @@ export interface OpenTerminal {
   windowId: string;
   workspaceId: string;
   channel: Channel<unknown>;
+  // True only for a bare-shell pane (manual "New terminal", no preset). Every
+  // other pane auto-launches an app (claude via preset/card/resume/reattach), so
+  // the keystrokes the user types are app input — `/compact`, an NL prompt — not
+  // shell commands, and must not feed the quick-command frequency bar.
+  captureCommands?: boolean;
 }
 
 // A single terminal inside a row. `weight` is a flex-grow ratio within its row

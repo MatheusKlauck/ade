@@ -101,6 +101,19 @@ function leftDotColor(
   return "var(--muted)";
 }
 
+/** Which live-pulse class a status dot wears: an urgent pulse when the agent
+ * needs you (input) or failed, a calm continuous pulse while a terminal is live,
+ * none for resting states. Keeps the board/ledger alive only where work is. */
+function pulseClass(
+  attention: Attention | undefined,
+  hasPane: boolean
+): string | undefined {
+  if (attention?.kind === "input" || attention?.kind === "failed")
+    return "ade-pulse-attn";
+  if (hasPane && attention?.kind !== "done") return "ade-pulse";
+  return undefined;
+}
+
 function formatAge(iso: string): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "";
@@ -254,6 +267,7 @@ export default function LedgerRow({
   const activity = activityText(columnName, attention, hasPane, isAdHocShell);
   const chip = statChip(columnName, attention, hasPane);
   const dotColor = leftDotColor(attention, hasPane, columnName);
+  const dotPulse = pulseClass(attention, hasPane);
 
   const handleClick = () => {
     if (!hasPane) return; // nothing to expand
@@ -277,6 +291,7 @@ export default function LedgerRow({
         ref={ref}
         data-testid={`ledger-row-${card.id}`}
         data-ledger-row={card.terminal_window_id ?? card.id}
+        className={dropOver ? "ade-drop-pulse" : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => {
@@ -311,7 +326,7 @@ export default function LedgerRow({
             ? "var(--surface-raised)"
             : "transparent",
           opacity: dragging ? 0.5 : 1,
-          boxShadow: dropOver ? "inset 0 0 0 1px var(--accent)" : "none",
+          boxShadow: "none", // drop-over ring is owned by .ade-drop-pulse
           cursor: hasPane ? "pointer" : isAdHocShell ? "default" : "grab",
           flexShrink: 0,
           transition: "background var(--dur-instant) var(--ease-out-quart)",
@@ -331,12 +346,14 @@ export default function LedgerRow({
         {/* left status dot */}
         <span
           aria-hidden
+          className={dotPulse}
           style={{
             justifySelf: "center",
             width: 6,
             height: 6,
             borderRadius: "50%",
             background: dotColor,
+            ["--pulse-color" as string]: dotColor,
           }}
         />
 
@@ -438,12 +455,14 @@ export default function LedgerRow({
             <>
               <span
                 aria-hidden
+                className={dotPulse}
                 style={{
                   width: 6,
                   height: 6,
                   borderRadius: "50%",
                   flexShrink: 0,
                   background: chip.dot,
+                  ["--pulse-color" as string]: chip.dot,
                 }}
               />
               <span

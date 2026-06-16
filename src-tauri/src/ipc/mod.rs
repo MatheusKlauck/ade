@@ -1,6 +1,7 @@
 pub mod board;
 pub mod card;
 pub mod card_lifecycle;
+pub mod claude_sessions;
 pub mod gbrain;
 pub mod gestor;
 pub mod github;

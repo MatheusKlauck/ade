@@ -460,6 +460,10 @@ pub async fn start_worker(
                     }
                 }
 
+                // Reconcile wrote cards straight to the DB; push the refreshed
+                // board so the UI reflects pulled issues without a workspace switch.
+                let _ = crate::ipc::board::emit_board(&app, &workspace_id, &db).await;
+
                 // Get current last_sync for the event
                 let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
                     "SELECT last_sync FROM sync_state WHERE workspace_id = ?",

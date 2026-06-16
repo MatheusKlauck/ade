@@ -346,6 +346,29 @@ pub fn viewer_status_off(viewer: &str) -> Result<(), AdeError> {
     Ok(())
 }
 
+/// Enable mouse mode on the viewer session. tmux runs inside xterm's alternate
+/// screen, so without this xterm's "alternate scroll" turns a wheel-up at the
+/// shell prompt into cursor-Up keys (shell history recall) instead of scrolling.
+/// With mouse on, tmux owns the wheel and scrolls the pane's scrollback. Scoped
+/// to the viewer session only — never the user's global tmux options.
+pub fn viewer_mouse_on(viewer: &str) -> Result<(), AdeError> {
+    let out = Command::new(TMUX_BIN)
+        .arg("set-option")
+        .arg("-t")
+        .arg(format!("{}:", viewer))
+        .arg("mouse")
+        .arg("on")
+        .output()
+        .map_err(|e| AdeError::Tmux(e.to_string()))?;
+
+    if !out.status.success() {
+        return Err(AdeError::Tmux(
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Send keys to a window. The command is passed as a single argv element.
 pub fn send_keys(window_id: &str, command: &str) -> Result<(), AdeError> {
     let out = Command::new(TMUX_BIN)

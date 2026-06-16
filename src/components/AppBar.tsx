@@ -1,7 +1,9 @@
 import type { CSSProperties } from "react";
 import Tabs from "./Tabs";
 import NotificationCenter from "./NotificationCenter";
-import { GearIcon, RowsIcon, ColumnsIcon } from "./icons";
+import NewTerminalButton from "./NewTerminalButton";
+import type { TerminalPreset } from "../store/settings";
+import { GearIcon } from "./icons";
 
 export type ViewMode = "ledger" | "classic";
 
@@ -14,10 +16,7 @@ const TRAFFIC_INSET = isMac ? 84 : 12;
 
 interface AppBarProps {
   onOpenSettings: () => void;
-  onOpenGestor: () => void;
-  onNewFeature: () => void;
-  viewMode: ViewMode;
-  onToggleView: () => void;
+  onNewTerminal: (preset?: TerminalPreset) => void;
 }
 
 const barStyle: CSSProperties = {
@@ -47,16 +46,7 @@ const iconBtnStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-export default function AppBar({
-  onOpenSettings,
-  onOpenGestor,
-  onNewFeature,
-  viewMode,
-  onToggleView,
-}: AppBarProps) {
-  // The button shows the CURRENT view; clicking switches to the other one.
-  const isLedger = viewMode === "ledger";
-  const nextLabel = isLedger ? "board" : "ledger";
+export default function AppBar({ onOpenSettings, onNewTerminal }: AppBarProps) {
   return (
     // The whole bar is the window drag handle. Tauri starts a native window drag
     // only when the mousedown target itself carries data-tauri-drag-region, so
@@ -83,53 +73,8 @@ export default function AppBar({
         style={{ flex: 1, alignSelf: "stretch", minWidth: "var(--space-md)" }}
       />
 
-      {/* View switcher: ledger (issue table) ⇄ classic (terminal grid + dock). */}
-      <button
-        onClick={onToggleView}
-        title={`Switch to ${nextLabel} view`}
-        aria-label={`Switch to ${nextLabel} view`}
-        style={{
-          ...iconBtnStyle,
-          width: "auto",
-          gap: 6,
-          padding: "0 9px",
-          fontSize: 11,
-          fontFamily: "var(--font-sans)",
-          color: "var(--fg)",
-        }}
-      >
-        {isLedger ? <RowsIcon size={14} /> : <ColumnsIcon size={14} />}
-        <span>{isLedger ? "Ledger" : "Board"}</span>
-      </button>
+      <NewTerminalButton onNewTerminal={onNewTerminal} />
       <NotificationCenter />
-      <button
-        onClick={onNewFeature}
-        title="Descreva uma feature — o Gestor desdobra em tasks e toca"
-        aria-label="New feature"
-        data-testid="new-feature"
-        style={{
-          ...iconBtnStyle,
-          width: "auto",
-          gap: 6,
-          padding: "0 12px",
-          fontSize: 11,
-          fontFamily: "var(--font-sans)",
-          background: "var(--accent, #5319e7)",
-          borderColor: "transparent",
-          color: "#fff",
-        }}
-      >
-        + New feature
-      </button>
-      <button
-        onClick={onOpenGestor}
-        title="Gestor"
-        aria-label="Gestor"
-        data-testid="open-gestor"
-        style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }}
-      >
-        Gestor
-      </button>
       <button
         onClick={onOpenSettings}
         title="Settings"

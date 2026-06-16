@@ -520,6 +520,9 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       mockSettings.set(`${a.workspaceId}:${a.key}`, a.value as string);
       return ok(undefined);
 
+    case "claude_sessions":
+      return ok([]);
+
     // ---- fire-and-forget writes / no-ops ----
     case "ui_state_set":
     case "terminal_resize":

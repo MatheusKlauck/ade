@@ -9,9 +9,11 @@ import {
 import {
   boardGet,
   cardMove,
+  claudeSessions,
   terminalClose,
   terminalResize,
   terminalWrite,
+  type ClaudeSession,
 } from "../lib/ipc";
 import { COL_DOING } from "../lib/columns";
 import { useBoardStore } from "../store/board";
@@ -19,10 +21,22 @@ import type { OpenTerminal } from "../store/terminals";
 import { useTerminalsStore } from "../store/terminals";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useCommandFreqStore } from "../store/commandFrequency";
+import { useSkillRecentsStore, skillNameFromLine } from "../store/skillRecents";
 import { useSettingsStore, type TerminalAppearance } from "../store/settings";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
 import TerminalCommandBar from "./TerminalCommandBar";
 import { BranchIcon, LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
+
+/** Compact "2h ago" / "3d ago" label from a Claude session's epoch-seconds mtime. */
+function relativeSessionTime(epochSecs: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epochSecs));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 /** Resolve the appearance blob into xterm constructor/option values. xterm
  * measures glyphs on a canvas, so fontFamily must be a real font stack — a CSS
@@ -65,14 +79,12 @@ interface TerminalPaneProps {
   // its PTY wiring, the card-drop target and focus tracking are unchanged — so
   // the pane is the same mounted instance either way (PTY invariant intact).
   chromeless?: boolean;
-  // "board" renders the compact stage header from the board mockup: a status
-  // dot + title + branch chip + a lone close button (minimize/maximize move into
-  // the right-click menu). "default" keeps the full inline button row.
+  // "board" renders the compact stage header from the board mockup: macOS-style
+  // traffic lights (close/minimize/maximize) + title + branch chip. "default"
+  // keeps the full inline button row.
   headerVariant?: "default" | "board";
   // Branch label shown beside the title in the board header (e.g. "issue-42").
   branch?: string | null;
-  // Colour of the status dot in the board header (defaults to the muted hue).
-  dotColor?: string;
   // When true, the activity comet orbits just OUTSIDE the border (the tiling
   // grid gives it room); otherwise it hugs the inner edge (the inline ledger
   // accordion, where there's no surrounding gap to orbit into).
@@ -88,7 +100,7 @@ interface TerminalPaneProps {
 // redraws on its own never reaches us, so those runs are simply missed (never
 // mis-recorded). The buffer is mutated in place via the ref and completed lines
 // are returned.
-function feedCommandBuffer(
+export function feedCommandBuffer(
   bufRef: { current: string },
   data: string
 ): string[] {
@@ -112,6 +124,18 @@ function feedCommandBuffer(
       if (data[i] === "[" || data[i] === "O") {
         i++;
         while (i < data.length && !/[A-Za-z~]/.test(data[i])) i++;
+      } else if (data[i] === "]") {
+        // OSC (e.g. the terminal's colour-query reports, \x1b]10;rgb:…) —
+        // runs until BEL or ST (ESC \). Without this its payload leaks into
+        // the buffer and gets recorded as a bogus quick-command.
+        i++;
+        while (
+          i < data.length &&
+          data.charCodeAt(i) !== 0x07 &&
+          !(data[i] === "\x1b" && data[i + 1] === "\\")
+        )
+          i++;
+        if (data[i] === "\x1b") i++;
       }
     } else if (code === 0x03 || code === 0x15) {
       // Ctrl-C (interrupt) / Ctrl-U (kill line) — abandon the current line.
@@ -127,6 +151,27 @@ function feedCommandBuffer(
   // Guard against a runaway buffer if some unusual input never submits.
   if (bufRef.current.length > 1000) bufRef.current = "";
   return completed;
+}
+
+// Whether a pane's measured size is safe to push to the backend. A pane hidden
+// via display:none (maximize/minimize/board relayout) reports a 0-size box, and
+// xterm's FitAddon turns that into a degenerate 2x1 grid (Math.max(2,…)/Math.max(1,…))
+// instead of bailing — sending that to tmux shrinks the window to 2x1 and mangles
+// any running TUI, which only repaints on the next real resize. Skip while hidden
+// (zero box) or when the proposed grid isn't a finite real size.
+export function isUsableResize(
+  clientWidth: number,
+  clientHeight: number,
+  dims: { cols: number; rows: number } | undefined | null
+): dims is { cols: number; rows: number } {
+  if (clientWidth === 0 || clientHeight === 0) return false;
+  if (!dims) return false;
+  return (
+    Number.isFinite(dims.cols) &&
+    Number.isFinite(dims.rows) &&
+    dims.cols >= 2 &&
+    dims.rows >= 1
+  );
 }
 
 const iconBtnStyle: React.CSSProperties = {
@@ -145,6 +190,21 @@ const iconBtnStyle: React.CSSProperties = {
   lineHeight: 1,
 };
 
+// macOS-style traffic-light control (board header). The colour identifies the
+// action — red close, yellow minimize, green maximize — and a disabled control
+// (e.g. close on a locked pane) dims out.
+const trafficStyle = (color: string, disabled: boolean): React.CSSProperties => ({
+  width: 12,
+  height: 12,
+  flexShrink: 0,
+  padding: 0,
+  borderRadius: "50%",
+  border: "none",
+  background: color,
+  opacity: disabled ? 0.4 : 1,
+  cursor: disabled ? "not-allowed" : "pointer",
+});
+
 function TerminalPane({
   pane,
   title,
@@ -161,12 +221,19 @@ function TerminalPane({
   chromeless,
   headerVariant = "default",
   branch,
-  dotColor,
   cometOutside,
 }: TerminalPaneProps) {
   const isBoard = headerVariant === "board";
   // Header context menu (right-click); Escape-to-dismiss is built in.
   const { menu, open: openMenu, close: closeMenu } = useContextMenu();
+  // Claude session picker: null = menu shows normal items; an array = menu shows
+  // the resumable sessions ("Open session" was picked). Reset whenever the menu
+  // closes so the next right-click starts on the normal items.
+  const [sessionList, setSessionList] = useState<ClaudeSession[] | null>(null);
+  const dismissMenu = () => {
+    setSessionList(null);
+    closeMenu();
+  };
   // Draft custom name while the header title is being edited, or null when not.
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -281,9 +348,23 @@ function TerminalPane({
       // one that starts work in this workspace. The first submission also
       // dismisses the bar for good.
       const submitted = feedCommandBuffer(cmdLineRef, data);
-      if (submitted.length > 0 && !firstCommandCapturedRef.current) {
+      // Quick-command capture is only for bare-shell panes. App panes (claude via
+      // preset/card/resume) feed app input here, not shell commands — recording
+      // it would surface `/compact` & co. as bogus quick-commands.
+      if (
+        pane.captureCommands &&
+        submitted.length > 0 &&
+        !firstCommandCapturedRef.current
+      ) {
         firstCommandCapturedRef.current = true;
         useCommandFreqStore.getState().record(workspaceId, submitted[0]);
+      }
+      // Count every `/skill` typed into the terminal (e.g. into a Claude Code
+      // session), not just skills dragged from the sidebar. record() ignores
+      // names that aren't actual scanned skills.
+      for (const line of submitted) {
+        const skill = skillNameFromLine(line);
+        if (skill) useSkillRecentsStore.getState().record(skill);
       }
       if (submitted.length > 0) dismissCommandBarRef.current();
       // The user is typing again, so the terminal is back to awaiting input.
@@ -374,8 +455,11 @@ function TerminalPane({
       if (resizeTimer != null) window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
         resizeTimer = null;
+        const el = containerRef.current;
         const dims = fit.proposeDimensions();
-        if (!dims) return;
+        // A hidden pane (display:none) yields a degenerate 2x1 grid; pushing it
+        // to tmux corrupts the view. Only fit + resize at a real size.
+        if (!el || !isUsableResize(el.clientWidth, el.clientHeight, dims)) return;
         fit.fit();
         const cols = Math.floor(dims.cols);
         const rows = Math.floor(dims.rows);
@@ -460,6 +544,11 @@ function TerminalPane({
     term.options.cursorStyle = o.cursorStyle;
     term.options.cursorBlink = o.cursorBlink;
     term.options.theme = o.theme;
+    // Skip the refit while hidden — fit() on a 0-size box gives a 2x1 grid that
+    // would corrupt the tmux view. The ResizeObserver refits when it reappears.
+    const el = containerRef.current;
+    const dims = fitRef.current?.proposeDimensions();
+    if (!el || !isUsableResize(el.clientWidth, el.clientHeight, dims)) return;
     fitRef.current?.fit();
     terminalResize(pane.paneId, term.cols, term.rows).catch(() => {});
   }, [appearance, pane.paneId]);
@@ -616,21 +705,47 @@ function TerminalPane({
           cursor: renameDraft != null ? "default" : "grab",
         }}
       >
-        {/* Leading marker: lock takes precedence; otherwise the board variant
-            shows a coloured status dot. */}
-        {locked ? (
-          <LockIcon size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
-        ) : isBoard ? (
+        {/* Leading marker: the board variant carries the macOS-style traffic
+            lights (close / minimize / maximize); a locked pane keeps its lock
+            badge and disables close. The classic variant shows the lock badge —
+            its min/max/close buttons live on the right of the header. */}
+        {isBoard ? (
           <span
-            aria-hidden
             style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
               flexShrink: 0,
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: dotColor ?? "var(--muted)",
             }}
-          />
+          >
+            <button
+              onClick={locked ? undefined : onRemove}
+              disabled={locked}
+              title={locked ? "Locked — unlock to close" : "Close"}
+              aria-label="Close terminal"
+              style={trafficStyle("#ff5f57", !!locked)}
+            />
+            <button
+              onClick={onToggleMinimize}
+              title="Minimize"
+              aria-label="Minimize terminal"
+              style={trafficStyle("#febc2e", false)}
+            />
+            <button
+              onClick={onToggleMaximize}
+              title={maximized ? "Restore" : "Maximize"}
+              aria-label={maximized ? "Restore terminal" : "Maximize terminal"}
+              style={trafficStyle("#28c840", false)}
+            />
+            {locked && (
+              <LockIcon
+                size={12}
+                style={{ color: "var(--accent)", flexShrink: 0 }}
+              />
+            )}
+          </span>
+        ) : locked ? (
+          <LockIcon size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
         ) : null}
         {renameDraft != null ? (
           <input
@@ -681,6 +796,10 @@ function TerminalPane({
             {title}
           </span>
         )}
+        {/* Board header: title sits next to the traffic lights, the spacer
+            pushes the branch chip to the far right. The window controls live in
+            the leading traffic-light cluster, so nothing trails on the right. */}
+        {isBoard && <div style={{ flex: 1, minWidth: 8 }} />}
         {isBoard && branch && renameDraft == null && (
           <span
             title={branch}
@@ -698,9 +817,6 @@ function TerminalPane({
             {branch}
           </span>
         )}
-        {/* Spacer pushes the close button to the far right in the board header,
-            where minimize/maximize live in the right-click menu instead. */}
-        {isBoard && <div style={{ flex: 1, minWidth: 8 }} />}
         {!isBoard && (
           <>
             <button
@@ -721,25 +837,32 @@ function TerminalPane({
             </button>
           </>
         )}
-        <button
-          style={{
-            ...iconBtnStyle,
-            ...(isBoard ? { border: "none", width: 20, height: 20 } : null),
-            opacity: locked ? 0.4 : 1,
-            cursor: locked ? "not-allowed" : "pointer",
-          }}
-          title={locked ? "Locked — unlock to close" : "Close"}
-          aria-label="Close terminal"
-          disabled={locked}
-          onClick={onRemove}
-        >
-          ×
-        </button>
+        {!isBoard && (
+          <button
+            style={{
+              ...iconBtnStyle,
+              opacity: locked ? 0.4 : 1,
+              cursor: locked ? "not-allowed" : "pointer",
+            }}
+            title={locked ? "Locked — unlock to close" : "Close"}
+            aria-label="Close terminal"
+            disabled={locked}
+            onClick={onRemove}
+          >
+            ×
+          </button>
+        )}
       </div>
       )}
 
       {!chromeless && menu && (
-        <ContextMenu position={menu} onClose={closeMenu} minWidth={150}>
+        <ContextMenu
+          position={menu}
+          onClose={dismissMenu}
+          minWidth={sessionList ? 240 : 150}
+        >
+          {!sessionList && (
+            <>
             {/* Board header hides the inline min/max buttons — surface them here. */}
             {isBoard && (
               <>
@@ -827,6 +950,105 @@ function TerminalPane({
               {locked ? <LockOpenIcon size={14} /> : <LockIcon size={14} />}
               <span>{locked ? "Unlock" : "Lock"}</span>
             </button>
+            <button
+              style={menuItemStyle}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--panel)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+              onClick={() => {
+                // Swap the menu into the session picker (loaded async). Stays open.
+                claudeSessions(pane.workspaceId)
+                  .then(setSessionList)
+                  .catch(() => setSessionList([]));
+              }}
+            >
+              <RefreshIcon size={14} />
+              <span>Open session</span>
+            </button>
+            </>
+          )}
+          {sessionList && (
+            <>
+              <div
+                style={{
+                  padding: "4px 10px 3px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  color: "var(--muted)",
+                }}
+              >
+                Resume Claude session
+              </div>
+              {sessionList.length === 0 ? (
+                <div
+                  style={{
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    color: "var(--muted)",
+                  }}
+                >
+                  No sessions for this workspace yet.
+                </div>
+              ) : (
+                sessionList.map((s) => (
+                  <button
+                    key={s.id}
+                    title={`claude --resume ${s.id}`}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--panel)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                    onClick={() => {
+                      terminalWrite(
+                        pane.paneId,
+                        `claude --resume ${s.id}\r`,
+                      ).catch(() => {});
+                      dismissMenu();
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--fg)",
+                      cursor: "pointer",
+                      padding: "6px 10px",
+                      borderRadius: 4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {s.title}
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "var(--font-mono, monospace)",
+                        fontSize: 11,
+                        color: "var(--muted)",
+                      }}
+                    >
+                      {relativeSessionTime(s.lastActive)}
+                      {s.gitBranch ? ` · ${s.gitBranch}` : ""}
+                    </div>
+                  </button>
+                ))
+              )}
+            </>
+          )}
         </ContextMenu>
       )}
       <div

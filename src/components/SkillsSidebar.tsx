@@ -1,24 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import {
+  draggable,
+  monitorForElements,
+} from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { skillsList, type SkillInfo } from "../lib/ipc";
-import { ChevronIcon } from "./icons";
+import {
+  useSkillRecentsStore,
+  rankedSkills,
+  TRAY_MAX,
+} from "../store/skillRecents";
 
-const SPINE_W = 54; // category rail (always visible)
+const HANDLE_W = 10; // thin edge handle — the only thing visible when closed
+const SPINE_W = 54; // category rail (inside the overlay)
 const REVEAL_W = 248; // skill list panel
-const OPEN_W = SPINE_W + REVEAL_W;
+const PANEL_W = SPINE_W + REVEAL_W; // overlay width when open
+// Most ranked skills the "Most used" tab lists (matches the store's cap).
+const MAX_RANKED = 40;
 
 // How many lines of the description to show before clamping. Double-clicking a
 // row toggles between this compact view and the full description.
 const DESC_CLAMP_LINES = 2;
 
-// Recents are local-only: the last few skill commands dragged onto a terminal,
-// surfaced as a quick-launch tray so the common ones are one drag away from
-// anywhere. No backend involved.
-const RECENTS_KEY = "ade.skills.recents";
-const RECENTS_MAX = 8;
-
 // Pseudo-tabs that live alongside the real skill categories on the spine.
-const RECENT = "Recent";
+// Display label for the usage-ranked tab/tray. Short so it fits the 54px spine.
+const RECENT = "Top";
 const ALL = "All";
 
 // Spine order: hand-picked families first (matching how people reach for them),
@@ -37,25 +42,6 @@ const CATEGORY_ORDER = [
   "Setup",
   "iOS",
 ];
-
-function loadRecents(): string[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]");
-    return Array.isArray(raw)
-      ? raw.filter((x): x is string => typeof x === "string").slice(0, RECENTS_MAX)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistRecents(next: string[]) {
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(next.slice(0, RECENTS_MAX)));
-  } catch {
-    // localStorage can throw in private mode; recents are a nicety, so swallow.
-  }
-}
 
 // 17px line glyphs, keyed by category. Unmatched families get a neutral hash.
 function CategoryGlyph({ name, size = 17 }: { name: string; size?: number }) {
@@ -176,7 +162,15 @@ function CategoryGlyph({ name, size = 17 }: { name: string; size?: number }) {
 /** One skill row: "/name - description", draggable onto a terminal pane. The
  * drop side reads `skillCommand` from the drag payload and types it into the
  * pane's PTY. Dragging also records the skill as recent. */
-function SkillRow({ skill, onUse }: { skill: SkillInfo; onUse: (name: string) => void }) {
+function SkillRow({
+  skill,
+  onUse,
+  count,
+}: {
+  skill: SkillInfo;
+  onUse: (name: string) => void;
+  count?: number;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -210,15 +204,32 @@ function SkillRow({ skill, onUse }: { skill: SkillInfo; onUse: (name: string) =>
     >
       <span
         style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 6,
           fontFamily: "var(--font-mono)",
           fontSize: 12,
           fontWeight: 600,
           color: "var(--accent)",
-          display: "block",
           overflowWrap: "anywhere",
         }}
       >
-        /{skill.name}
+        <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          /{skill.name}
+        </span>
+        {count != null && count > 0 && (
+          <span
+            style={{
+              marginLeft: "auto",
+              flexShrink: 0,
+              fontSize: 10,
+              color: "var(--muted)",
+            }}
+            title={`Used ${count}×`}
+          >
+            {count}×
+          </span>
+        )}
       </span>
       {skill.description && (
         <span
@@ -241,8 +252,16 @@ function SkillRow({ skill, onUse }: { skill: SkillInfo; onUse: (name: string) =>
   );
 }
 
-/** A compact recent-skill pill, draggable like a row. */
-function SkillPill({ name, onUse }: { name: string; onUse: (name: string) => void }) {
+/** A compact ranked-skill pill, draggable like a row. */
+function SkillPill({
+  name,
+  onUse,
+  count,
+}: {
+  name: string;
+  onUse: (name: string) => void;
+  count?: number;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -263,14 +282,16 @@ function SkillPill({ name, onUse }: { name: string; onUse: (name: string) => voi
   return (
     <div
       ref={ref}
-      title={`/${name} · drag onto a terminal to insert the command.`}
+      title={`/${name}${count ? ` · used ${count}×` : ""} · drag onto a terminal to insert the command.`}
       style={{
         fontFamily: "var(--font-mono)",
         fontSize: 11,
         fontWeight: 600,
         color: "var(--accent)",
         background: "var(--surface-raised)",
-        border: dragging ? "1px dashed var(--accent)" : "1px solid var(--border)",
+        border: dragging
+          ? "1px dashed var(--accent)"
+          : "1px solid var(--border)",
         borderRadius: 20,
         padding: "3px 10px",
         cursor: "grab",
@@ -279,6 +300,11 @@ function SkillPill({ name, onUse }: { name: string; onUse: (name: string) => voi
       }}
     >
       /{name}
+      {count != null && count > 0 && (
+        <span style={{ marginLeft: 5, fontSize: 10, color: "var(--muted)" }}>
+          {count}×
+        </span>
+      )}
     </div>
   );
 }
@@ -341,22 +367,66 @@ function SpineButton({
   );
 }
 
-// Closable side panel listing the skills available to the open project — the
-// project's own (.claude/skills) plus the global Claude Code library
-// (~/.claude/skills). Two-tier: a category spine on the edge picks a family,
-// and the reveal panel shows that family's skills, a search box that overrides
-// the family filter, and a tray of recently-dragged commands for quick re-use.
-export default function SkillsSidebar({ workspaceId }: { workspaceId: string | null }) {
-  const [open, setOpen] = useState(false);
+// Skills available to the open project — the project's own (.claude/skills) plus
+// the global Claude Code library (~/.claude/skills). Collapsed to a thin edge
+// handle so it doesn't hold a column; hovering the handle peeks the panel as an
+// overlay over the terminals, ⌘K pins it open. Inside: a category spine picks a
+// family, and the reveal panel shows that family's skills, a search box that
+// overrides the family filter, and a tray of recent commands for quick re-use.
+export default function SkillsSidebar({
+  workspaceId,
+}: {
+  workspaceId: string | null;
+}) {
+  // open is derived: peeking on hover, held by the ⌘K pin, or kept up for the
+  // duration of a skill drag so hover-close can't cancel the drop.
+  const [hover, setHover] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const open = hover || pinned || dragging;
+
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [query, setQuery] = useState("");
-  const [recents, setRecents] = useState<string[]>(() => loadRecents());
-  // Default to Recent once the user has some; otherwise land them on All so the
-  // first-ever open isn't an empty panel.
-  const [tab, setTab] = useState<string>(() => (loadRecents().length ? RECENT : ALL));
+  const counts = useSkillRecentsStore((s) => s.counts);
+  const recordUse = useSkillRecentsStore((s) => s.record);
+  const setKnown = useSkillRecentsStore((s) => s.setKnown);
+  // Default to Most used once the user has some; otherwise land them on All so
+  // the first-ever open isn't an empty panel.
+  const [tab, setTab] = useState<string>(() =>
+    Object.keys(useSkillRecentsStore.getState().counts).length ? RECENT : ALL,
+  );
+
+  // ⌘K (or Ctrl+K) toggles the pin; Esc unpins and closes. Hover handles the
+  // transient peek without touching the pin.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPinned((p) => !p);
+      } else if (e.key === "Escape") {
+        setPinned(false);
+        setHover(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Hold the panel open while a skill row is being dragged — the pointer leaves
+  // the overlay during the drag, and hover-close would otherwise cancel it.
+  useEffect(
+    () =>
+      monitorForElements({
+        canMonitor: ({ source }) => "skillCommand" in source.data,
+        onDragStart: () => setDragging(true),
+        onDrop: () => setDragging(false),
+      }),
+    [],
+  );
 
   // (Re)scan when the workspace changes and on every expand, so newly added
-  // skills show up without restarting the app.
+  // skills show up without restarting the app. The scanned names also gate
+  // terminal-typed `/skill` recording (so `/clear` etc. never land in recents).
   useEffect(() => {
     if (!workspaceId) {
       setSkills([]);
@@ -365,7 +435,10 @@ export default function SkillsSidebar({ workspaceId }: { workspaceId: string | n
     let stale = false;
     skillsList(workspaceId)
       .then((list) => {
-        if (!stale) setSkills(list);
+        if (!stale) {
+          setSkills(list);
+          setKnown(list.map((s) => s.name));
+        }
       })
       .catch(() => {
         if (!stale) setSkills([]);
@@ -373,248 +446,325 @@ export default function SkillsSidebar({ workspaceId }: { workspaceId: string | n
     return () => {
       stale = true;
     };
-  }, [workspaceId, open]);
-
-  const recordUse = useMemo(
-    () => (name: string) => {
-      setRecents((prev) => {
-        const next = [name, ...prev.filter((n) => n !== name)].slice(0, RECENTS_MAX);
-        persistRecents(next);
-        return next;
-      });
-    },
-    [],
-  );
+  }, [workspaceId, open, setKnown]);
 
   // Categories that actually exist among the scanned skills, ordered.
   const categories = useMemo(() => {
     const present = new Set(skills.map((s) => s.category || "Other"));
     const ordered = CATEGORY_ORDER.filter((c) => present.has(c));
-    const extras = [...present].filter((c) => !CATEGORY_ORDER.includes(c) && c !== "Other").sort();
+    const extras = [...present]
+      .filter((c) => !CATEGORY_ORDER.includes(c) && c !== "Other")
+      .sort();
     if (present.has("Other")) extras.push("Other");
     return [...ordered, ...extras];
   }, [skills]);
 
-  const byName = useMemo(() => new Map(skills.map((s) => [s.name, s])), [skills]);
+  const byName = useMemo(
+    () => new Map(skills.map((s) => [s.name, s])),
+    [skills],
+  );
+
+  // Skill names ranked by use count, highest first — drives the Most-used tab
+  // and the quick-launch tray.
+  const ranked = useMemo(() => rankedSkills(counts, MAX_RANKED), [counts]);
+
+  // Stable sort by use count (desc) — used skills bubble to the top of every
+  // list while never-used ones keep their original order.
+  const byUse = (list: SkillInfo[]) =>
+    [...list].sort((a, b) => (counts[b.name] ?? 0) - (counts[a.name] ?? 0));
 
   // What the reveal list shows: search wins over the spine tab (global
   // override); otherwise the active tab decides.
   const q = query.trim().toLowerCase();
   const visible = useMemo(() => {
     if (q) {
-      return skills.filter(
-        (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+      return byUse(
+        skills.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q),
+        ),
       );
     }
     if (tab === RECENT) {
-      return recents.map((n) => byName.get(n)).filter((s): s is SkillInfo => !!s);
+      return ranked
+        .map((n) => byName.get(n))
+        .filter((s): s is SkillInfo => !!s);
     }
-    if (tab === ALL) return skills;
-    return skills.filter((s) => (s.category || "Other") === tab);
-  }, [q, tab, skills, recents, byName]);
+    if (tab === ALL) return byUse(skills);
+    return byUse(skills.filter((s) => (s.category || "Other") === tab));
+  }, [q, tab, skills, ranked, byName, counts]);
 
   // The quick-launch pill tray: shown above the list when not searching and not
-  // already on the Recent tab (where it would duplicate the rows).
-  const showTray = !q && tab !== RECENT && recents.length > 0;
+  // already on the Most-used tab (where it would duplicate the rows).
+  const showTray = !q && tab !== RECENT && ranked.length > 0;
+  const trayNames = ranked.slice(0, TRAY_MAX);
 
-  const sectionLabel = q ? `Results · ${visible.length}` : `${tab} · ${visible.length}`;
+  const sectionLabel = q
+    ? `Results · ${visible.length}`
+    : `${tab} · ${visible.length}`;
 
-  // Clicking a group opens the reveal panel on it; clicking the group that's
-  // already open collapses the panel. The spine never hides, so the groups stay
-  // visible and reachable directly.
+  // Clicking a group just switches the active family. Open/close is driven by
+  // hover and the ⌘K pin, not by the spine.
   const selectTab = (t: string) => {
-    if (open && tab === t) {
-      setOpen(false);
-      return;
-    }
     setTab(t);
     setQuery("");
-    setOpen(true);
   };
 
   return (
+    // Only the thin handle takes layout width; the panel floats over the
+    // terminals as an overlay, so closed it gives the whole stage to the work.
     <div
       style={{
+        position: "relative",
         flexShrink: 0,
-        width: open ? OPEN_W : SPINE_W,
-        display: "flex",
-        background: "var(--panel)",
-        borderRight: "1px solid var(--border)",
-        overflow: "hidden",
+        width: HANDLE_W,
+        background: "var(--bg)",
       }}
     >
-      {/* Category spine — always visible so the groups are reachable directly */}
-      <nav
+      {/* Edge handle — hover peeks, click/⌘K pins. Fades out under the overlay. */}
+      <button
+        type="button"
+        onMouseEnter={() => setHover(true)}
+        onFocus={() => setHover(true)}
+        onClick={() => setPinned((p) => !p)}
+        aria-pressed={pinned}
+        aria-label="Skills (⌘K)"
+        title="Skills — hover to peek, ⌘K to pin"
         style={{
-          width: SPINE_W,
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          background: "var(--bg)",
-          borderRight: open ? "1px solid var(--border)" : "none",
-          paddingTop: 6,
-          overflowY: "auto",
+          position: "absolute",
+          inset: 0,
+          padding: 0,
+          border: "none",
+          cursor: "pointer",
+          background: "linear-gradient(var(--accent), var(--accent-cyan))",
+          opacity: open ? 0 : 0.55,
+          transition: "opacity var(--dur-state) var(--ease-out-quart)",
         }}
-      >
-        <SpineButton
-          label={RECENT}
-          active={open && tab === RECENT}
-          accent="var(--accent-cyan)"
-          onClick={() => selectTab(RECENT)}
-        />
-        <span style={{ height: 1, background: "var(--border)", margin: "5px 9px" }} />
-        {categories.map((c) => (
-          <SpineButton
-            key={c}
-            label={c}
-            active={open && tab === c}
-            accent="var(--accent)"
-            onClick={() => selectTab(c)}
-          />
-        ))}
-        <SpineButton
-          label={ALL}
-          active={open && tab === ALL}
-          accent="var(--accent)"
-          onClick={() => selectTab(ALL)}
-        />
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-label={open ? "Collapse skills" : "Open skills"}
-          title={open ? "Collapse panel" : "Open panel"}
-          style={{
-            marginTop: "auto",
-            padding: "10px 0",
-            border: "none",
-            borderTop: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--muted)",
-            cursor: "pointer",
-          }}
-        >
-          <ChevronIcon
-            size={14}
-            style={{
-              transform: open ? "rotate(90deg)" : "rotate(-90deg)",
-              transition: "transform var(--dur-state) var(--ease-out-quart)",
-            }}
-          />
-        </button>
-      </nav>
+      />
 
       {open && (
         <div
+          onMouseLeave={() => setHover(false)}
           style={{
-            width: REVEAL_W,
-            flexShrink: 0,
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: PANEL_W,
             display: "flex",
-            flexDirection: "column",
-            minWidth: 0,
+            background: "var(--panel)",
+            borderRight: "1px solid var(--border)",
+            boxShadow: "2px 0 24px rgba(0,0,0,0.45)",
+            zIndex: 20,
             overflow: "hidden",
           }}
         >
-          <div style={{ padding: "10px 10px 9px" }}>
-            <div
+          {/* Category spine */}
+          <nav
+            style={{
+              width: SPINE_W,
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--bg)",
+              borderRight: "1px solid var(--border)",
+              paddingTop: 6,
+              overflowY: "auto",
+            }}
+          >
+            <SpineButton
+              label={RECENT}
+              active={tab === RECENT}
+              accent="var(--accent-cyan)"
+              onClick={() => selectTab(RECENT)}
+            />
+            <span
               style={{
+                height: 1,
+                background: "var(--border)",
+                margin: "5px 9px",
+              }}
+            />
+            {categories.map((c) => (
+              <SpineButton
+                key={c}
+                label={c}
+                active={tab === c}
+                accent="var(--accent)"
+                onClick={() => selectTab(c)}
+              />
+            ))}
+            <SpineButton
+              label={ALL}
+              active={tab === ALL}
+              accent="var(--accent)"
+              onClick={() => selectTab(ALL)}
+            />
+            <button
+              type="button"
+              onClick={() => setPinned((p) => !p)}
+              aria-pressed={pinned}
+              aria-label={pinned ? "Unpin skills" : "Pin skills open"}
+              title={pinned ? "Unpin (Esc)" : "Pin open (⌘K)"}
+              style={{
+                marginTop: "auto",
                 display: "flex",
-                alignItems: "center",
-                gap: 7,
-                background: "var(--surface-input)",
-                border: "1px solid var(--input-border)",
-                borderRadius: 6,
-                padding: "7px 10px",
+                justifyContent: "center",
+                padding: "10px 0",
+                border: "none",
+                borderTop: "1px solid var(--border)",
+                background: "transparent",
+                color: pinned ? "var(--accent)" : "var(--muted)",
+                cursor: "pointer",
               }}
             >
               <svg
-                width={13}
-                height={13}
+                width={14}
+                height={14}
                 viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--muted)"
+                fill={pinned ? "currentColor" : "none"}
+                stroke="currentColor"
                 strokeWidth={2}
-                style={{ flexShrink: 0 }}
+                strokeLinecap="round"
+                strokeLinejoin="round"
               >
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3-3" />
+                <path d="M12 17v5" />
+                <path d="M9 10.8V3h6v7.8l2 3.2H7l2-3.2Z" />
               </svg>
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search all skills…"
-                aria-label="Search skills"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  border: "none",
-                  outline: "none",
-                  background: "transparent",
-                  fontFamily: "var(--font-sans)",
-                  fontSize: 12,
-                  color: "var(--fg)",
-                }}
-              />
-            </div>
-          </div>
+            </button>
+          </nav>
 
-          {showTray && (
-            <div style={{ padding: "0 12px 9px", borderBottom: "1px solid var(--border)" }}>
-              <div
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                  color: "var(--accent-cyan)",
-                  padding: "0 0 6px",
-                }}
-              >
-                Recent
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {recents.map((n) => (
-                  <SkillPill key={n} name={n} onUse={recordUse} />
-                ))}
-              </div>
-            </div>
-          )}
-
+          {/* Reveal list */}
           <div
             style={{
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              color: "var(--muted)",
-              padding: "8px 12px 6px",
+              width: REVEAL_W,
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              minWidth: 0,
+              overflow: "hidden",
             }}
           >
-            {sectionLabel}
-          </div>
-
-          <div style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
-            {visible.length === 0 ? (
-              <span
+            <div style={{ padding: "10px 10px 9px" }}>
+              <div
                 style={{
-                  display: "block",
-                  fontFamily: "var(--font-sans)",
-                  fontSize: 12,
-                  color: "var(--muted)",
-                  padding: "4px 12px",
-                  lineHeight: 1.5,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 7,
+                  background: "var(--surface-input)",
+                  border: "1px solid var(--input-border)",
+                  borderRadius: 6,
+                  padding: "7px 10px",
                 }}
               >
-                {skills.length === 0
-                  ? "No skills found (.claude/skills/*/SKILL.md in this project or ~/.claude/skills)."
-                  : tab === RECENT
-                    ? "No recent skills yet. Drag a skill onto a terminal and it shows up here."
-                    : q
-                      ? `No skills match “${query.trim()}”.`
-                      : "No skills in this category."}
-              </span>
-            ) : (
-              visible.map((s) => <SkillRow key={s.name} skill={s} onUse={recordUse} />)
+                <svg
+                  width={13}
+                  height={13}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--muted)"
+                  strokeWidth={2}
+                  style={{ flexShrink: 0 }}
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-3-3" />
+                </svg>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search all skills…"
+                  aria-label="Search skills"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    fontFamily: "var(--font-sans)",
+                    fontSize: 12,
+                    color: "var(--fg)",
+                  }}
+                />
+              </div>
+            </div>
+
+            {showTray && (
+              <div
+                style={{
+                  padding: "0 12px 9px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    color: "var(--accent-cyan)",
+                    padding: "0 0 6px",
+                  }}
+                >
+                  Most used
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {trayNames.map((n) => (
+                    <SkillPill
+                      key={n}
+                      name={n}
+                      onUse={recordUse}
+                      count={counts[n]}
+                    />
+                  ))}
+                </div>
+              </div>
             )}
+
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                color: "var(--muted)",
+                padding: "8px 12px 6px",
+              }}
+            >
+              {sectionLabel}
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
+              {visible.length === 0 ? (
+                <span
+                  style={{
+                    display: "block",
+                    fontFamily: "var(--font-sans)",
+                    fontSize: 12,
+                    color: "var(--muted)",
+                    padding: "4px 12px",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {skills.length === 0
+                    ? "No skills found (.claude/skills/*/SKILL.md in this project or ~/.claude/skills)."
+                    : tab === RECENT
+                      ? "No skills used yet. Drag one onto a terminal or type /skill — it shows up here, ranked by use."
+                      : q
+                        ? `No skills match “${query.trim()}”.`
+                        : "No skills in this category."}
+                </span>
+              ) : (
+                visible.map((s) => (
+                  <SkillRow
+                    key={s.name}
+                    skill={s}
+                    onUse={recordUse}
+                    count={counts[s.name]}
+                  />
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

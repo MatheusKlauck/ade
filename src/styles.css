@@ -47,12 +47,18 @@
   z-index: 28;
   border-radius: inherit;
   padding: 2px;
+  /* A comet, not a flat arc: a long faint tail ramps up over ~260° to a molten
+     core (#ff8a00) that flares to a hot white-gold head (#fff3df) before cutting
+     to nothing — so the leading tip reads as burning and the rest trails it. */
   background: conic-gradient(
     from var(--ade-orbit-angle),
     rgba(255, 138, 0, 0) 0deg,
-    rgba(255, 138, 0, 0) 60deg,
-    #ff8a00 320deg,
-    #ffc061 350deg,
+    rgba(255, 138, 0, 0) 38deg,
+    rgba(255, 145, 0, 0.18) 170deg,
+    rgba(255, 150, 0, 0.7) 298deg,
+    #ff8a00 330deg,
+    #ffd27a 345deg,
+    #fff3df 352deg,
     rgba(255, 138, 0, 0) 360deg
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -61,11 +67,16 @@
   mask-composite: exclude;
   pointer-events: none;
   opacity: 0;
+  /* Bloom around the visible arc — only the opaque comet casts it, so the glow
+     concentrates at the head. Bounded to this one pane's 2px perimeter. */
+  filter: drop-shadow(0 0 3px rgba(255, 150, 0, 0.55));
   /* Resting transition = the fade-OUT: hold 2.5s, then dissolve over 0.7s. */
   transition: opacity 0.7s ease 2.5s;
-  /* Always defined so the comet has a stable, per-element timeline; frozen by
-     default and only un-paused while THIS terminal is receiving output. */
-  animation: ade-term-orbit 9.2s linear infinite;
+  /* Two paused timelines, both un-paused only while THIS terminal receives
+     output: the orbit (stable per-element angle) and a slow glow-breathe so the
+     working state reads as alive energy, not a constant spin. */
+  animation: ade-term-orbit 9.2s linear infinite,
+             ade-comet-breathe 2.6s ease-in-out infinite;
   animation-play-state: paused;
 }
 
@@ -96,10 +107,24 @@
   }
 }
 
-/* The "attention" veil: a band of the accent hue sweeps diagonally from the
-   top-left corner to the bottom-right and fades, like a curtain drawn across the
-   window. The element is oversized (200%) and translated so the band travels
-   fully on and off; the pane wrapper's overflow clips the overhang. */
+/* Breathes the comet's bloom while it spins — the head swells and brightens,
+   then settles. Paused with the orbit (held at the 0% value when idle, which
+   matches the static filter, so removing `working` leaves it consistent). */
+@keyframes ade-comet-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px rgba(255, 150, 0, 0.5));
+  }
+  50% {
+    filter: drop-shadow(0 0 7px rgba(255, 172, 56, 0.85));
+  }
+}
+
+/* The "attention" veil: a band of accent LIGHT sweeps diagonally across the pane
+   when a burst ends, pulling the eye back. A soft accent halo carries a hot
+   near-white leading edge — not a flat smear but a beam of light — blended with
+   `screen` so it adds glow over the terminal content instead of overlaying it.
+   The element is oversized (200%) and translated so the beam travels fully on and
+   off; the pane wrapper's overflow clips the overhang. */
 .ade-term-done-veil {
   position: absolute;
   top: -50%;
@@ -108,13 +133,17 @@
   height: 200%;
   z-index: 30;
   pointer-events: none;
+  mix-blend-mode: screen;
+  filter: blur(0.6px);
   background: linear-gradient(
     135deg,
-    transparent 30%,
-    var(--accent) 50%,
-    transparent 70%
+    transparent 36%,
+    color-mix(in oklab, var(--accent) 60%, transparent) 46%,
+    color-mix(in oklab, #fff 80%, var(--accent)) 50%,
+    color-mix(in oklab, var(--accent) 60%, transparent) 54%,
+    transparent 64%
   );
-  animation: ade-term-veil 3s ease-in-out forwards;
+  animation: ade-term-veil 2.3s var(--ease-out-quint) forwards;
 }
 
 @keyframes ade-term-veil {
@@ -122,11 +151,11 @@
     opacity: 0;
     transform: translate(-65%, -65%);
   }
-  20% {
-    opacity: 0.3;
+  18% {
+    opacity: 0.42;
   }
-  80% {
-    opacity: 0.3;
+  82% {
+    opacity: 0.42;
   }
   100% {
     opacity: 0;
@@ -139,32 +168,122 @@
    "this just appeared": a terminal spun up from a card → Doing, a card synced in.
    The global prefers-reduced-motion rule neutralizes both. */
 @keyframes ade-pane-enter {
-  from {
+  0% {
     opacity: 0;
-    transform: scale(0.97);
+    transform: scale(0.94);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 45%, transparent);
   }
-  to {
+  60% {
+    box-shadow: 0 0 22px 2px color-mix(in oklab, var(--accent) 22%, transparent);
+  }
+  100% {
     opacity: 1;
     transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent);
   }
 }
 .ade-pane-enter {
-  animation: ade-pane-enter 240ms var(--ease-out-quart);
+  animation: ade-pane-enter var(--dur-enter) var(--ease-out-expo);
 }
 
+/* A new card doesn't just slide in — it overshoots up with an accent glow flash,
+   so a card synced in or moved by the gestor catches the eye. */
 @keyframes ade-card-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+    box-shadow: inset 0 0 0 0 color-mix(in oklab, var(--accent) 60%, transparent);
+  }
+  55% {
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 55%, transparent);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    box-shadow: inset 0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent);
+  }
+}
+.ade-card-enter {
+  animation: ade-card-enter var(--dur-enter) var(--ease-out-expo);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Live-state pulse — the app's resting heartbeat. Any status dot that means
+   "something is happening right now" breathes a soft glow ring in its own hue
+   (set via --pulse-color), so the board/ledger reads as alive at a glance
+   instead of a field of static dots. Two intensities:
+     .ade-pulse       — calm/continuous (a terminal running, an agent working)
+     .ade-pulse-attn  — urgent/faster (input needed, failed) — demands the eye
+   Both inherit the global prefers-reduced-motion kill-switch.
+   ────────────────────────────────────────────────────────────────────────── */
+@keyframes ade-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color, var(--accent)) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--pulse-color, var(--accent)) 0%, transparent);
+  }
+}
+.ade-pulse {
+  animation: ade-pulse 2s var(--ease-out-quart) infinite;
+}
+@keyframes ade-pulse-attn {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color, var(--accent)) 75%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklab, var(--pulse-color, var(--accent)) 0%, transparent);
+    transform: scale(1.25);
+  }
+}
+.ade-pulse-attn {
+  animation: ade-pulse-attn 1.1s var(--ease-out-quart) infinite;
+}
+
+/* Drop-target ring that breathes while a card hovers over a valid target —
+   replaces the static inset ring with a pulse so the drop zone feels magnetic. */
+@keyframes ade-drop-pulse {
+  0%, 100% {
+    box-shadow: inset 0 0 0 1px var(--accent),
+                0 0 0 0 color-mix(in oklab, var(--accent) 40%, transparent);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px var(--accent),
+                0 0 0 4px color-mix(in oklab, var(--accent) 0%, transparent);
+  }
+}
+.ade-drop-pulse {
+  animation: ade-drop-pulse 0.9s var(--ease-out-quart) infinite;
+}
+
+/* Shell arrival — a one-shot staggered cascade on cold start. Licensed page-load
+   choreography: the chrome, the work surface, and the footer rise in sequence so
+   the app "boots up" with intent instead of snapping into place. Fires once per
+   mount; --i sets each child's slot. */
+@keyframes ade-shell-enter {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
-.ade-card-enter {
-  animation: ade-card-enter 200ms var(--ease-out-quart);
+/* Stagger by source order without threading --i through each child component,
+   and WITHOUT touching later children (modals/composers that mount on demand
+   long after boot — they must not replay this on open). Child 1 is the
+   empty-on-boot toast overlay; chrome, work surface, and footer follow. */
+.ade-shell-enter > *:nth-child(2),
+.ade-shell-enter > *:nth-child(3),
+.ade-shell-enter > *:nth-child(4) {
+  animation: ade-shell-enter 460ms var(--ease-out-expo) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
 }
+.ade-shell-enter > *:nth-child(2) { --i: 0; }
+.ade-shell-enter > *:nth-child(3) { --i: 1; }
+.ade-shell-enter > *:nth-child(4) { --i: 2; }
 
 /* Draggable gutter between split terminal panes. Sits in the gap, invisible
    until hovered or actively dragged, when an accent bar marks the boundary. */
@@ -248,8 +367,11 @@
 
   /* Motion */
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --dur-state: 180ms;
   --dur-instant: 100ms;
+  --dur-enter: 320ms;
 
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -328,8 +450,11 @@
 
   /* Motion */
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --dur-state: 180ms;
   --dur-instant: 100ms;
+  --dur-enter: 320ms;
 
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

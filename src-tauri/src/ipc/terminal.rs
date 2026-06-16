@@ -100,6 +100,7 @@ pub async fn terminal_open(
             for _ in 0..100 {
                 if tmux::session_exists(&viewer) {
                     let _ = tmux::viewer_status_off(&viewer);
+                    let _ = tmux::viewer_mouse_on(&viewer);
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));

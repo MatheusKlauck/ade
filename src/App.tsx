@@ -619,6 +619,9 @@ export default function App() {
         windowId: result.windowId,
         workspaceId: activeWorkspaceId,
         channel: result.channel,
+        // Only a preset-less New terminal is a bare shell; a preset auto-runs an
+        // app, so its typed input isn't shell commands. See OpenTerminal.
+        captureCommands: !preset,
       };
       addPane(pane);
       // Associate the explicitly chosen preset so manual close runs its
@@ -790,6 +793,7 @@ export default function App() {
 
   return (
     <div
+      className="ade-shell-enter"
       style={{
         position: "relative",
         height: "100vh",
@@ -802,10 +806,7 @@ export default function App() {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
       <AppBar
         onOpenSettings={() => setShowSettings(true)}
-        onOpenGestor={() => setShowGestor(true)}
-        onNewFeature={() => setShowNewFeature(true)}
-        viewMode={viewMode}
-        onToggleView={handleToggleView}
+        onNewTerminal={handleNewTerminal}
       />
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <SkillsSidebar workspaceId={activeWorkspaceId} />
@@ -846,6 +847,16 @@ export default function App() {
         <Settings
           onClose={() => setShowSettings(false)}
           onSaved={handleSettingsSaved}
+          viewMode={viewMode}
+          onToggleView={handleToggleView}
+          onOpenGestor={() => {
+            setShowSettings(false);
+            setShowGestor(true);
+          }}
+          onNewFeature={() => {
+            setShowSettings(false);
+            setShowNewFeature(true);
+          }}
         />
       )}
       {showGestor && activeWorkspaceId && (

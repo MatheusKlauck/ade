@@ -10,6 +10,8 @@ import { useWorkspacesStore } from "../store/workspaces";
 import { useCommandFreqStore } from "../store/commandFrequency";
 import { useModalFocus } from "../lib/useModalFocus";
 import GestorSettings from "./GestorSettings";
+import { RowsIcon, ColumnsIcon } from "./icons";
+import type { ViewMode } from "./AppBar";
 import AppearanceTab from "./settings/AppearanceTab";
 import TerminalAppearanceTab from "./settings/TerminalAppearanceTab";
 import PresetsEditor from "./settings/PresetsEditor";
@@ -24,6 +26,10 @@ import {
 interface SettingsProps {
   onClose: () => void;
   onSaved: (login: string) => void;
+  viewMode: ViewMode;
+  onToggleView: () => void;
+  onOpenGestor: () => void;
+  onNewFeature: () => void;
 }
 
 /** The settings modal is split into one tab per concern-domain so the panel
@@ -52,7 +58,14 @@ function formatTokenError(e: unknown): string {
   return "Failed to validate token";
 }
 
-export default function Settings({ onClose, onSaved }: SettingsProps) {
+export default function Settings({
+  onClose,
+  onSaved,
+  viewMode,
+  onToggleView,
+  onOpenGestor,
+  onNewFeature,
+}: SettingsProps) {
   const activeWorkspaceId = useWorkspacesStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const activeWorkspaceName =
@@ -336,13 +349,67 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
             onScroll={updateFade}
             style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}
           >
-            {/* Appearance: theme + accent */}
+            {/* Appearance: theme + accent + view */}
             {activeTab === "appearance" && (
-              <AppearanceTab
-                themeStatus={fieldStatus.theme}
-                accentStatus={fieldStatus.accent}
-                onSaveResult={flashStatus}
-              />
+              <>
+                <AppearanceTab
+                  themeStatus={fieldStatus.theme}
+                  accentStatus={fieldStatus.accent}
+                  onSaveResult={flashStatus}
+                />
+                <div style={{ maxWidth: 560, marginTop: 24 }}>
+                  <label style={sectionLabelStyle}>View</label>
+                  <p
+                    style={{
+                      margin: "0 0 10px",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    Ledger is a dense issue table; Board is the Kanban with the
+                    terminal grid.
+                  </p>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {(
+                      [
+                        { mode: "ledger", label: "Ledger", Icon: RowsIcon },
+                        { mode: "classic", label: "Board", Icon: ColumnsIcon },
+                      ] as const
+                    ).map(({ mode, label, Icon }) => {
+                      const selected = viewMode === mode;
+                      return (
+                        <button
+                          key={mode}
+                          onClick={() => {
+                            if (!selected) onToggleView();
+                          }}
+                          aria-pressed={selected}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "6px 16px",
+                            fontSize: 13,
+                            background: selected
+                              ? "var(--accent)"
+                              : "var(--input-bg)",
+                            color: selected ? "var(--accent-ink)" : "var(--fg)",
+                            border: selected
+                              ? "1px solid var(--accent)"
+                              : "1px solid var(--input-border)",
+                            borderRadius: 4,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <Icon size={14} />
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
             )}
 
             {/* Terminal: appearance + presets */}
@@ -561,6 +628,41 @@ export default function Settings({ onClose, onSaved }: SettingsProps) {
                 id="settings-panel-gestor"
                 aria-labelledby="settings-tab-gestor"
               >
+                <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+                  <button
+                    onClick={onNewFeature}
+                    disabled={!activeWorkspaceId}
+                    title="Descreva uma feature — o Gestor desdobra em tasks e toca"
+                    data-testid="new-feature"
+                    style={{
+                      padding: "6px 16px",
+                      fontSize: 13,
+                      background: "var(--accent)",
+                      color: "var(--accent-ink)",
+                      border: "1px solid var(--accent)",
+                      borderRadius: 4,
+                      cursor: activeWorkspaceId ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    + New feature
+                  </button>
+                  <button
+                    onClick={onOpenGestor}
+                    disabled={!activeWorkspaceId}
+                    data-testid="open-gestor"
+                    style={{
+                      padding: "6px 16px",
+                      fontSize: 13,
+                      background: "var(--input-bg)",
+                      color: "var(--fg)",
+                      border: "1px solid var(--input-border)",
+                      borderRadius: 4,
+                      cursor: activeWorkspaceId ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    Open Gestor
+                  </button>
+                </div>
                 <GestorSettings workspaceId={activeWorkspaceId} />
               </div>
             )}

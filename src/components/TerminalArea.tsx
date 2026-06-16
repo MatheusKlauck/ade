@@ -11,10 +11,9 @@ import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element
 import TerminalPane from "./TerminalPane";
 import { terminalWrite } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
-import { useLedgerStore } from "../store/ledger";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
-import { ChevronIcon, LockIcon, PlusIcon } from "./icons";
+import { ChevronIcon, LockIcon } from "./icons";
 import { useEnterAnimation } from "../lib/useEnterAnimation";
 import { menuItemBlockStyle as menuItemStyle } from "./ContextMenu";
 import type { OpenTerminal, TerminalLayout } from "../store/terminals";
@@ -384,7 +383,6 @@ export default function TerminalArea({
 }: TerminalAreaProps) {
   const isBoard = variant === "board";
   const boards = useBoardStore((s) => s.boards);
-  const attentionByWindow = useLedgerStore((s) => s.attentionByWindow);
   const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
   const namesByWorkspace = useTerminalsStore((s) => s.namesByWorkspace);
   const toggleLock = useTerminalsStore((s) => s.toggleLock);
@@ -508,17 +506,6 @@ export default function TerminalArea({
     const card = cardFor(pane);
     if (card?.github_issue_number != null) return `issue-${card.github_issue_number}`;
     return null;
-  };
-
-  // Status-dot colour for the board header. Pending attention wins (the agent
-  // needs you / a command failed or finished); otherwise a live card-linked pane
-  // reads as healthy/active (green) and a plain shell stays muted.
-  const dotColorFor = (pane: OpenTerminal): string => {
-    const att = attentionByWindow[pane.windowId];
-    if (att?.kind === "failed") return "var(--status-error)";
-    if (att?.kind === "input") return "var(--status-warning)";
-    if (att?.kind === "done") return "var(--status-success)";
-    return cardFor(pane) ? "var(--status-success)" : "var(--muted)";
   };
 
   // A maximized pane only counts while it is still open.
@@ -898,7 +885,6 @@ export default function TerminalArea({
                     cometOutside
                     headerVariant={isBoard ? "board" : "default"}
                     branch={isBoard ? branchFor(pane) : undefined}
-                    dotColor={isBoard ? dotColorFor(pane) : undefined}
                     maximized={isMax}
                     locked={locked}
                     hasCustomName={customNameFor(pane) != null}
@@ -941,35 +927,6 @@ export default function TerminalArea({
                   onPointerDown={(e) => beginColResize(e, d.ri, d.aTi, d.bTi)}
                 />
               ))}
-            {/* Board mode drops the toolbar, so keep a low-profile new-shell
-                control floating in the corner of the stage. */}
-            {isBoard && (
-              <button
-                onClick={() => onNewTerminal()}
-                title="New terminal"
-                aria-label="New terminal"
-                style={{
-                  position: "absolute",
-                  top: PAD + 4,
-                  right: PAD + 4,
-                  zIndex: 30,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 24,
-                  height: 24,
-                  padding: 0,
-                  background: "var(--panel)",
-                  color: "var(--muted)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: "pointer",
-                  opacity: 0.85,
-                }}
-              >
-                <PlusIcon size={14} />
-              </button>
-            )}
           </div>
           {minimizedPanes.length > 0 && (
             <div

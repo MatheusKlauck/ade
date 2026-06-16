@@ -159,7 +159,11 @@ welcome; clutter is the enemy.
 - Monospace for identifiers and data; system sans for labels and prose.
 - Every state has a legible, redundant signal (color + icon/shape/label).
 - Tight, consistent radii (4px) and an 8px-based spacing rhythm.
-- Restrained, fast motion that reports state — never choreography.
+- Motion that reports state *and keeps the surface alive*: live work breathes (pulsing
+  status dots), things that appear announce themselves (overshoot + accent-glow entrances),
+  the board lifts under your hand (drag-lift, breathing drop zones), and the app arrives on
+  cold start (a one-shot staggered shell cascade). Energy is reserved for where work actually
+  is — idle surfaces stay still.
 
 ## 2. Colors
 
@@ -317,8 +321,19 @@ icon and label so it survives color-blindness and grayscale:
 
 ### Signature: Terminal pane focus glow
 When a pane is focused or auto-launched from a card moving to Doing, its border animates a
-1s magenta (`focus-ring`) glow → border, then settles. This is the one piece of "alive"
-motion; keep it brief and provide a reduced-motion fallback (instant border, no glow).
+1s magenta (`focus-ring`) glow → border, then settles. Provide a reduced-motion fallback
+(instant border, no glow).
+
+### Signature: Live-state pulse
+The resting heartbeat of the board and ledger. Any status dot that means *something is
+happening right now* breathes a soft glow ring in its own hue (`--pulse-color`), so a dense
+field of issues reads as alive at a glance instead of a grid of dead dots. Two intensities,
+both defined in `styles.css` and both killed by the global `prefers-reduced-motion` rule:
+- **`.ade-pulse`** — calm, ~2s: a terminal running, an agent mid-flight (working / verifying).
+- **`.ade-pulse-attn`** — urgent, ~1.1s, with a scale beat: input needed, a failed run. It
+  demands the eye, matching the redundant color + label the dot already carries.
+The pulse colours the dot's *own* hue, never adds magenta — it amplifies the existing state
+signal, it doesn't introduce a new one. A dot at rest (queued, paused, done) does not pulse.
 
 ## 6. Do's and Don'ts
 
@@ -333,7 +348,10 @@ motion; keep it brief and provide a reduced-motion fallback (instant border, no 
 - **Do** route every color through a theme token so both dark and light themes stay correct.
 - **Do** define hover, focus-visible, active, disabled, and loading for every interactive
   component — and a `prefers-reduced-motion` alternative for every animation.
-- **Do** keep transitions in the 150–250ms range; motion reports state, it doesn't perform.
+- **Do** keep state transitions in the 150–250ms range. Lifecycle moments earn longer: ~320ms
+  for entrances (cards/panes appearing), ~460ms for the one-shot shell arrival. Continuous
+  pulses (live-state) run 1–2s loops. Motion reports state and energizes live work; idle
+  surfaces still stay still.
 
 ### Don't:
 - **Don't** hardcode light grays for Kanban columns/cards (`#f5f5f5`, `#f0f6ff`, `#d0e8ff`,

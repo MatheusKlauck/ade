@@ -25,6 +25,15 @@ function agentDotColor(state: string): string {
   return "var(--muted, #9b9ba3)"; // queued / pushing / pr_open / ci_wait / ready_to_merge
 }
 
+/** The agent dot breathes while the agent is mid-flight (calm pulse) and pulses
+ * urgently when it needs you or failed — so a card doing real work reads as alive. */
+function agentDotPulse(state: string): string | undefined {
+  if (AGENT_ERROR.has(state) || AGENT_ATTENTION.has(state))
+    return "ade-pulse-attn";
+  if (AGENT_ACTIVE.has(state)) return "ade-pulse";
+  return undefined;
+}
+
 interface CardProps {
   card: CardType;
   columnName: string;
@@ -129,7 +138,11 @@ export default function Card({
     <>
       <div
         ref={ref}
-        className={entering ? "ade-card-enter" : undefined}
+        className={
+          [entering ? "ade-card-enter" : "", over ? "ade-drop-pulse" : ""]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) onEntered?.();
         }}
@@ -142,22 +155,28 @@ export default function Card({
           padding: "var(--space-sm) var(--space-md)",
           marginBottom: "var(--space-sm)",
           background: dragging
-            ? "var(--surface-input)"
+            ? "var(--surface-raised)"
             : over
               ? "var(--drop-target)"
               : "var(--panel)",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-sm)",
           cursor: "grab",
-          opacity: dragging ? 0.5 : 1,
-          // Picked-up: a touch smaller, reading as "lifted away". Drop target: an
-          // accent inset ring (state, not resting decoration — stays flat at rest).
-          transform: dragging ? "scale(0.98)" : "scale(1)",
-          boxShadow: over ? "inset 0 0 0 1px var(--accent)" : "none",
+          opacity: dragging ? 0.85 : 1,
+          // Picked-up: the card LIFTS — scales up with a real shadow, reading as
+          // held above the board. Drop target: the breathing .ade-drop-pulse ring.
+          transform: dragging ? "scale(1.03)" : "scale(1)",
+          boxShadow: dragging
+            ? "0 8px 24px -6px rgba(0, 0, 0, 0.55)"
+            : over
+              ? "inset 0 0 0 1px var(--accent)"
+              : "none",
+          zIndex: dragging ? 1 : "auto",
+          position: dragging ? "relative" : undefined,
           transition:
             "background var(--dur-instant) var(--ease-out-quart)," +
-            " transform var(--dur-instant) var(--ease-out-quart)," +
-            " box-shadow var(--dur-instant) var(--ease-out-quart)," +
+            " transform var(--dur-state) var(--ease-out-expo)," +
+            " box-shadow var(--dur-state) var(--ease-out-quart)," +
             " opacity var(--dur-instant) var(--ease-out-quart)",
         }}
       >
@@ -193,6 +212,7 @@ export default function Card({
             {agentState && (
               <span
                 data-testid="card-agent-status"
+                className={agentDotPulse(agentState.state)}
                 title={
                   `Gestor: ${agentState.state}` +
                   (agentState.reason ? ` — ${agentState.reason}` : "")
@@ -202,6 +222,7 @@ export default function Card({
                   height: 8,
                   borderRadius: "50%",
                   background: agentDotColor(agentState.state),
+                  ["--pulse-color" as string]: agentDotColor(agentState.state),
                   flexShrink: 0,
                 }}
               />
