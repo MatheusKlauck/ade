@@ -228,12 +228,16 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return ok(snapshot(a.workspaceId));
     case "skills_list":
       return ok(MOCK_SKILLS);
-    // ---- gestor (#56): empty/no-op mocks so the panel is interactive in QA ----
+    // ---- gestor (#56): representative data so the panel's populated states
+    // (proposals, feed rows, tasks) are exercisable in browser QA ----
     case "gestor_tasks_list":
+      return ok(MOCK_GESTOR_TASKS);
     case "gestor_feed_list":
+      return ok(MOCK_GESTOR_FEED);
     case "gestor_plan":
+      return ok(MOCK_GESTOR_PROPOSALS);
     case "proposal_approve":
-      return ok([]);
+      return ok((a.proposalIds as string[]) ?? []);
     case "gestor_enqueue_card":
       return ok("mock-task");
     case "gestor_release_notes":
@@ -509,6 +513,106 @@ export function mockInvoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return ok(undefined);
   }
 }
+
+const MOCK_GESTOR_PROPOSALS = [
+  {
+    id: "prop-1",
+    job_id: "job-1",
+    workspace_id: "ws1",
+    ord: 0,
+    title: "Add the Gestor config view to the top bar",
+    body: "New surface in App.tsx + store/settings.ts.",
+    labels_json: '["ui"]',
+    depends_on_json: "[]",
+    acceptance_json: '["renders in the top bar","persists toggle"]',
+    priority: "high",
+    status: "proposed",
+    card_id: null,
+  },
+  {
+    id: "prop-2",
+    job_id: "job-1",
+    workspace_id: "ws1",
+    ord: 1,
+    title: "Wire the settings store",
+    body: "settings.ts read/write of gestor_enabled.",
+    labels_json: "[]",
+    depends_on_json: "[0]",
+    acceptance_json: '["round-trips through the DB"]',
+    priority: "medium",
+    status: "proposed",
+    card_id: null,
+  },
+];
+
+const MOCK_GESTOR_TASKS = [
+  {
+    id: "task-1",
+    workspace_id: "ws1",
+    card_id: "card-1",
+    state: "working",
+    attempt: 2,
+    max_attempts: 3,
+    branch: "issue-42",
+    fail_reason: null,
+    created_at: "2026-06-15T20:00:00Z",
+    updated_at: "2026-06-15T20:05:00Z",
+  },
+  {
+    id: "task-2",
+    workspace_id: "ws1",
+    card_id: "card-2",
+    state: "verifying",
+    attempt: 1,
+    max_attempts: 3,
+    branch: "issue-43",
+    fail_reason: null,
+    created_at: "2026-06-15T20:01:00Z",
+    updated_at: "2026-06-15T20:06:00Z",
+  },
+];
+
+const MOCK_GESTOR_FEED = [
+  {
+    id: 3,
+    workspace_id: "ws1",
+    task_id: "task-1",
+    job_id: null,
+    ts: "2026-06-15T20:06:00Z",
+    kind: "task_transition",
+    level: "info",
+    payload_json: '{"from":"working","to":"verifying"}',
+    cost_usd: null,
+    num_turns: null,
+    duration_ms: null,
+  },
+  {
+    id: 2,
+    workspace_id: "ws1",
+    task_id: "task-2",
+    job_id: "job-2",
+    ts: "2026-06-15T20:05:30Z",
+    kind: "job_done",
+    level: "info",
+    payload_json: '{"verdict":"approve"}',
+    cost_usd: 0.042,
+    num_turns: 5,
+    duration_ms: 1234,
+  },
+  {
+    id: 1,
+    workspace_id: "ws1",
+    task_id: "task-1",
+    job_id: null,
+    ts: "2026-06-15T20:01:00Z",
+    kind: "job_failed",
+    level: "error",
+    payload_json: '{"error":"schema validation failed"}',
+    cost_usd: null,
+    num_turns: null,
+    duration_ms: null,
+  },
+];
 
 const MOCK_SKILLS: SkillInfo[] = [
   { name: "qa", description: "Systematically QA test a web app and fix bugs.", category: "Review" },
