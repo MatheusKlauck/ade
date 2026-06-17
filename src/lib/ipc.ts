@@ -11,6 +11,17 @@ const invoke = isTauri ? tauriInvoke : mockInvoke;
 const listen = isTauri ? tauriListen : mockListen;
 const ChannelCtor = isTauri ? Channel : (MockChannel as unknown as typeof Channel);
 
+// ---- native dialogs ----
+
+// Single seam for the folder picker so components don't import @tauri-apps
+// directly. In a plain browser (mock backend) there's no native dialog → null.
+export async function pickDirectory(): Promise<string | null> {
+  if (!isTauri) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ directory: true, multiple: false });
+  return typeof selected === "string" ? selected : null;
+}
+
 // ---- notifications ----
 export async function subscribeNotify(
   cb: (payload: {

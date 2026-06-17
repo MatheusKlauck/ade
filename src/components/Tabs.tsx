@@ -1,9 +1,8 @@
 import { type MouseEvent, useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore } from "../store/terminals";
-import { boardGet, type Workspace } from "../lib/ipc";
+import { boardGet, pickDirectory, type Workspace } from "../lib/ipc";
 import ConfirmDialog from "./ConfirmDialog";
 import { CheckIcon, CloseIcon, PlusIcon } from "./icons";
 
@@ -68,11 +67,11 @@ export default function Tabs() {
   const handleAddWorkspace = async () => {
     if (creating) return;
     try {
-      const selected = await open({ directory: true, multiple: false });
+      const selected = await pickDirectory();
       if (!selected) return;
       setCreating(true);
       try {
-        await addWorkspace(selected as string);
+        await addWorkspace(selected);
       } finally {
         setCreating(false);
       }

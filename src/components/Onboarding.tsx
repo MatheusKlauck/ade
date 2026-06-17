@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { CSSProperties } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspacesStore } from "../store/workspaces";
-import type { Workspace } from "../lib/ipc";
+import { pickDirectory, type Workspace } from "../lib/ipc";
 
 const screenStyle: CSSProperties = {
   display: "flex",
@@ -73,8 +72,8 @@ export default function Onboarding() {
     setError(null);
     setLoading(true);
     try {
-      const selected = await open({ directory: true, multiple: false });
-      if (!selected || typeof selected !== "string") {
+      const selected = await pickDirectory();
+      if (!selected) {
         setLoading(false);
         return;
       }
