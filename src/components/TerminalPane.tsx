@@ -266,16 +266,6 @@ function TerminalPane({
   const working = activity?.working ?? false;
   const veilKey = activity?.veil ?? 0;
   const workingRef = useRef(false);
-  const burstActiveRef = useRef(false);
-  const burstStartRef = useRef(0);
-  // Stops the comet once output has gone quiet. Refreshed on every chunk; when it
-  // fires the terminal is idle (agent done / sitting at a prompt), so the orbit
-  // halts even though the user hasn't typed yet. See markActivity below.
-  const idleTimerRef = useRef<number | null>(null);
-  // Timestamp of the user's last keystroke. Output arriving right after a key is
-  // just the shell echoing what was typed, not the agent producing — so it must
-  // not drive the comet/veil. See markActivity below.
-  const lastInputRef = useRef(0);
   // Accumulates the command line the user is currently typing, so a full line
   // can be recorded into the quick-command frequency store when Enter is hit.
   const cmdLineRef = useRef("");
@@ -342,7 +332,6 @@ function TerminalPane({
 
     // Data from user typing
     term.onData((data) => {
-      lastInputRef.current = Date.now();
       // Reconstruct typed command lines. Only the first command submitted after
       // the terminal opens is recorded into the quick-command store — it's the
       // one that starts work in this workspace. The first submission also
@@ -367,61 +356,33 @@ function TerminalPane({
         if (skill) useSkillRecentsStore.getState().record(skill);
       }
       if (submitted.length > 0) dismissCommandBarRef.current();
-      // The user is typing again, so the terminal is back to awaiting input.
-      // Stop the comet now (no veil — the burst was interrupted, not finished).
-      burstActiveRef.current = false;
-      if (idleTimerRef.current != null) {
-        clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = null;
-      }
-      if (workingRef.current) {
-        workingRef.current = false;
-        acts().setTerminalWorking(windowId, false);
-      }
       terminalWrite(pane.paneId, data).catch(() => {});
     });
 
-    // Activity heuristic: sustained output = read mode (the agent is producing).
-    // A short ramp keeps trivial blips from flashing the border. The comet spins
-    // only while output keeps arriving: every chunk refreshes an idle timer, and
-    // once output stays quiet for IDLE_OFF_MS the comet stops — so an agent that
-    // has finished (sitting idle at a prompt) no longer orbits. Typing also stops
-    // it immediately via the read→write handoff in term.onData.
-    const RAMP_MS = 150;
-    // Output landing within this window of a keystroke is treated as the echo of
-    // the user's own typing and never starts a burst. Each keystroke refreshes
-    // the window, so continuous typing stays animation-free.
-    const INPUT_ECHO_MS = 250;
-    // How long output must stay quiet before the comet halts. Generous enough to
-    // ride out natural pauses within a single response (tool calls, thinking)
-    // without flickering off, short enough that a stopped terminal settles fast.
-    const IDLE_OFF_MS = 1200;
-    const markActivity = () => {
-      const now = Date.now();
-      // Ignore keystroke echo: while the user is typing, neither the comet nor
-      // the veil should fire — they mark agent output only.
-      if (now - lastInputRef.current < INPUT_ECHO_MS) return;
-      if (!burstActiveRef.current) {
-        burstActiveRef.current = true;
-        burstStartRef.current = now;
-      }
-      if (!workingRef.current && now - burstStartRef.current >= RAMP_MS) {
-        workingRef.current = true;
-        acts().setTerminalWorking(windowId, true);
-      }
-      // Refresh the idle-off timer: the comet keeps spinning while chunks flow
-      // and stops once they stop. A fresh burst re-ramps from scratch.
-      if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
-      idleTimerRef.current = window.setTimeout(() => {
-        idleTimerRef.current = null;
-        burstActiveRef.current = false;
-        if (workingRef.current) {
-          workingRef.current = false;
-          acts().setTerminalWorking(windowId, false);
-          // Burst finished — sweep the attention veil once to mark "done".
-          acts().bumpTerminalVeil(windowId);
+    // The comet means "Claude is mid-turn", not merely "bytes are arriving". The
+    // only authoritative signal for that is Claude Code's own footer, which shows
+    // an "esc to interrupt" hint while — and only while — a turn is in flight. We
+    // scan the live screen for it after each flush instead of inferring from output
+    // cadence, so `npm run dev`, build logs, `tail -f` &c. never light the ring.
+    // ponytail: single-string marker; widen the regex if the footer copy changes.
+    const WORKING_MARKER = /esc to interrupt/i;
+    const updateWorking = () => {
+      const t = termRef.current;
+      if (!t) return;
+      const buf = t.buffer.active;
+      let hit = false;
+      for (let i = buf.baseY; i < buf.baseY + t.rows; i++) {
+        const line = buf.getLine(i);
+        if (line && WORKING_MARKER.test(line.translateToString(true))) {
+          hit = true;
+          break;
         }
-      }, IDLE_OFF_MS);
+      }
+      if (hit === workingRef.current) return;
+      workingRef.current = hit;
+      acts().setTerminalWorking(windowId, hit);
+      // Turn just ended — sweep the attention veil once to pull the eye back.
+      if (!hit) acts().bumpTerminalVeil(windowId);
     };
 
     // Wire channel
@@ -429,18 +390,22 @@ function TerminalPane({
       const buf = msg as ArrayBuffer;
       const bytes = new Uint8Array(buf);
       chunkBufRef.current.push(bytes);
-      markActivity();
 
       if (flushRef.current == null) {
         flushRef.current = requestAnimationFrame(() => {
           const t = termRef.current;
-          if (t) {
-            for (const chunk of chunkBufRef.current) {
-              t.write(chunk);
-            }
-          }
+          const chunks = chunkBufRef.current;
           chunkBufRef.current = [];
           flushRef.current = null;
+          if (t && chunks.length) {
+            // updateWorking reads the parsed buffer, so it must run AFTER xterm
+            // applies these writes — xterm.write is async, hence the last-chunk
+            // callback rather than calling it inline after the loop.
+            for (let i = 0; i < chunks.length; i++) {
+              if (i === chunks.length - 1) t.write(chunks[i], updateWorking);
+              else t.write(chunks[i]);
+            }
+          }
         });
       }
     };
@@ -501,12 +466,7 @@ function TerminalPane({
         cancelAnimationFrame(flushRef.current);
         flushRef.current = null;
       }
-      if (idleTimerRef.current != null) {
-        clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = null;
-      }
       workingRef.current = false;
-      burstActiveRef.current = false;
       // Drop this window's activity so a closed terminal leaves no stale comet.
       useTerminalsStore.getState().clearTerminalActivity(pane.windowId);
       if (webglRef.current) {
