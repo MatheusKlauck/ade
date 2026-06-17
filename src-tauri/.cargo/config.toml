@@ -1,0 +1,6 @@
+# ts-rs (#21): emit `number` for i64/u64 instead of the default `bigint`. The
+# Tauri IPC bridge serializes via serde_json, so these arrive as JS numbers, not
+# bigints. All such fields here (issue numbers, row ids, counters, durations)
+# stay well under 2^53, so there's no precision loss.
+[env]
+TS_RS_LARGE_INT = "number"
