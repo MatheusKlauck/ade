@@ -345,10 +345,39 @@ export default function App() {
       }
       if (p.kind === "gone") {
         // The pane reached EOF (e.g. the shell `exit`ed) without a completion —
-        // reconcile the busy flag so the tab's comet doesn't linger. No badge.
-        useWorkspacesStore
-          .getState()
-          .clearTerminalBusy(p.workspace_id, p.window_id);
+        // reconcile the busy + waiting flags so the tab's comet/pulse don't linger.
+        const w = useWorkspacesStore.getState();
+        w.clearTerminalBusy(p.workspace_id, p.window_id);
+        w.markTerminalWaiting(p.workspace_id, p.window_id, false);
+        return;
+      }
+      if (p.kind === "claude") {
+        // Authoritative turn state from ADE's Claude Code hooks (claude_hooks.rs).
+        // Drives BOTH the pane's affordances (terminals store, for the active
+        // workspace) AND the workspace tab's comet/veil/pulse (workspaces store,
+        // viewer-independent — so a background workspace surfaces it on its tab).
+        // Latches the window Claude-managed so the pane's screen-scrape fallback
+        // backs off.
+        const t = useTerminalsStore.getState();
+        const w = useWorkspacesStore.getState();
+        const isBackground = p.workspace_id !== w.activeWorkspaceId;
+        t.markTerminalClaude(p.window_id);
+        if (p.detail === "turn-start") {
+          t.setTerminalWaiting(p.window_id, false);
+          t.setTerminalWorking(p.window_id, true);
+          w.markTerminalWaiting(p.workspace_id, p.window_id, false);
+          w.markTerminalStarted(p.workspace_id, p.window_id);
+        } else if (p.detail === "turn-end") {
+          t.setTerminalWorking(p.window_id, false);
+          t.bumpTerminalVeil(p.window_id);
+          // Veil on the tab only for a background workspace — the active tab
+          // shows the pane's own sweep (mirrors the OSC-133 completion path).
+          w.markTerminalDone(p.workspace_id, p.window_id, isBackground);
+        } else if (p.detail === "waiting") {
+          t.setTerminalWorking(p.window_id, false);
+          t.setTerminalWaiting(p.window_id, true);
+          w.markTerminalWaiting(p.workspace_id, p.window_id, true);
+        }
         return;
       }
       if (p.kind === "completed") {

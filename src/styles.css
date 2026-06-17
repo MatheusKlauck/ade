@@ -146,6 +146,26 @@
   animation: ade-term-veil 2.3s var(--ease-out-quint) forwards;
 }
 
+/* "Waiting for input" pulse: Claude finished its turn and wants the user. A slow
+   accent breath on the pane's perimeter — distinct from the orange working comet
+   (different colour, no orbit) so the two states never read as the same thing.
+   Lives on the host so it survives the inner clip; the accent ring pulses just
+   outside the border like the comet does. */
+.ade-term-waiting {
+  animation: ade-term-waiting-pulse 1.9s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+@keyframes ade-term-waiting-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 16px 2px color-mix(in oklab, var(--accent) 38%, transparent);
+  }
+}
+
 @keyframes ade-term-veil {
   0% {
     opacity: 0;

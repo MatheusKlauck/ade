@@ -12,6 +12,7 @@ export default function Tabs() {
   const terminalAlerts = useWorkspacesStore((s) => s.terminalAlerts);
   const busyWindows = useWorkspacesStore((s) => s.busyWindows);
   const terminalVeils = useWorkspacesStore((s) => s.terminalVeils);
+  const claudeWaitingWindows = useWorkspacesStore((s) => s.claudeWaitingWindows);
   const setActive = useWorkspacesStore((s) => s.setActive);
   const addWorkspace = useWorkspacesStore((s) => s.addWorkspace);
   const closeWorkspace = useWorkspacesStore((s) => s.closeWorkspace);
@@ -110,16 +111,25 @@ export default function Tabs() {
         {workspaces.map((ws) => {
           const active = ws.id === activeWorkspaceId;
           const alerts = terminalAlerts[ws.id];
-          // Surface background activity on a non-focused tab, but only when there
-          // are enough workspaces that the user can't see them all at once (>2).
-          const showEffects = !active && workspaces.length > 2;
+          // Surface background activity on a non-focused tab whenever there's at
+          // least one other workspace whose panes aren't currently visible (>1).
+          const showEffects = !active && workspaces.length > 1;
           const busy = showEffects && (busyWindows[ws.id]?.size ?? 0) > 0;
+          const waiting =
+            showEffects && (claudeWaitingWindows[ws.id]?.size ?? 0) > 0;
           const veilKey = terminalVeils[ws.id] ?? 0;
           return (
             <div
               key={ws.id}
               role="presentation"
-              className={busy ? "ade-comet ade-term-visible ade-term-working" : undefined}
+              className={
+                [
+                  busy && "ade-comet ade-term-visible ade-term-working",
+                  waiting && "ade-term-waiting",
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
               style={{
                 display: "inline-flex",
                 alignItems: "center",

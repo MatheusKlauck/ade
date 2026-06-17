@@ -130,11 +130,22 @@ interface TerminalsState {
   // finishes, retriggering the attention sweep. Kept in the store (not just the
   // pane's local state) so a minimized terminal's tray chip can mirror the same
   // affordances even though its TerminalPane is display:none. In-memory only.
-  activityByWindow: Record<string, { working: boolean; veil: number }>;
+  // `waiting` is the "Claude finished its turn and wants you" pulse, set from
+  // the Notification hook (see claude_hooks.rs). `claude` latches once any Claude
+  // hook fires for the window, so the per-pane output-cadence tracker stops
+  // driving `working`/`veil` and lets the (authoritative) hooks own them.
+  activityByWindow: Record<
+    string,
+    { working: boolean; veil: number; waiting: boolean; claude: boolean }
+  >;
   // Set a window's "agent working" flag (no-op if unchanged, to avoid churn).
   setTerminalWorking: (windowId: string, working: boolean) => void;
   // Bump a window's veil counter to replay the attention sweep once.
   bumpTerminalVeil: (windowId: string) => void;
+  // Set a window's "waiting for input" pulse.
+  setTerminalWaiting: (windowId: string, waiting: boolean) => void;
+  // Latch a window as Claude-managed (hooks own its working/veil from now on).
+  markTerminalClaude: (windowId: string) => void;
   // Drop a window's activity entry (on pane unmount / close).
   clearTerminalActivity: (windowId: string) => void;
   // windowId of the terminal that currently holds keyboard focus (null if none).
@@ -233,7 +244,12 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
       return {
         activityByWindow: {
           ...s.activityByWindow,
-          [windowId]: { working, veil: cur?.veil ?? 0 },
+          [windowId]: {
+            working,
+            veil: cur?.veil ?? 0,
+            waiting: cur?.waiting ?? false,
+            claude: cur?.claude ?? false,
+          },
         },
       };
     }),
@@ -243,7 +259,44 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
       return {
         activityByWindow: {
           ...s.activityByWindow,
-          [windowId]: { working: cur?.working ?? false, veil: (cur?.veil ?? 0) + 1 },
+          [windowId]: {
+            working: cur?.working ?? false,
+            veil: (cur?.veil ?? 0) + 1,
+            waiting: cur?.waiting ?? false,
+            claude: cur?.claude ?? false,
+          },
+        },
+      };
+    }),
+  setTerminalWaiting: (windowId, waiting) =>
+    set((s) => {
+      const cur = s.activityByWindow[windowId];
+      if ((cur?.waiting ?? false) === waiting) return s;
+      return {
+        activityByWindow: {
+          ...s.activityByWindow,
+          [windowId]: {
+            working: cur?.working ?? false,
+            veil: cur?.veil ?? 0,
+            waiting,
+            claude: cur?.claude ?? false,
+          },
+        },
+      };
+    }),
+  markTerminalClaude: (windowId) =>
+    set((s) => {
+      const cur = s.activityByWindow[windowId];
+      if (cur?.claude) return s;
+      return {
+        activityByWindow: {
+          ...s.activityByWindow,
+          [windowId]: {
+            working: cur?.working ?? false,
+            veil: cur?.veil ?? 0,
+            waiting: cur?.waiting ?? false,
+            claude: true,
+          },
         },
       };
     }),
