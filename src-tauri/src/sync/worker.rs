@@ -12,14 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-// The Notifier impls live in sync/notifier.rs and RateBudget in sync/rate.rs;
-// re-export here so existing `crate::sync::worker::{...}` paths keep working.
+use crate::sync::notifier::{AppNotifier, Notifier};
+use crate::sync::rate::RateBudget;
 #[cfg(test)]
-pub use crate::sync::notifier::CaptureNotifier;
-pub use crate::sync::notifier::Notifier;
-pub use crate::sync::rate::RateBudget;
-
-use crate::sync::notifier::AppNotifier;
+use crate::sync::notifier::CaptureNotifier;
 
 // ── CycleResult ─────────────────────────────────────────────────────
 

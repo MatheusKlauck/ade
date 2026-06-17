@@ -3,7 +3,8 @@ use crate::error::AdeError;
 use crate::gh::client::GitHubClient;
 use crate::gh::types::ColumnName;
 use crate::models::Card;
-use crate::sync::worker::{Notifier, RateBudget};
+use crate::sync::notifier::Notifier;
+use crate::sync::rate::RateBudget;
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -894,7 +895,7 @@ mod tests {
     /// Assert: outbox row deleted, card moved to Done column, card's github_state = "closed".
     #[tokio::test]
     async fn send_outbox_doing_to_done() {
-        use crate::sync::worker::CaptureNotifier;
+        use crate::sync::notifier::CaptureNotifier;
         use wiremock::matchers::{body_json, method as match_method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -989,7 +990,7 @@ mod tests {
             .await;
 
         let gh = crate::gh::client::GitHubClient::new(server.uri(), "test-token".to_string());
-        let rate_budget = crate::sync::worker::RateBudget::new();
+        let rate_budget = crate::sync::rate::RateBudget::new();
         let notifier = CaptureNotifier::new();
 
         send_outbox(&pool, &gh, "owner", "repo", &ws_id, &notifier, &rate_budget)
@@ -1028,7 +1029,7 @@ mod tests {
     /// Assert: outbox row deleted, card reverted to Backlog, notification SYNC_WRITE_FAILED captured.
     #[tokio::test]
     async fn send_outbox_fourth_failure_reverts() {
-        use crate::sync::worker::CaptureNotifier;
+        use crate::sync::notifier::CaptureNotifier;
         use wiremock::matchers::{method as match_method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1085,7 +1086,7 @@ mod tests {
             .await;
 
         let gh = crate::gh::client::GitHubClient::new(server.uri(), "test-token".to_string());
-        let rate_budget = crate::sync::worker::RateBudget::new();
+        let rate_budget = crate::sync::rate::RateBudget::new();
         let notifier = CaptureNotifier::new();
 
         // send_outbox should not error (it handles failures internally)

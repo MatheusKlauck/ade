@@ -112,7 +112,7 @@ pub async fn spawn_worker_for_workspace(
     ));
     let notify = Arc::new(tokio::sync::Notify::new());
 
-    let rate_budget = Arc::new(sync::worker::RateBudget::new());
+    let rate_budget = Arc::new(sync::rate::RateBudget::new());
 
     // Read this workspace's sync_interval_secs setting (default 30)
     let interval_secs: u64 =
