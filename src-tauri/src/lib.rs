@@ -300,7 +300,7 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
-                let pool = db::init_db(&handle).await.expect("db init failed");
+                let pool = db::init_db(&handle).await?;
                 if let Err(e) = seed_dev_workspace(&pool).await {
                     eprintln!("seed dev workspace failed: {}", e);
                 }
@@ -332,7 +332,8 @@ pub fn run() {
                 });
 
                 handle.manage(state);
-            });
+                Ok::<(), crate::error::AdeError>(())
+            })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
