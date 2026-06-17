@@ -5,6 +5,7 @@ pub mod gbrain;
 pub mod gestor;
 pub mod notify;
 
+mod claude_hooks;
 mod gh;
 mod gitlocal;
 mod ipc;
@@ -285,6 +286,10 @@ pub fn run() {
             if reaped > 0 {
                 eprintln!("reaped {reaped} stranded tmux viewer session(s)");
             }
+            // Write the ADE-owned Claude hooks settings file up front so the
+            // first window's `claude` wrapper has it. (Also (re)written by
+            // ensure_integration_script per window — this just warms it early.)
+            std::thread::spawn(claude_hooks::ensure);
             // Register the OS-native credential store (macOS Keychain / Windows
             // Credential Manager / Linux Secret Service) as keyring-core's
             // default. keyring-core's Entry::new() has NO store until one is set

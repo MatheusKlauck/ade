@@ -288,12 +288,38 @@ fn integration_script_path() -> std::path::PathBuf {
     std::env::temp_dir().join("ade-shell-integration.sh")
 }
 
+/// A `claude` shell function that transparently adds `--settings <ade file>` to
+/// every invocation, so ADE's turn-state hooks load WITHOUT touching the user's
+/// `~/.claude/settings.json`. `--settings` hooks accumulate with the user's own,
+/// and this only takes effect inside ADE's panes (where this script is sourced).
+/// Falls back to plain `claude` if the file is missing. Works in bash and zsh.
+fn claude_wrapper_snippet() -> String {
+    let settings = crate::claude_hooks::settings_path();
+    format!(
+        r#"
+# ade: load ADE's Claude turn-state hooks per-session (no global config edit).
+claude() {{
+  if [ -f '{path}' ]; then
+    command claude --settings '{path}' "$@"
+  else
+    command claude "$@"
+  fi
+}}
+"#,
+        path = settings.display()
+    )
+}
+
 /// Write the shell-integration snippet to a stable temp path so new windows can
 /// `source` it. Returns the path on success. Best-effort; overwrites each call
 /// so the snippet stays current with the running build.
 pub fn ensure_integration_script() -> Result<std::path::PathBuf, AdeError> {
+    // Make sure the ADE-owned Claude settings file exists before any window's
+    // `claude` function references it.
+    crate::claude_hooks::ensure();
     let path = integration_script_path();
-    std::fs::write(&path, SHELL_INTEGRATION).map_err(|e| AdeError::Tmux(e.to_string()))?;
+    let body = format!("{SHELL_INTEGRATION}{}", claude_wrapper_snippet());
+    std::fs::write(&path, body).map_err(|e| AdeError::Tmux(e.to_string()))?;
     Ok(path)
 }
 

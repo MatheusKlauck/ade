@@ -265,6 +265,8 @@ function TerminalPane({
   const activity = useTerminalsStore((s) => s.activityByWindow[pane.windowId]);
   const working = activity?.working ?? false;
   const veilKey = activity?.veil ?? 0;
+  // "Claude finished its turn and is waiting for you" — pulses the pane bg.
+  const waiting = activity?.waiting ?? false;
   const workingRef = useRef(false);
   // Accumulates the command line the user is currently typing, so a full line
   // can be recorded into the quick-command frequency store when Enter is hit.
@@ -369,6 +371,11 @@ function TerminalPane({
     const updateWorking = () => {
       const t = termRef.current;
       if (!t) return;
+      // Once ADE's Claude hooks have spoken for this window (claude_hooks.rs),
+      // they authoritatively own working/veil/waiting — back the screen-scrape
+      // fallback off so the two don't fight. It stays active until the first
+      // hook fires (or forever if hooks aren't installed).
+      if (acts().activityByWindow[windowId]?.claude) return;
       const buf = t.buffer.active;
       let hit = false;
       for (let i = buf.baseY; i < buf.baseY + t.rows; i++) {
@@ -445,7 +452,11 @@ function TerminalPane({
     // any badge already accumulated for its workspace.
     const focusEl = containerRef.current;
     const onFocusIn = () => {
-      useTerminalsStore.getState().setFocusedWindow(pane.windowId);
+      const ts = useTerminalsStore.getState();
+      ts.setFocusedWindow(pane.windowId);
+      // You're here now — stop the "waiting for input" pulse without waiting for
+      // the next prompt submission to clear it.
+      ts.setTerminalWaiting(pane.windowId, false);
       useWorkspacesStore.getState().clearTerminalAlerts(pane.workspaceId);
     };
     const onFocusOut = () => {
@@ -613,6 +624,7 @@ function TerminalPane({
         cometOutside && "ade-comet--outside",
         working && "ade-term-visible",
         working && "ade-term-working",
+        waiting && "ade-term-waiting",
         highlighted && "terminal-pane-highlight",
       ]
         .filter(Boolean)

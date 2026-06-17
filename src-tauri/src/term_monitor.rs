@@ -40,6 +40,11 @@ pub enum Alert {
     Bell,
     /// An app-emitted notification (OSC 9 / OSC 777 notify). Carries the text.
     App(String),
+    /// A Claude Code session state transition, surfaced by ADE's own hooks via
+    /// `OSC 9;ade:claude:<state>` (`turn-start` | `turn-end` | `waiting`). See
+    /// `claude_hooks.rs`. Distinct from `App` so the frontend drives the pane's
+    /// comet/veil/pulse rather than a toast.
+    Claude(String),
     /// The monitored pane reached EOF — the window is gone (e.g. the shell
     /// exited via `exit`). Not produced by the scanner; emitted by the monitor
     /// loop on teardown so the UI can reconcile per-window state (a `Started`
@@ -148,14 +153,23 @@ impl Scanner {
                 emit(Alert::Started);
             }
         } else if let Some(text) = payload.strip_prefix("9;") {
-            // OSC 9;<text> is an iTerm-style notification. ConEmu reuses OSC 9
-            // for progress ("9;4;..") — skip that numeric sub-command form.
-            let is_progress = {
-                let mut it = text.chars();
-                matches!(it.next(), Some(c) if c.is_ascii_digit()) && matches!(it.next(), Some(';'))
-            };
-            if !is_progress && !text.is_empty() {
-                emit(Alert::App(clip(text)));
+            if let Some(state) = text.strip_prefix("ade:claude:") {
+                // ADE's own marker (see claude_hooks.rs) — a Claude turn boundary,
+                // not a user-facing notification.
+                if !state.is_empty() {
+                    emit(Alert::Claude(state.to_string()));
+                }
+            } else {
+                // OSC 9;<text> is an iTerm-style notification. ConEmu reuses OSC 9
+                // for progress ("9;4;..") — skip that numeric sub-command form.
+                let is_progress = {
+                    let mut it = text.chars();
+                    matches!(it.next(), Some(c) if c.is_ascii_digit())
+                        && matches!(it.next(), Some(';'))
+                };
+                if !is_progress && !text.is_empty() {
+                    emit(Alert::App(clip(text)));
+                }
             }
         } else if let Some(rest) = payload.strip_prefix("777;notify;") {
             // OSC 777;notify;<title>;<body>
@@ -258,6 +272,7 @@ fn emit(app: &AppHandle, workspace_id: &str, window_id: &str, alert: Alert) {
         Alert::Completed(code) => ("completed", code.unwrap_or_default()),
         Alert::Bell => ("bell", String::new()),
         Alert::App(msg) => ("app", msg),
+        Alert::Claude(state) => ("claude", state),
         Alert::Gone => ("gone", String::new()),
     };
     let _ = app.emit(
@@ -361,6 +376,15 @@ mod tests {
     fn osc9_notification() {
         let out = collect(&[b"\x1b]9;Build finished\x07"]);
         assert_eq!(out, vec![Alert::App("Build finished".into())]);
+    }
+
+    #[test]
+    fn claude_state_marker() {
+        let out = collect(&[b"\x1b]9;ade:claude:turn-start\x07"]);
+        assert_eq!(out, vec![Alert::Claude("turn-start".into())]);
+        // ST-terminated and split-chunk variants resolve the same.
+        let out = collect(&[b"\x1b]9;ade:cla", b"ude:waiting\x1b\\"]);
+        assert_eq!(out, vec![Alert::Claude("waiting".into())]);
     }
 
     #[test]

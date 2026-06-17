@@ -32,6 +32,11 @@ interface WorkspacesState {
   // workspaceId → monotonically increasing counter, bumped on each completion.
   // Used as a React key on the tab's veil element so a bump replays the sweep.
   terminalVeils: Record<string, number>;
+  // workspaceId → set of window ids whose Claude session is waiting for input
+  // (the "waiting" hook state). Drives the tab's waiting-pulse for a background
+  // workspace, mirroring the pane's own pulse. A window can be waiting without
+  // being busy (its turn already ended), so this is tracked separately.
+  claudeWaitingWindows: Record<string, Set<string>>;
   load: () => Promise<void>;
   setActive: (id: string) => void;
   addWorkspace: (path: string) => Promise<Workspace | null>;
@@ -47,6 +52,12 @@ interface WorkspacesState {
   // Reconcile busy state when a window goes away without a completion (killed
   // mid-command). Omit windowId to clear the whole workspace.
   clearTerminalBusy: (workspaceId: string, windowId?: string) => void;
+  // Set/clear a window's "waiting for input" flag for its workspace's tab.
+  markTerminalWaiting: (
+    workspaceId: string,
+    windowId: string,
+    waiting: boolean
+  ) => void;
 }
 
 const MAX_ALERT_MESSAGES = 20;
@@ -59,6 +70,7 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   terminalAlerts: {},
   busyWindows: {},
   terminalVeils: {},
+  claudeWaitingWindows: {},
 
   load: async () => {
     try {
@@ -83,12 +95,19 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   },
 
   setActive: (id: string) => {
-    set((s) => ({
-      activeWorkspaceId: id,
-      // Visiting a workspace means you've seen any finished work — reset the veil
-      // counter so leaving the tab again doesn't replay a stale sweep on remount.
-      terminalVeils: { ...s.terminalVeils, [id]: 0 },
-    }));
+    set((s) => {
+      // Visiting a workspace means you've seen its waiting sessions — drop the
+      // tab pulse (the pane shows its own once you're looking at it).
+      const claudeWaitingWindows = { ...s.claudeWaitingWindows };
+      delete claudeWaitingWindows[id];
+      return {
+        activeWorkspaceId: id,
+        // Visiting a workspace means you've seen any finished work — reset the
+        // veil counter so leaving again doesn't replay a stale sweep on remount.
+        terminalVeils: { ...s.terminalVeils, [id]: 0 },
+        claudeWaitingWindows,
+      };
+    });
     // Visiting a workspace means you've seen its completions — drop the badge.
     get().clearTerminalAlerts(id);
   },
@@ -128,7 +147,15 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
       delete busyWindows[id];
       const terminalVeils = { ...s.terminalVeils };
       delete terminalVeils[id];
-      return { workspaces: remaining, activeWorkspaceId, busyWindows, terminalVeils };
+      const claudeWaitingWindows = { ...s.claudeWaitingWindows };
+      delete claudeWaitingWindows[id];
+      return {
+        workspaces: remaining,
+        activeWorkspaceId,
+        busyWindows,
+        terminalVeils,
+        claudeWaitingWindows,
+      };
     });
   },
 
@@ -213,6 +240,27 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
         else busyWindows[workspaceId] = next;
       }
       return { busyWindows };
+    });
+  },
+
+  markTerminalWaiting: (workspaceId: string, windowId: string, waiting: boolean) => {
+    set((s) => {
+      const cur = s.claudeWaitingWindows[workspaceId];
+      if (waiting) {
+        if (cur?.has(windowId)) return s;
+        const next = new Set(cur);
+        next.add(windowId);
+        return {
+          claudeWaitingWindows: { ...s.claudeWaitingWindows, [workspaceId]: next },
+        };
+      }
+      if (!cur?.has(windowId)) return s;
+      const next = new Set(cur);
+      next.delete(windowId);
+      const map = { ...s.claudeWaitingWindows };
+      if (next.size === 0) delete map[workspaceId];
+      else map[workspaceId] = next;
+      return { claudeWaitingWindows: map };
     });
   },
 }));
