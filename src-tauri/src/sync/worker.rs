@@ -59,12 +59,7 @@ pub async fn run_cycle(
         .ok_or_else(|| AdeError::Other("workspace has no github_repo".into()))?;
 
     // 2. Check sync_state for last_sync
-    let last_sync: Option<String> =
-        sqlx::query_scalar::<_, String>("SELECT last_sync FROM sync_state WHERE workspace_id = ?")
-            .bind(workspace_id)
-            .fetch_optional(db)
-            .await
-            .map_err(AdeError::Db)?;
+    let last_sync: Option<String> = crate::sync::queries::read_last_sync(db, workspace_id).await?;
 
     let was_seed = last_sync.is_none();
 
@@ -461,14 +456,11 @@ pub async fn start_worker(
                 let _ = crate::ipc::board::emit_board(&app, &workspace_id, &db).await;
 
                 // Get current last_sync for the event
-                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
-                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
-                )
-                .bind(&workspace_id)
-                .fetch_optional(&db)
-                .await
-                .ok()
-                .flatten();
+                let last_sync: Option<String> =
+                    crate::sync::queries::read_last_sync(&db, &workspace_id)
+                        .await
+                        .ok()
+                        .flatten();
 
                 let _ = app.emit(
                     "evt:sync",
@@ -493,14 +485,11 @@ pub async fn start_worker(
                     "GitHub rate limit hit; pausing sync",
                 );
                 // Keep showing the last successful sync time in the UI.
-                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
-                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
-                )
-                .bind(&workspace_id)
-                .fetch_optional(&db)
-                .await
-                .ok()
-                .flatten();
+                let last_sync: Option<String> =
+                    crate::sync::queries::read_last_sync(&db, &workspace_id)
+                        .await
+                        .ok()
+                        .flatten();
                 let _ = app.emit(
                     "evt:sync",
                     serde_json::json!({
@@ -512,14 +501,11 @@ pub async fn start_worker(
             }
             Err(e) => {
                 crate::notify::emit_notify(&app, "error", "SYNC_ERROR", &e.to_string());
-                let last_sync: Option<String> = sqlx::query_scalar::<_, String>(
-                    "SELECT last_sync FROM sync_state WHERE workspace_id = ?",
-                )
-                .bind(&workspace_id)
-                .fetch_optional(&db)
-                .await
-                .ok()
-                .flatten();
+                let last_sync: Option<String> =
+                    crate::sync::queries::read_last_sync(&db, &workspace_id)
+                        .await
+                        .ok()
+                        .flatten();
                 let _ = app.emit(
                     "evt:sync",
                     serde_json::json!({

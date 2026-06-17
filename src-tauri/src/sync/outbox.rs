@@ -4,6 +4,7 @@ use crate::gh::client::GitHubClient;
 use crate::gh::types::ColumnName;
 use crate::models::Card;
 use crate::sync::notifier::Notifier;
+use crate::sync::queries;
 use crate::sync::rate::RateBudget;
 use chrono::{DateTime, Utc};
 
@@ -35,13 +36,7 @@ pub async fn enqueue(
     // column, so the conflict check (§13 step 1) must keep comparing against
     // it. Replacing `from` with the latest local column would make two quick
     // legitimate drags look like a remote conflict and revert the user's move.
-    let existing: Option<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
-        "SELECT card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at FROM outbox WHERE card_id = ?",
-    )
-    .bind(card_id)
-    .fetch_optional(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let existing: Option<OutboxRow> = queries::outbox_row_for_card(db, card_id).await?;
 
     let (effective_from, base_remote, created_at) = match &existing {
         Some(row) => {
@@ -77,17 +72,7 @@ pub async fn enqueue(
     })
     .to_string();
 
-    sqlx::query(
-        "INSERT OR REPLACE INTO outbox (card_id, intent, payload_json, base_remote_updated_at, attempts, last_error, last_attempt_at, created_at)
-         VALUES (?, 'set_column', ?, ?, 0, NULL, NULL, ?)",
-    )
-    .bind(card_id)
-    .bind(&payload_json)
-    .bind(&base_remote)
-    .bind(&created_at)
-    .execute(db)
-    .await
-    .map_err(AdeError::Db)?;
+    queries::upsert_set_column_intent(db, card_id, &payload_json, &base_remote, &created_at).await?;
 
     Ok(())
 }
@@ -99,17 +84,7 @@ pub async fn all_for_workspace(
     db: &DbPool,
     workspace_id: &str,
 ) -> Result<Vec<OutboxRow>, AdeError> {
-    let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
-        "SELECT o.card_id, o.intent, o.payload_json, o.base_remote_updated_at, o.attempts, o.last_error, o.last_attempt_at, o.created_at
-         FROM outbox o JOIN card c ON c.id = o.card_id
-         WHERE c.workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_all(db)
-    .await
-    .map_err(AdeError::Db)?;
-
-    Ok(rows)
+    queries::outbox_rows_for_workspace(db, workspace_id).await
 }
 
 /// Retry backoff schedule (seconds) indexed by attempt count.
@@ -123,15 +98,7 @@ pub async fn due(db: &DbPool, now: &str, workspace_id: &str) -> Result<Vec<Outbo
 
     // Scoped to the workspace: each worker only sends its own intents
     // (it holds that workspace's column map for conflict reverts).
-    let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
-        "SELECT o.card_id, o.intent, o.payload_json, o.base_remote_updated_at, o.attempts, o.last_error, o.last_attempt_at, o.created_at
-         FROM outbox o JOIN card c ON c.id = o.card_id
-         WHERE c.workspace_id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_all(db)
-    .await
-    .map_err(AdeError::Db)?;
+    let rows = queries::outbox_rows_for_workspace(db, workspace_id).await?;
 
     let mut due_rows = Vec::new();
 
@@ -171,27 +138,11 @@ pub async fn record_failure(
     error: &str,
     now: &str,
 ) -> Result<(), AdeError> {
-    sqlx::query(
-        "UPDATE outbox SET attempts = attempts + 1, last_error = ?, last_attempt_at = ? WHERE card_id = ?",
-    )
-    .bind(error)
-    .bind(now)
-    .bind(card_id)
-    .execute(db)
-    .await
-    .map_err(AdeError::Db)?;
-
-    Ok(())
+    queries::record_attempt_failure(db, card_id, error, now).await
 }
 
 pub async fn resolve(db: &DbPool, card_id: &str) -> Result<(), AdeError> {
-    sqlx::query("DELETE FROM outbox WHERE card_id = ?")
-        .bind(card_id)
-        .execute(db)
-        .await
-        .map_err(AdeError::Db)?;
-
-    Ok(())
+    queries::delete_intent(db, card_id).await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
