@@ -166,17 +166,41 @@ pub async fn terminal_kill_window(
     window_id: String,
     state: State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<(), AdeError> {
-    let mut reg = state.pty.lock().map_err(|e| AdeError::Pty(e.to_string()))?;
-    let keys: Vec<String> = reg
-        .iter()
-        .filter(|(_, p)| p.window_id == window_id && p.workspace_id == workspace_id)
-        .map(|(k, _)| k.clone())
-        .collect();
-    for k in keys {
-        if let Some(pane) = reg.remove(&k) {
-            let _ = pane.close();
+    {
+        let mut reg = state.pty.lock().map_err(|e| AdeError::Pty(e.to_string()))?;
+        let keys: Vec<String> = reg
+            .iter()
+            .filter(|(_, p)| p.window_id == window_id && p.workspace_id == workspace_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            if let Some(pane) = reg.remove(&k) {
+                let _ = pane.close();
+            }
         }
     }
+
+    // Explicit close ends the session — feed the brain with what it produced
+    // first. Detached + best-effort so the close returns immediately; the Claude
+    // transcript persists on disk past the kill, so this can't race it. Unlike
+    // `terminal_close` (a viewer detach on unmount), this path is user-initiated.
+    if let Ok((base, token)) = crate::ipc::gbrain::endpoint(&state) {
+        if let Ok(ws) = lookup_workspace(&workspace_id, &state.db).await {
+            let cwd = ws.root_path;
+            tokio::spawn(async move {
+                let note = tokio::task::spawn_blocking(move || {
+                    crate::ipc::claude_sessions::session_note_for(&cwd)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some((slug, content)) = note {
+                    let _ = crate::gbrain::put_page(&base, &token, &slug, &content).await;
+                }
+            });
+        }
+    }
+
     tmux::kill_window(&window_id)
 }
 

@@ -777,6 +777,21 @@ function TerminalPane({
             {branch}
           </span>
         )}
+        {!isBoard && branch && renameDraft == null && (
+          <span
+            title={branch}
+            aria-label={`git branch ${branch}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              flexShrink: 0,
+              color: "var(--muted)",
+              marginRight: 2,
+            }}
+          >
+            <BranchIcon size={12} />
+          </span>
+        )}
         {!isBoard && (
           <>
             <button

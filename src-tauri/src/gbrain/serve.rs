@@ -47,27 +47,38 @@ pub fn gbrain_bin() -> String {
     "gbrain".to_string()
 }
 
-/// Kill any `gbrain serve` process that is NOT our HTTP serve (i.e. a stdio
-/// serve holding the PGLite lock). Strictly scoped: a command line must contain
-/// `gbrain` and `serve` but not `--http`. Returns how many were signaled.
-///
-/// This is the assertive "reap on startup" the app uses to take ownership of the
-/// brain lock from a Claude-Code-spawned stdio serve.
-pub fn reap_orphan_stdio_serve() -> usize {
-    let Ok(out) = Command::new("ps").args(["-axo", "pid=,args="]).output() else {
+/// Decide whether a `ps` row is a stray serve we must reap to own the PGLite
+/// lock: any stdio serve (e.g. one Claude Code spawned), and any *orphaned*
+/// `--http` serve (PPID 1) left over from a previous app session. Our own
+/// supervised `--http` child has the app as parent, so it's never matched.
+fn should_reap(ppid: &str, args: &str) -> bool {
+    if !(args.contains("gbrain") && args.contains("serve")) {
+        return false;
+    }
+    if args.contains("--http") {
+        ppid == "1" // orphan only; leave our supervised child (and foreground ones)
+    } else {
+        true
+    }
+}
+
+/// Kill stray `gbrain serve` processes that would fight us for the exclusive
+/// PGLite lock — stdio serves and orphaned `--http` serves (see [`should_reap`]).
+/// The assertive "reap on startup" the app uses to take ownership of the brain
+/// lock. Returns how many were signaled.
+pub fn reap_orphan_serves() -> usize {
+    let Ok(out) = Command::new("ps").args(["-axo", "pid=,ppid=,args="]).output() else {
         return 0;
     };
     let listing = String::from_utf8_lossy(&out.stdout);
     let mut reaped = 0;
     for line in listing.lines() {
-        let line = line.trim_start();
-        let Some((pid_str, args)) = line.split_once(char::is_whitespace) else {
+        let mut it = line.split_whitespace();
+        let (Some(pid_str), Some(ppid_str)) = (it.next(), it.next()) else {
             continue;
         };
-        let args = args.trim();
-        let is_gbrain_serve = args.contains("gbrain") && args.contains("serve");
-        if is_gbrain_serve && !args.contains("--http") {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+        if should_reap(ppid_str, line) {
+            if let Ok(pid) = pid_str.parse::<u32>() {
                 if Command::new("kill").arg(pid.to_string()).status().is_ok() {
                     reaped += 1;
                 }
@@ -206,6 +217,16 @@ mod tests {
     #[test]
     fn base_url_has_no_mcp_suffix() {
         assert_eq!(base_url(7777), "http://127.0.0.1:7777");
+    }
+
+    #[test]
+    fn should_reap_targets_strays_not_our_child() {
+        let stdio = "/Users/mk/.bun/bin/gbrain serve";
+        let http = "bun /Users/mk/.bun/bin/gbrain serve --http --port 7777";
+        assert!(should_reap("4242", stdio)); // stdio: any parent
+        assert!(should_reap("1", http)); // orphaned http: reap
+        assert!(!should_reap("4242", http)); // our supervised child: leave it
+        assert!(!should_reap("1", "bun /some/other serve --http")); // not gbrain
     }
 
     #[test]

@@ -9,7 +9,12 @@ import {
 } from "react";
 import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import TerminalPane from "./TerminalPane";
-import { terminalWrite } from "../lib/ipc";
+import {
+  terminalWrite,
+  terminalKillWindow,
+  claudeSessions,
+  subscribeTerminalAlert,
+} from "../lib/ipc";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
 import { useSettingsStore, type TerminalPreset } from "../store/settings";
@@ -373,6 +378,60 @@ function MinimizedChip({
   );
 }
 
+type SessionInfo = { title: string; branch: string | null };
+
+// The Claude session each workspace is actively running, by reading the newest
+// transcript under the workspace cwd. ponytail: transcripts share the workspace
+// cwd, so when several claude sessions run in one workspace we can't map a
+// session to a specific window — newest-within-15min wins. Refetch is debounced
+// off terminal-alert; add a "newest-only" backend command if scanning all
+// transcripts per alert ever shows up in a profile.
+function useActiveSessions(panes: OpenTerminal[]): Record<string, SessionInfo | undefined> {
+  const [byWs, setByWs] = useState<Record<string, SessionInfo | undefined>>({});
+  const wsKey = useMemo(
+    () => Array.from(new Set(panes.map((p) => p.workspaceId))).sort().join("|"),
+    [panes]
+  );
+  const debounce = useRef<number | null>(null);
+
+  const refresh = useCallback(() => {
+    const now = Date.now() / 1000;
+    for (const wsId of wsKey ? wsKey.split("|") : []) {
+      claudeSessions(wsId)
+        .then((sessions) => {
+          const active = sessions.find((s) => now - s.lastActive < 15 * 60);
+          setByWs((prev) => ({
+            ...prev,
+            [wsId]: active ? { title: active.title, branch: active.gitBranch } : undefined,
+          }));
+        })
+        .catch(() => {}); // cwd/serve unavailable — keep the prior value
+    }
+  }, [wsKey]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    subscribeTerminalAlert((p) => {
+      if (p.kind === "bell" || p.kind === "app") return;
+      if (debounce.current) return; // trailing: at most one refetch per 2s
+      debounce.current = window.setTimeout(() => {
+        debounce.current = null;
+        refresh();
+      }, 2000);
+    }).then((u) => (unsub = u));
+    return () => {
+      unsub?.();
+      if (debounce.current) window.clearTimeout(debounce.current);
+    };
+  }, [refresh]);
+
+  return byWs;
+}
+
 export default function TerminalArea({
   panes,
   onNewTerminal,
@@ -381,6 +440,7 @@ export default function TerminalArea({
   onHighlightDone,
   variant = "classic",
 }: TerminalAreaProps) {
+  const sessionByWs = useActiveSessions(panes);
   const isBoard = variant === "board";
   const boards = useBoardStore((s) => s.boards);
   const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
@@ -465,8 +525,11 @@ export default function TerminalArea({
   const customNameFor = (pane: OpenTerminal): string | undefined =>
     namesByWorkspace[pane.workspaceId]?.[pane.windowId];
 
+  const sessionFor = (pane: OpenTerminal): SessionInfo | undefined =>
+    sessionByWs[pane.workspaceId];
+
   // Title: custom name if set, else the linked card/issue (e.g. "#123 | Fix
-  // login"), else "Terminal" for ad-hoc shells with no linked card.
+  // login"), else the active Claude session's title, else "Terminal".
   const titleFor = (pane: OpenTerminal): string => {
     const custom = customNameFor(pane);
     if (custom) return custom;
@@ -483,6 +546,8 @@ export default function TerminalArea({
         }
       }
     }
+    const sess = sessionFor(pane);
+    if (sess && sess.title && sess.title !== "(untitled session)") return sess.title;
     return "Terminal";
   };
 
@@ -500,9 +565,12 @@ export default function TerminalArea({
     return undefined;
   };
 
-  // Branch label for the board header: GitHub issues follow the "issue-<n>"
-  // worktree convention; ad-hoc shells (no linked card) show none.
+  // Branch: the real git branch the session reports, when known. Falls back to
+  // the card's "issue-<n>" worktree convention (card terminals run in a worktree
+  // cwd the session scan doesn't cover), else none.
   const branchFor = (pane: OpenTerminal): string | null => {
+    const sess = sessionFor(pane);
+    if (sess?.branch) return sess.branch;
     const card = cardFor(pane);
     if (card?.github_issue_number != null) return `issue-${card.github_issue_number}`;
     return null;
@@ -548,6 +616,12 @@ export default function TerminalArea({
       });
       setMaximizedPaneId((id) => (id === paneId ? null : id));
       onRemovePane(paneId);
+      // Explicit close ends the session: kill the tmux window (which harvests
+      // the Claude transcript into the brain backend-side) instead of leaving it
+      // detached. Unmount's terminalClose only drops the viewer. Best-effort.
+      if (pane) {
+        terminalKillWindow(pane.workspaceId, pane.windowId).catch(() => {});
+      }
     },
     [onRemovePane]
   );
@@ -884,7 +958,7 @@ export default function TerminalArea({
                     title={titleFor(pane)}
                     cometOutside
                     headerVariant={isBoard ? "board" : "default"}
-                    branch={isBoard ? branchFor(pane) : undefined}
+                    branch={branchFor(pane)}
                     maximized={isMax}
                     locked={locked}
                     hasCustomName={customNameFor(pane) != null}

@@ -13,7 +13,7 @@ use tauri::State;
 
 /// Clone the live endpoint + token out of `AppState`. The lock is released
 /// before any await (the guard never crosses an async boundary).
-fn endpoint(state: &AppState) -> Result<(String, String), AdeError> {
+pub(crate) fn endpoint(state: &AppState) -> Result<(String, String), AdeError> {
     let guard = state
         .gbrain
         .lock()
@@ -112,19 +112,38 @@ pub async fn gbrain_sync(
     crate::gbrain::trigger_sync(&base, &token, full.unwrap_or(false)).await
 }
 
-/// Restart the app-owned serve in place (kill child → respawn, supervision
-/// stays up). Recovery action from the "offline" panel.
+/// Restart the app-owned serve. Recovery action from the "offline" panel.
+/// With a published runtime, restart in place (kill child → respawn). Without
+/// one — init bailed at startup, e.g. an orphan held the PGLite lock — bootstrap
+/// from scratch via `init_background` (reaps the orphan, mints, spawns, publishes),
+/// so this button can recover the dead-on-arrival case instead of erroring out.
 #[tauri::command]
 pub async fn gbrain_restart(state: State<'_, Arc<AppState>>) -> Result<(), AdeError> {
-    let guard = state
+    {
+        let guard = state
+            .gbrain
+            .lock()
+            .map_err(|_| AdeError::Other("gbrain runtime lock poisoned".into()))?;
+        if let Some(rt) = guard.as_ref() {
+            return rt
+                .handle
+                .restart()
+                .map_err(|e| AdeError::Other(format!("could not restart gbrain serve: {e}")));
+        }
+    } // drop the std guard before awaiting
+
+    crate::gbrain::init_background(state.inner().clone()).await;
+
+    let published = state
         .gbrain
         .lock()
-        .map_err(|_| AdeError::Other("gbrain runtime lock poisoned".into()))?;
-    match guard.as_ref() {
-        Some(rt) => rt
-            .handle
-            .restart()
-            .map_err(|e| AdeError::Other(format!("could not restart gbrain serve: {e}"))),
-        None => Err(AdeError::Other("gbrain serve not ready yet".into())),
+        .map_err(|_| AdeError::Other("gbrain runtime lock poisoned".into()))?
+        .is_some();
+    if published {
+        Ok(())
+    } else {
+        Err(AdeError::Other(
+            "gbrain serve still unavailable (check the PGLite lock / gbrain auth)".into(),
+        ))
     }
 }

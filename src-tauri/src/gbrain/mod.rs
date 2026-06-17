@@ -32,9 +32,9 @@ pub struct GbrainRuntime {
 pub async fn init_background(state: Arc<crate::AppState>) {
     let prep = tokio::task::spawn_blocking(|| {
         let bin = serve::gbrain_bin();
-        let reaped = serve::reap_orphan_stdio_serve();
+        let reaped = serve::reap_orphan_serves();
         if reaped > 0 {
-            eprintln!("reaped {reaped} stray stdio gbrain serve process(es)");
+            eprintln!("reaped {reaped} stray gbrain serve process(es)");
         }
         wiring::ensure_token(&bin)
     })
@@ -271,6 +271,21 @@ pub async fn trigger_sync(base_url: &str, token: &str, full: bool) -> Result<Str
         )
         .await?;
     Ok(first_str(&v, &["job_id", "id", "jobId"]).unwrap_or_else(|| "queued".to_string()))
+}
+
+/// Upsert a page (idempotent by slug). Used by the terminal-close harvest to
+/// record a session log. `content` is markdown with YAML frontmatter.
+pub async fn put_page(
+    base_url: &str,
+    token: &str,
+    slug: &str,
+    content: &str,
+) -> Result<(), AdeError> {
+    let client = McpClient::new(base_url, token);
+    client
+        .call_tool_raw("put_page", json!({ "slug": slug, "content": content }))
+        .await?;
+    Ok(())
 }
 
 /// Semantic/hybrid search over the brain (+ indexed code). Errors propagate so
