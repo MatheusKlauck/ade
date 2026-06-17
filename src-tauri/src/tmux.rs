@@ -300,7 +300,7 @@ fn claude_wrapper_snippet() -> String {
 # ade: load ADE's Claude turn-state hooks per-session (no global config edit).
 claude() {{
   if [ -f '{path}' ]; then
-    command claude --settings '{path}' "$@"
+    ADE_TTY="$(tty)" command claude --settings '{path}' "$@"
   else
     command claude "$@"
   fi
@@ -567,6 +567,17 @@ mod tests {
     #[test]
     fn parse_version_32_ok() {
         assert_eq!(parse_version("tmux 3.2").unwrap(), (3, 2));
+    }
+
+    #[test]
+    fn claude_wrapper_exports_pane_tty() {
+        // Regression: the wrapper must capture the pane's tty into ADE_TTY so the
+        // hooks (which run with no controlling terminal) can write the OSC marker
+        // to a real pty that pipe-pane captures. It must also pass --settings.
+        let s = claude_wrapper_snippet();
+        assert!(s.contains("ADE_TTY=\"$(tty)\""), "missing ADE_TTY export: {s}");
+        assert!(s.contains("--settings"));
+        assert!(s.contains("command claude"));
     }
 
     #[test]
