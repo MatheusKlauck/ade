@@ -13,22 +13,23 @@ reads both files automatically.
 
 
 You are implementing ADE, a macOS desktop app (Tauri 2 + Rust core + React/TS frontend).
-The product spec is `PLANO-ADE-v2.md`. **You do not need to read it.** Everything you need
-is in `plan/00-CONTRACTS.md` (the single source of truth for types, schema, IPC, commands)
-and in the milestone task files `plan/M0.md` … `plan/M6.md`.
+The current plan and design source of truth is `docs/PLANO-GESTOR-v1.md` (architecture,
+data model, IPC surface, and the decision log D1–D13). The domain vocabulary lives in
+`CONTEXT.md`; product/design intent in `PRODUCT.md` and `DESIGN.md`. Read only the section
+relevant to your task; do not re-read the whole plan.
 
 ## How to work
 
-1. Open `plan/PROGRESS.md`. Find the first unchecked task. That is your task. Do tasks
-   **strictly in order**. Never start a task while a previous one is unchecked.
-2. Read the task's block in its milestone file **fully** before writing code. Read the
-   CONTRACTS sections it references. Do not skim.
-3. Touch **only** the files listed in the task (plus their test files). If you believe
+1. Pick up your task from **GitHub Issues** (`gh issue list`; see
+   `docs/agents/issue-tracker.md`). Work the assigned issue end to end.
+2. Read the relevant section of `docs/PLANO-GESTOR-v1.md` and the matching `CONTEXT.md`
+   terms **fully** before writing code. Do not skim.
+3. Touch **only** the files the task needs (plus their test files). If you believe
    another file must change, it may only be a mechanical consequence (e.g., `mod` line,
-   import). Anything bigger → record in `plan/DECISIONS.md` and keep it minimal.
-4. When the task is done, run the **gates** (below). All green → check the box in
-   `plan/PROGRESS.md` → commit with message `M<x>-T<y>: <subject>`.
-5. One task = one commit. Never batch tasks.
+   import). Anything bigger → note it on the issue and keep it minimal.
+4. When the task is done, run the **gates** (below). All green → commit, referencing the
+   issue (e.g. `feat: <subject> (#<n>)`).
+5. One logical change = one commit. Never batch unrelated work.
 
 ## Gates (must pass before every commit)
 
@@ -43,20 +44,21 @@ itself marks `[needs-tmux]` or `[needs-keychain]`.
 
 ## Hard rules (violating any of these is a bug)
 
-- **CONTRACTS wins.** If a task seems to conflict with `plan/00-CONTRACTS.md`, CONTRACTS
-  is right. If CONTRACTS is genuinely impossible (e.g., a pinned API doesn't exist), make
-  the **smallest** working deviation and log it in `plan/DECISIONS.md` (what, why, where).
-- **No new dependencies.** Only the crates/packages listed in CONTRACTS §1. Versions are
-  frozen by the lockfiles created in M0-T2; never run upgrades.
+- **The plan wins.** If a task seems to conflict with `docs/PLANO-GESTOR-v1.md` or the
+  decisions D1–D13, the plan is right. If it is genuinely impossible (e.g., a pinned API
+  doesn't exist), make the **smallest** working deviation and record it on the issue
+  (what, why, where).
+- **No new dependencies.** Only the crates/packages already in the lockfiles; never run
+  upgrades (the plan adds no mandatory crate — see `docs/PLANO-GESTOR-v1.md` §10).
 - **Never invent** event names, command names, table/column names, label names, or error
-  codes. Copy them from CONTRACTS. If something you need is missing there, add it to
-  CONTRACTS in the same commit + a DECISIONS entry.
+  codes. Copy them from `docs/PLANO-GESTOR-v1.md` (§5 schema, §6 IPC) and the terms in
+  `CONTEXT.md`. If something you need is missing, propose it on the issue first.
 - **No `unwrap()`, `expect()`, or `panic!`** outside `#[cfg(test)]`. All fallible paths
-  return `AdeError` (CONTRACTS §6) and surface through the notification layer.
+  return `AdeError` and surface through the notification layer.
 - **Never build shell command strings by concatenation.** All process invocations use
   argv arrays (`std::process::Command::arg`). Text coming from GitHub (titles, labels,
   bodies) is untrusted input — it never goes into a shell line, only into `-e KEY=VALUE`
-  args or after the sanitizer (CONTRACTS §9).
+  args or after the sanitizer.
 - **No scope creep.** Every task has an "Out of scope" list. Do not implement things
   early, do not refactor neighboring code, do not add features, do not "improve" the UI
   beyond what the task says. Plain and working beats clever.
@@ -66,17 +68,18 @@ itself marks `[needs-tmux]` or `[needs-keychain]`.
 
 ## When you are stuck or unsure
 
-- **Ambiguity:** choose the simplest behavior consistent with CONTRACTS, implement it,
-  and log the choice in `plan/DECISIONS.md`. Do not block, do not ask, do not guess
+- **Ambiguity:** choose the simplest behavior consistent with the plan, implement it,
+  and note the choice on the issue. Do not block, do not ask, do not guess
   something fancy.
 - **Compile error with a crate API (2 failed attempts):** stop guessing. Open the docs
   for the exact version in `Cargo.lock` (docs.rs/<crate>/<version>) and adapt the snippet
-  minimally. Log the adaptation in DECISIONS.
-- **A test you wrote contradicts the decision table in CONTRACTS:** the table is right;
+  minimally. Note the adaptation on the issue.
+- **A test you wrote contradicts a decision table in the plan:** the table is right;
   fix the test expectation only if the table says so.
 
 ## Context budget
 
-Per session, read at most: this file, `plan/PROGRESS.md`, the current task block, and the
-CONTRACTS sections it references. Do not re-read the whole plan or the whole codebase.
-Use `grep` to find symbols instead of reading entire files.
+Per session, read at most: this file, the issue you're working, the relevant section of
+`docs/PLANO-GESTOR-v1.md`, and the `CONTEXT.md` terms it references. Do not re-read the
+whole plan or the whole codebase. Use `grep` to find symbols instead of reading entire
+files.
