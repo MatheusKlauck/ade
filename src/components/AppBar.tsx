@@ -61,17 +61,11 @@ export default function AppBar({ onOpenSettings, onNewTerminal }: AppBarProps) {
           alignSelf: "stretch",
           minWidth: 0,
           overflowX: "auto",
-          flexShrink: 1,
+          flex: 1,
         }}
       >
         <Tabs />
       </div>
-
-      {/* Flexible drag region between tabs and the app controls */}
-      <div
-        data-tauri-drag-region
-        style={{ flex: 1, alignSelf: "stretch", minWidth: "var(--space-md)" }}
-      />
 
       <NewTerminalButton onNewTerminal={onNewTerminal} />
       <NotificationCenter />
