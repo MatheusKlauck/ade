@@ -159,7 +159,7 @@ pub fn spawn_supervised(port: u16) -> ServeHandle {
             // Decide whether a (re)spawn is needed, and do it while holding the
             // lock briefly — never across the await below.
             let respawned = {
-                let mut guard = ch.lock().unwrap();
+                let mut guard = ch.lock().unwrap_or_else(|e| e.into_inner());
                 let running = match guard.as_mut() {
                     Some(c) => matches!(c.try_wait(), Ok(None)),
                     None => false,
