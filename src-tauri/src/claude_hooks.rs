@@ -22,10 +22,17 @@ pub fn settings_path() -> PathBuf {
     std::env::temp_dir().join("ade-claude-settings.json")
 }
 
-/// One ADE hook command: emit the marker to the pane tty, best-effort (a hook
+/// One ADE hook command: emit the marker to the pane's pty, best-effort (a hook
 /// must never fail or stall the turn).
+///
+/// Writes to `$ADE_TTY`, exported by the `claude` shell wrapper (see
+/// `tmux::claude_wrapper_snippet`). Claude Code runs hooks WITHOUT a controlling
+/// terminal, so a bare `/dev/tty` is "not a tty" and the marker is lost — the
+/// explicit pane pty path is what `tmux pipe-pane` actually captures.
 fn osc_command(state: &str) -> String {
-    format!("printf '\\033]9;ade:claude:{state}\\007' > /dev/tty 2>/dev/null || true")
+    format!(
+        "printf '\\033]9;ade:claude:{state}\\007' > \"${{ADE_TTY:-/dev/tty}}\" 2>/dev/null || true"
+    )
 }
 
 /// Write the ADE settings file containing just our hooks. Best-effort: any IO
@@ -52,5 +59,21 @@ pub fn ensure() {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hook_command_targets_ade_tty_not_bare_dev_tty() {
+        // Regression: Claude runs hooks with no controlling terminal, so writing
+        // to a bare /dev/tty silently drops the marker. The command must target
+        // $ADE_TTY (exported by the shell wrapper) for pipe-pane to capture it.
+        let cmd = osc_command("turn-start");
+        assert!(cmd.contains("${ADE_TTY"), "must write to $ADE_TTY: {cmd}");
+        assert!(cmd.contains("ade:claude:turn-start"));
+        assert!(!cmd.contains("> /dev/tty "), "bare /dev/tty target regressed: {cmd}");
     }
 }
