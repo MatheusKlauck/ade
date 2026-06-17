@@ -30,7 +30,7 @@ pub fn needs_rebalance(cards: &[f64]) -> bool {
 /// Output is [(card_id, new_position)] with new_position = 1024.0 * (i + 1).
 pub fn rebalance(cards: &[(String, f64)]) -> Vec<(String, f64)> {
     let mut sorted = cards.to_vec();
-    sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
     sorted
         .into_iter()
         .enumerate()
@@ -80,5 +80,12 @@ mod tests {
         assert_eq!(result[1].1, 2048.0);
         assert_eq!(result[2].0, "b");
         assert_eq!(result[2].1, 3072.0);
+    }
+
+    #[test]
+    fn rebalance_does_not_panic_on_nan() {
+        let cards = vec![("a".into(), 100.0), ("b".into(), f64::NAN)];
+        let result = rebalance(&cards);
+        assert_eq!(result.len(), 2);
     }
 }
