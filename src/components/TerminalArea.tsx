@@ -7,10 +7,10 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import TerminalPane from "./TerminalPane";
+import TerminalTile from "./terminal/TerminalTile";
+import ResizeDivider from "./terminal/ResizeDivider";
 import {
-  terminalWrite,
   terminalKillWindow,
   claudeSessions,
   subscribeTerminalAlert,
@@ -171,142 +171,6 @@ const PAD = GAP / 2;
 // Smallest a tile may be dragged to, so a divider can't collapse a pane to zero.
 const MIN_ROW_PX = 110;
 const MIN_TILE_PX = 180;
-
-/** A draggable gutter between two tiles or two rows. Invisible until hovered. */
-function ResizeDivider({
-  orientation,
-  rectStyle,
-  onPointerDown,
-}: {
-  orientation: "row" | "col";
-  rectStyle: CSSProperties;
-  onPointerDown: (e: ReactPointerEvent) => void;
-}) {
-  return (
-    <div
-      className="term-divider"
-      onPointerDown={onPointerDown}
-      style={{
-        position: "absolute",
-        zIndex: 15,
-        cursor: orientation === "row" ? "row-resize" : "col-resize",
-        ...rectStyle,
-      }}
-    />
-  );
-}
-
-/** One tile: an absolutely-positioned wrapper that is also a drop target for
- * pane-reorder drags. It owns the little edge indicator shown while another
- * pane's header is dragged over it. */
-function TerminalTile({
-  pane,
-  style,
-  hidden,
-  children,
-  onReorder,
-  entering,
-  onEntered,
-}: {
-  pane: OpenTerminal;
-  style: CSSProperties;
-  hidden: boolean;
-  children: React.ReactNode;
-  onReorder: (draggedWin: string, targetWin: string, edge: "before" | "after") => void;
-  entering: boolean;
-  onEntered: () => void;
-}) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [edge, setEdge] = useState<"before" | "after" | null>(null);
-  // True while a skill from the SkillsSidebar is dragged over this tile.
-  const [skillOver, setSkillOver] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    return dropTargetForElements({
-      element: el,
-      canDrop: ({ source }) =>
-        (typeof source.data.termWindowId === "string" &&
-          source.data.termWindowId !== pane.windowId) ||
-        typeof source.data.skillCommand === "string",
-      onDrag: ({ source, location }) => {
-        if (typeof source.data.skillCommand === "string") {
-          setSkillOver(true);
-          return;
-        }
-        const rect = el.getBoundingClientRect();
-        setEdge(
-          location.current.input.clientX < rect.left + rect.width / 2
-            ? "before"
-            : "after"
-        );
-      },
-      onDragLeave: () => {
-        setEdge(null);
-        setSkillOver(false);
-      },
-      onDrop: ({ source, location }) => {
-        if (typeof source.data.skillCommand === "string") {
-          setSkillOver(false);
-          // Type the slash command into the pane, no Enter — the user can add
-          // arguments and submit it themselves.
-          terminalWrite(pane.paneId, source.data.skillCommand).catch(() => {});
-          return;
-        }
-        const rect = el.getBoundingClientRect();
-        const e =
-          location.current.input.clientX < rect.left + rect.width / 2
-            ? "before"
-            : "after";
-        setEdge(null);
-        onReorder(source.data.termWindowId as string, pane.windowId, e);
-      },
-    });
-  }, [pane.windowId, pane.paneId, onReorder]);
-
-  return (
-    <div
-      ref={ref}
-      id={`terminal-pane-${pane.windowId}`}
-      style={style}
-      className={entering ? "ade-pane-enter" : undefined}
-      onAnimationEnd={(e) => {
-        // Only the tile's own entrance — ignore animationend bubbling up from
-        // a child (e.g. the focus-glow on the pane).
-        if (e.target === e.currentTarget) onEntered();
-      }}
-    >
-      {skillOver && !hidden && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            border: "2px solid var(--accent)",
-            borderRadius: 4,
-            zIndex: 25,
-            pointerEvents: "none",
-          }}
-        />
-      )}
-      {edge && !hidden && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            bottom: 0,
-            [edge === "before" ? "left" : "right"]: 0,
-            width: 3,
-            background: "var(--accent)",
-            zIndex: 25,
-            pointerEvents: "none",
-          }}
-        />
-      )}
-      {children}
-    </div>
-  );
-}
 
 // A minimized terminal shown as a tray chip. It mirrors the live pane's comet +
 // veil (read from the store, since the real pane is display:none while
