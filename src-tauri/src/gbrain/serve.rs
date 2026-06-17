@@ -67,7 +67,10 @@ fn should_reap(ppid: &str, args: &str) -> bool {
 /// The assertive "reap on startup" the app uses to take ownership of the brain
 /// lock. Returns how many were signaled.
 pub fn reap_orphan_serves() -> usize {
-    let Ok(out) = Command::new("ps").args(["-axo", "pid=,ppid=,args="]).output() else {
+    let Ok(out) = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,args="])
+        .output()
+    else {
         return 0;
     };
     let listing = String::from_utf8_lossy(&out.stdout);

@@ -254,7 +254,7 @@ fn read_sessions(cwd: &str) -> Vec<ClaudeSession> {
             })
         })
         .collect();
-    out.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    out.sort_by_key(|b| std::cmp::Reverse(b.last_active));
     out
 }
 

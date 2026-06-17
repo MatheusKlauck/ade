@@ -28,6 +28,7 @@ fn new_id() -> String {
 /// success; on failure the job row is marked `failed`, a `job_failed` event is
 /// recorded, and an `AdeError` is returned (the caller, e.g. the runtime, decides
 /// whether to surface a toast — see `run_and_notify`).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_gestor_job<P, T>(
     db: &DbPool,
     provider: &P,
@@ -108,6 +109,7 @@ where
 
 /// As `run_gestor_job`, plus a user-facing toast on failure. Thin glue over the
 /// pure runner (which the tests exercise directly).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_and_notify<P, T>(
     app: &tauri::AppHandle,
     db: &DbPool,

@@ -575,7 +575,10 @@ mod tests {
         // hooks (which run with no controlling terminal) can write the OSC marker
         // to a real pty that pipe-pane captures. It must also pass --settings.
         let s = claude_wrapper_snippet();
-        assert!(s.contains("ADE_TTY=\"$(tty)\""), "missing ADE_TTY export: {s}");
+        assert!(
+            s.contains("ADE_TTY=\"$(tty)\""),
+            "missing ADE_TTY export: {s}"
+        );
         assert!(s.contains("--settings"));
         assert!(s.contains("command claude"));
     }

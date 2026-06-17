@@ -487,25 +487,21 @@ async fn check_runs_and_merge() {
     let server = MockServer::start().await;
     Mock::given(match_method("GET"))
         .and(path("/repos/owner/repo/commits/abc123/check-runs"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(&serde_json::json!({
-                "total_count": 2,
-                "check_runs": [
-                    { "status": "completed", "conclusion": "success" },
-                    { "status": "completed", "conclusion": "success" },
-                ],
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_count": 2,
+            "check_runs": [
+                { "status": "completed", "conclusion": "success" },
+                { "status": "completed", "conclusion": "success" },
+            ],
+        })))
         .mount(&server)
         .await;
     Mock::given(match_method("PUT"))
         .and(path("/repos/owner/repo/pulls/42/merge"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(&serde_json::json!({
-                "merged": true,
-                "sha": "deadbeef",
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "merged": true,
+            "sha": "deadbeef",
+        })))
         .mount(&server)
         .await;
 

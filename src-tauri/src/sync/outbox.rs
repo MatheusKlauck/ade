@@ -72,7 +72,8 @@ pub async fn enqueue(
     })
     .to_string();
 
-    queries::upsert_set_column_intent(db, card_id, &payload_json, &base_remote, &created_at).await?;
+    queries::upsert_set_column_intent(db, card_id, &payload_json, &base_remote, &created_at)
+        .await?;
 
     Ok(())
 }

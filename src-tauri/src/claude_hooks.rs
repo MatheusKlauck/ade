@@ -74,6 +74,9 @@ mod tests {
         let cmd = osc_command("turn-start");
         assert!(cmd.contains("${ADE_TTY"), "must write to $ADE_TTY: {cmd}");
         assert!(cmd.contains("ade:claude:turn-start"));
-        assert!(!cmd.contains("> /dev/tty "), "bare /dev/tty target regressed: {cmd}");
+        assert!(
+            !cmd.contains("> /dev/tty "),
+            "bare /dev/tty target regressed: {cmd}"
+        );
     }
 }

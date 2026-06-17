@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-use crate::sync::notifier::{AppNotifier, Notifier};
-use crate::sync::rate::RateBudget;
 #[cfg(test)]
 use crate::sync::notifier::CaptureNotifier;
+use crate::sync::notifier::{AppNotifier, Notifier};
+use crate::sync::rate::RateBudget;
 
 // ── CycleResult ─────────────────────────────────────────────────────
 

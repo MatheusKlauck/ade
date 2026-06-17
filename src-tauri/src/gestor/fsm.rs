@@ -187,7 +187,8 @@ pub async fn transition(
     // D13: project the new state onto the board. The transition is already
     // persisted; a missing column or DB hiccup here must not undo it, so surface
     // it on stderr (no AppHandle at this layer to emit a notify) rather than fail.
-    match repo::move_card_to_column(db, &task.card_id, &task.workspace_id, column_for(to), &ts).await
+    match repo::move_card_to_column(db, &task.card_id, &task.workspace_id, column_for(to), &ts)
+        .await
     {
         Ok(true) => {}
         Ok(false) => eprintln!(

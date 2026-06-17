@@ -12,10 +12,7 @@ use crate::error::AdeError;
 use crate::sync::outbox::OutboxRow;
 
 /// The current sync watermark for a workspace, or `None` if it never synced.
-pub async fn read_last_sync(
-    db: &DbPool,
-    workspace_id: &str,
-) -> Result<Option<String>, AdeError> {
+pub async fn read_last_sync(db: &DbPool, workspace_id: &str) -> Result<Option<String>, AdeError> {
     sqlx::query_scalar::<_, String>("SELECT last_sync FROM sync_state WHERE workspace_id = ?")
         .bind(workspace_id)
         .fetch_optional(db)
