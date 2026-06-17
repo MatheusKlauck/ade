@@ -239,7 +239,7 @@ export default function GestorSettings({
         {saved === "saving" && "Salvando…"}
         {saved === "ok" && "Salvo ✓"}
         {saved === "err" && (
-          <span style={{ color: "var(--danger, #d35a5a)" }}>
+          <span style={{ color: "var(--status-error-text)" }}>
             Falha ao salvar
           </span>
         )}
@@ -333,9 +333,9 @@ export function linesToJson(text: string): string {
 }
 
 const field: React.CSSProperties = {
-  background: "var(--input-bg, #232329)",
+  background: "var(--input-bg)",
   color: "var(--fg)",
-  border: "1px solid var(--input-border, #33333a)",
+  border: "1px solid var(--input-border)",
   borderRadius: 4,
   padding: "6px 8px",
   font: "inherit",
@@ -350,5 +350,5 @@ const muted: React.CSSProperties = { fontSize: 13, color: "var(--muted)" };
 const errText: React.CSSProperties = {
   margin: "6px 0 0",
   fontSize: 11,
-  color: "var(--danger, #d35a5a)",
+  color: "var(--status-error-text)",
 };

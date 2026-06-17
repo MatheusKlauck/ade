@@ -74,9 +74,9 @@ export default function NewFeatureComposer({
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(620px, 92vw)",
-          background: "var(--bg, #1b1b1f)",
-          color: "var(--fg, #e9e9ec)",
-          border: "1px solid var(--border, #33333a)",
+          background: "var(--bg)",
+          color: "var(--fg)",
+          border: "1px solid var(--border)",
           borderRadius: 12,
           padding: 20,
           display: "grid",
@@ -114,7 +114,7 @@ export default function NewFeatureComposer({
                     gap: 8,
                     alignItems: "baseline",
                     padding: 8,
-                    background: "var(--bg-elev, #232329)",
+                    background: "var(--surface-input)",
                     borderRadius: 6,
                   }}
                 >
@@ -172,9 +172,9 @@ export default function NewFeatureComposer({
               style={{
                 width: "100%",
                 resize: "vertical",
-                background: "var(--bg-elev, #232329)",
+                background: "var(--surface-input)",
                 color: "inherit",
-                border: "1px solid var(--border, #33333a)",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
                 padding: 12,
                 font: "inherit",
@@ -183,7 +183,7 @@ export default function NewFeatureComposer({
             />
 
             {error && (
-              <div style={{ color: "var(--danger, #d35a5a)", fontSize: 13 }}>
+              <div style={{ color: "var(--status-error-text)", fontSize: 13 }}>
                 {error}
               </div>
             )}
@@ -220,24 +220,24 @@ export default function NewFeatureComposer({
 }
 
 const btn: React.CSSProperties = {
-  background: "var(--bg-elev, #232329)",
+  background: "var(--surface-input)",
   color: "inherit",
-  border: "1px solid var(--border, #33333a)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: "8px 16px",
   cursor: "pointer",
   font: "inherit",
 };
 const primary: React.CSSProperties = {
-  background: "var(--accent, #5319e7)",
+  background: "var(--accent)",
   borderColor: "transparent",
-  color: "#fff",
+  color: "var(--accent-ink)",
 };
 const chip: React.CSSProperties = {
   padding: "1px 6px",
   borderRadius: 4,
-  background: "var(--bg, #1b1b1f)",
-  border: "1px solid var(--border, #33333a)",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   fontSize: 11,
   opacity: 0.8,
 };

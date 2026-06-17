@@ -263,7 +263,7 @@ export default function CardContextMenu({
         <>
           <div style={dividerStyle} />
           <button
-            style={hoverable({ color: "var(--status-error, #e5484d)" })}
+            style={hoverable({ color: "var(--status-error-text)" })}
             onMouseEnter={enter}
             onMouseLeave={leave}
             onClick={() => {

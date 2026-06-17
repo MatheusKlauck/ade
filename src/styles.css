@@ -703,7 +703,6 @@ textarea:focus-visible {
 .md-body pre {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--accent);
   border-radius: var(--radius-sm);
   padding: var(--space-md);
   margin: 12px 0;

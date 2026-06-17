@@ -19,10 +19,10 @@ const AGENT_ACTIVE = new Set([
 const AGENT_ATTENTION = new Set(["awaiting_input", "needs_fixes"]);
 const AGENT_ERROR = new Set(["failed", "aborted"]);
 function agentDotColor(state: string): string {
-  if (AGENT_ERROR.has(state)) return "var(--danger, #d35a5a)";
-  if (AGENT_ATTENTION.has(state)) return "var(--warning, #d3a72c)";
-  if (AGENT_ACTIVE.has(state)) return "var(--accent, #5319e7)";
-  return "var(--muted, #9b9ba3)"; // queued / pushing / pr_open / ci_wait / ready_to_merge
+  if (AGENT_ERROR.has(state)) return "var(--status-error-text)";
+  if (AGENT_ATTENTION.has(state)) return "var(--status-warning-text)";
+  if (AGENT_ACTIVE.has(state)) return "var(--accent)";
+  return "var(--muted)"; // queued / pushing / pr_open / ci_wait / ready_to_merge
 }
 
 /** The agent dot breathes while the agent is mid-flight (calm pulse) and pulses
@@ -256,8 +256,8 @@ export default function Card({
                 fontSize: 11,
                 lineHeight: 1.3,
                 color: AGENT_ERROR.has(agentState.state)
-                  ? "var(--danger, #d35a5a)"
-                  : "var(--warning, #d3a72c)",
+                  ? "var(--status-error-text)"
+                  : "var(--status-warning-text)",
               }}
             >
               {agentState.reason}

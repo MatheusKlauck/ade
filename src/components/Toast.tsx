@@ -27,7 +27,7 @@ function toastColors(level: string): { bg: string; ink: string } {
     case "error":
       return { bg: "var(--status-error-deep)", ink: "var(--on-accent)" };
     case "warn":
-      return { bg: "var(--status-warning)", ink: "#1a1a1a" };
+      return { bg: "var(--status-warning)", ink: "var(--accent-ink)" };
     default:
       return { bg: "var(--status-info)", ink: "var(--on-accent)" };
   }

@@ -16,9 +16,9 @@ import { useModalFocus } from "../lib/useModalFocus";
 // here is an agent_event the core wrote (D8: nada falha em silêncio).
 
 const LEVEL_COLOR: Record<string, string> = {
-  error: "var(--danger, #d35a5a)",
-  warning: "var(--warning, #d3a72c)",
-  info: "var(--muted, #9b9ba3)",
+  error: "var(--status-error-text)",
+  warning: "var(--status-warning-text)",
+  info: "var(--muted)",
 };
 
 function ago(iso: string): string {
@@ -125,9 +125,9 @@ export default function GestorPanel({
         style={{
           width: "min(880px, 92vw)",
           maxHeight: "86vh",
-          background: "var(--bg, #1b1b1f)",
-          color: "var(--fg, #e9e9ec)",
-          border: "1px solid var(--border, #33333a)",
+          background: "var(--bg)",
+          color: "var(--fg)",
+          border: "1px solid var(--border)",
           borderRadius: 10,
           display: "flex",
           flexDirection: "column",
@@ -140,7 +140,7 @@ export default function GestorPanel({
             justifyContent: "space-between",
             alignItems: "center",
             padding: "12px 16px",
-            borderBottom: "1px solid var(--border, #33333a)",
+            borderBottom: "1px solid var(--border)",
           }}
         >
           <strong>Gestor</strong>
@@ -166,9 +166,9 @@ export default function GestorPanel({
               style={{
                 width: "100%",
                 resize: "vertical",
-                background: "var(--bg-elev, #232329)",
+                background: "var(--surface-input)",
                 color: "inherit",
-                border: "1px solid var(--border, #33333a)",
+                border: "1px solid var(--border)",
                 borderRadius: 6,
                 padding: 8,
                 font: "inherit",
@@ -198,7 +198,7 @@ export default function GestorPanel({
                       display: "flex",
                       gap: 8,
                       padding: 8,
-                      background: "var(--bg-elev, #232329)",
+                      background: "var(--surface-input)",
                       borderRadius: 6,
                     }}
                   >
@@ -287,18 +287,18 @@ export default function GestorPanel({
 }
 
 const btn: React.CSSProperties = {
-  background: "var(--bg-elev, #232329)",
+  background: "var(--surface-input)",
   color: "inherit",
-  border: "1px solid var(--border, #33333a)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: "6px 12px",
   cursor: "pointer",
   font: "inherit",
 };
 const primary: React.CSSProperties = {
-  background: "var(--accent, #5319e7)",
+  background: "var(--accent)",
   borderColor: "transparent",
-  color: "#fff",
+  color: "var(--accent-ink)",
 };
 const lbl: React.CSSProperties = {
   display: "block",
@@ -312,7 +312,7 @@ const chip: React.CSSProperties = {
   marginLeft: 6,
   padding: "1px 6px",
   borderRadius: 4,
-  background: "var(--bg, #1b1b1f)",
-  border: "1px solid var(--border, #33333a)",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   fontSize: 11,
 };
