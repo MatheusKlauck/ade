@@ -3,7 +3,8 @@
 /// A GitHub label with its display colour. Used by the card detail view to
 /// render coloured chips; the board/ledger only needs names (see
 /// `RemoteIssue.labels`).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct Label {
     pub name: String,
     pub color: String, // 6-digit hex, no leading '#'
@@ -67,7 +68,8 @@ pub enum SyncAction {
     Ignore,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct IssueComment {
     pub id: u64,
     pub user_login: String,

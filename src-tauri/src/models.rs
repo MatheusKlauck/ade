@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct Workspace {
     pub id: String,
     pub name: String,
@@ -12,7 +14,8 @@ pub struct Workspace {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct BoardColumn {
     pub id: String,
     pub workspace_id: String,
@@ -20,7 +23,8 @@ pub struct BoardColumn {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct Card {
     pub id: String,
     pub workspace_id: String,
@@ -39,13 +43,15 @@ pub struct Card {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct BoardGetResult {
     pub columns: Vec<BoardColumn>,
     pub cards: Vec<Card>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct AgentTask {
     pub id: String,
     pub workspace_id: String,
@@ -81,7 +87,8 @@ pub struct GestorJob {
     pub finished_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct IssueProposal {
     pub id: String,
     pub job_id: String,
@@ -97,7 +104,8 @@ pub struct IssueProposal {
     pub card_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct AgentEvent {
     pub id: i64,
     pub workspace_id: String,

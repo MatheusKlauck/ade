@@ -7,7 +7,8 @@ use sqlx::Row;
 use std::sync::Arc;
 use tauri::State;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct CardDetail {
     pub card: Card,
     pub body: Option<String>,

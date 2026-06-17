@@ -11,6 +11,33 @@ const invoke = isTauri ? tauriInvoke : mockInvoke;
 const listen = isTauri ? tauriListen : mockListen;
 const ChannelCtor = isTauri ? Channel : (MockChannel as unknown as typeof Channel);
 
+// ---- shared types (generated from Rust by ts-rs; see src/lib/bindings) ----
+// Source of truth is the Rust struct. Regenerate with
+// `cd src-tauri && cargo test export_bindings`. Re-exported here so existing
+// `import { Card } from "../lib/ipc"` call sites keep working.
+import type {
+  Workspace,
+  BoardColumn,
+  Card,
+  BoardGetResult,
+  CardDetail,
+  AgentTask,
+  AgentEvent,
+  IssueProposal,
+} from "./bindings";
+export type {
+  Workspace,
+  BoardColumn,
+  Card,
+  BoardGetResult,
+  CardDetail,
+  Label,
+  IssueComment,
+  AgentTask,
+  AgentEvent,
+  IssueProposal,
+} from "./bindings";
+
 // ---- native dialogs ----
 
 // Single seam for the folder picker so components don't import @tauri-apps
@@ -36,48 +63,6 @@ export async function subscribeNotify(
 }
 
 // ---- gestor (#56) ----
-export interface IssueProposal {
-  id: string;
-  job_id: string;
-  workspace_id: string;
-  ord: number;
-  title: string;
-  body: string;
-  labels_json: string | null;
-  depends_on_json: string | null;
-  acceptance_json: string | null;
-  priority: string | null;
-  status: string;
-  card_id: string | null;
-}
-
-export interface AgentTask {
-  id: string;
-  workspace_id: string;
-  card_id: string;
-  state: string;
-  attempt: number;
-  max_attempts: number;
-  branch: string | null;
-  fail_reason: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AgentEvent {
-  id: number;
-  workspace_id: string;
-  task_id: string | null;
-  job_id: string | null;
-  ts: string;
-  kind: string;
-  level: string;
-  payload_json: string | null;
-  cost_usd: number | null;
-  num_turns: number | null;
-  duration_ms: number | null;
-}
-
 export function gestorPlan(
   workspaceId: string,
   brief: string
@@ -228,36 +213,6 @@ export function claudeSessions(workspaceId: string): Promise<ClaudeSession[]> {
 }
 
 // ---- board ----
-export interface BoardGetResult {
-  columns: BoardColumn[];
-  cards: Card[];
-}
-
-export interface BoardColumn {
-  id: string;
-  workspace_id: string;
-  name: string;
-  position: number;
-}
-
-export interface Card {
-  id: string;
-  workspace_id: string;
-  column_id: string;
-  title: string;
-  body_preview: string | null;
-  position: number;
-  source: string;
-  github_issue_number: number | null;
-  github_state: string | null;
-  assignee: string | null;
-  labels_json: string | null;
-  remote_updated_at: string | null;
-  terminal_window_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export function boardGet(workspaceId: string): Promise<BoardGetResult> {
   return invoke("board_get", { workspaceId });
 }
@@ -280,32 +235,6 @@ export function cardUpdate(
 
 export function cardDelete(cardId: string): Promise<void> {
   return invoke("card_delete", { cardId });
-}
-
-export interface IssueComment {
-  id: number;
-  // Matches the Rust serialization (gh::types::IssueComment) — these are the
-  // raw serde field names, not renamed.
-  user_login: string;
-  user_avatar_url: string | null;
-  body: string;
-  created_at: string;
-  updated_at: string;
-}
-
-// A GitHub label with its colour (6-digit hex, no leading '#'), surfaced by the
-// live card_detail fetch for the detail view's coloured chips.
-export interface Label {
-  name: string;
-  color: string;
-}
-
-export interface CardDetail {
-  card: Card;
-  body: string | null;
-  comments: IssueComment[];
-  labels: Label[];
-  assignee_avatar_url: string | null;
 }
 
 export function cardDetail(cardId: string): Promise<CardDetail> {
@@ -335,17 +264,6 @@ export function cardMove(
 }
 
 // ---- workspace ----
-export interface Workspace {
-  id: string;
-  name: string;
-  slug: string;
-  root_path: string;
-  github_owner: string | null;
-  github_repo: string | null;
-  startup_command: string | null;
-  created_at: string;
-}
-
 export function workspaceList(): Promise<Workspace[]> {
   return invoke<Workspace[]>("workspace_list");
 }
@@ -535,7 +453,8 @@ export function subscribeSync(
 export interface TerminalAlertPayload {
   workspace_id: string;
   window_id: string;
-  kind: "started" | "completed" | "bell" | "app" | "gone";
+  kind: "started" | "completed" | "bell" | "app" | "gone" | "claude";
+  // For kind "claude": the session state ("turn-start" | "turn-end" | "waiting").
   detail: string;
 }
 
