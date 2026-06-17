@@ -376,6 +376,9 @@ export default function App() {
         } else if (p.detail === "waiting") {
           t.setTerminalWorking(p.window_id, false);
           t.setTerminalWaiting(p.window_id, true);
+          // Mirror the pane: a turn paused for input is no longer "working", so
+          // drop the tab's comet and show only the waiting pulse.
+          w.clearTerminalBusy(p.workspace_id, p.window_id);
           w.markTerminalWaiting(p.workspace_id, p.window_id, true);
         }
         return;

@@ -166,6 +166,40 @@
   }
 }
 
+/* Tab variant of the waiting state. The pane's outer box-shadow above is clipped
+   in the tab bar (AppBar's overflow-x:auto clips both axes), so pulse the tab's
+   BACKGROUND from the inside instead — it survives the clip and reads as "this
+   workspace wants you". */
+.ade-term-waiting-tab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  /* The box-shadow look (soft accent glow concentrated at the perimeter, fading
+     inward) but painted INSIDE the tab — an outer/inset box-shadow gets clipped
+     by the tab bar (AppBar overflow). Opacity pulses so it breathes like the
+     pane's waiting box-shadow. */
+  background: radial-gradient(
+    150% 150% at 50% 50%,
+    transparent 5%,
+    color-mix(in oklab, var(--accent) 33%, transparent) 100%
+  );
+  opacity: 0;
+  animation: ade-term-waiting-tab-pulse 1.9s ease-in-out infinite;
+}
+
+@keyframes ade-term-waiting-tab-pulse {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 @keyframes ade-term-veil {
   0% {
     opacity: 0;

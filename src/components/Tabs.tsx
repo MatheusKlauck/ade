@@ -125,7 +125,7 @@ export default function Tabs() {
               className={
                 [
                   busy && "ade-comet ade-term-visible ade-term-working",
-                  waiting && "ade-term-waiting",
+                  waiting && "ade-term-waiting-tab",
                 ]
                   .filter(Boolean)
                   .join(" ") || undefined
