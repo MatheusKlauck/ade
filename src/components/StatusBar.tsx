@@ -112,6 +112,13 @@ export default function StatusBar({
     whiteSpace: "nowrap" as const,
   };
 
+  // Machine counts: mono + ink weight so the numbers carry over their units.
+  const countStyle = {
+    fontFamily: "var(--font-mono)" as const,
+    fontWeight: 700,
+    color: "var(--fg)",
+  };
+
   return (
     <div
       style={{
@@ -227,7 +234,9 @@ export default function StatusBar({
       <div style={{ flex: 1 }} />
 
       <span style={itemStyle}>
-        {terminalCount} terminal{terminalCount === 1 ? "" : "s"} · {doingCount} doing
+        <b style={countStyle}>{terminalCount}</b> terminal
+        {terminalCount === 1 ? "" : "s"} · <b style={countStyle}>{doingCount}</b>{" "}
+        doing
       </span>
 
       {/* Collapse / expand the board panel — same status-bar visual language as
