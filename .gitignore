@@ -27,3 +27,6 @@ dist-ssr
 .claude/
 .hermes/
 .vscode/
+
+# Agent session logs
+sessions/
