@@ -130,13 +130,20 @@ interface TerminalsState {
   // finishes, retriggering the attention sweep. Kept in the store (not just the
   // pane's local state) so a minimized terminal's tray chip can mirror the same
   // affordances even though its TerminalPane is display:none. In-memory only.
-  // `waiting` is the "Claude finished its turn and wants you" pulse, set from
-  // the Notification hook (see claude_hooks.rs). `claude` latches once any Claude
-  // hook fires for the window, so the per-pane output-cadence tracker stops
-  // driving `working`/`veil` and lets the (authoritative) hooks own them.
+  // `waiting` is the "agent finished its turn and wants you" pulse, set from the
+  // agent's notification shim (see claude_hooks.rs / agent_shims.rs). `agentKind`
+  // latches the detected agent ("claude" | "pi" | "opencode") once any of its
+  // turn markers fires for the window, so the per-pane output-cadence tracker
+  // stops driving `working`/`veil` (the authoritative shims own them) and the
+  // resume menu knows which agent's sessions to list. Null = no agent detected.
   activityByWindow: Record<
     string,
-    { working: boolean; veil: number; waiting: boolean; claude: boolean }
+    {
+      working: boolean;
+      veil: number;
+      waiting: boolean;
+      agentKind: string | null;
+    }
   >;
   // Set a window's "agent working" flag (no-op if unchanged, to avoid churn).
   setTerminalWorking: (windowId: string, working: boolean) => void;
@@ -144,10 +151,10 @@ interface TerminalsState {
   bumpTerminalVeil: (windowId: string) => void;
   // Set a window's "waiting for input" pulse.
   setTerminalWaiting: (windowId: string, waiting: boolean) => void;
-  // Latch a window as Claude-managed (hooks own its working/veil from now on).
-  markTerminalClaude: (windowId: string) => void;
-  // The Claude session UUID each window is running, learned from the Claude
-  // hook markers (see App.tsx terminal-alert handler). Lets the title resolve
+  // Latch a window's detected agent (its shim owns working/veil from now on).
+  markTerminalAgent: (windowId: string, agentKind: string) => void;
+  // The agent session id each window is running, learned from the agent turn
+  // markers (see App.tsx terminal-alert handler). Lets the title resolve
   // per-window instead of sharing the workspace's newest session. In-memory.
   sessionIdByWindow: Record<string, string>;
   setWindowSession: (windowId: string, sessionId: string) => void;
@@ -253,7 +260,7 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
             working,
             veil: cur?.veil ?? 0,
             waiting: cur?.waiting ?? false,
-            claude: cur?.claude ?? false,
+            agentKind: cur?.agentKind ?? null,
           },
         },
       };
@@ -268,7 +275,7 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
             working: cur?.working ?? false,
             veil: (cur?.veil ?? 0) + 1,
             waiting: cur?.waiting ?? false,
-            claude: cur?.claude ?? false,
+            agentKind: cur?.agentKind ?? null,
           },
         },
       };
@@ -284,15 +291,15 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
             working: cur?.working ?? false,
             veil: cur?.veil ?? 0,
             waiting,
-            claude: cur?.claude ?? false,
+            agentKind: cur?.agentKind ?? null,
           },
         },
       };
     }),
-  markTerminalClaude: (windowId) =>
+  markTerminalAgent: (windowId, agentKind) =>
     set((s) => {
       const cur = s.activityByWindow[windowId];
-      if (cur?.claude) return s;
+      if (cur?.agentKind === agentKind) return s;
       return {
         activityByWindow: {
           ...s.activityByWindow,
@@ -300,7 +307,7 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
             working: cur?.working ?? false,
             veil: cur?.veil ?? 0,
             waiting: cur?.waiting ?? false,
-            claude: true,
+            agentKind,
           },
         },
       };

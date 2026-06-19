@@ -327,17 +327,24 @@ export function terminalKillWindow(
   return invoke("terminal_kill_window", { workspaceId, windowId });
 }
 
-// ---- claude sessions ----
-export interface ClaudeSession {
+// ---- agent sessions ----
+/** A coding agent ADE knows how to drive (turn-state visuals + session resume). */
+export type AgentKind = "claude" | "pi" | "opencode";
+
+export interface AgentSession {
   id: string;
   title: string;
   lastActive: number; // epoch seconds
   gitBranch: string | null;
 }
 
-/** Resumable Claude Code sessions recorded for the workspace's cwd, newest first. */
-export function claudeSessions(workspaceId: string): Promise<ClaudeSession[]> {
-  return invoke("claude_sessions", { workspaceId }).then((res: unknown) =>
+/** Resumable sessions for the given agent recorded under the workspace's cwd,
+ * newest first. */
+export function agentSessions(
+  workspaceId: string,
+  agent: AgentKind
+): Promise<AgentSession[]> {
+  return invoke("agent_sessions", { workspaceId, agent }).then((res: unknown) =>
     (res as Array<Record<string, unknown>>).map((s) => ({
       id: s.id as string,
       title: s.title as string,
@@ -345,6 +352,13 @@ export function claudeSessions(workspaceId: string): Promise<ClaudeSession[]> {
       gitBranch: (s.git_branch as string | null) ?? null,
     }))
   );
+}
+
+/** The shell command that resumes a session for the given agent. */
+export function resumeCommand(agent: AgentKind, sessionId: string): string {
+  return agent === "claude"
+    ? `claude --resume ${sessionId}`
+    : `${agent} --session ${sessionId}`;
 }
 
 // ---- board ----
@@ -588,11 +602,13 @@ export function subscribeSync(
 export interface TerminalAlertPayload {
   workspace_id: string;
   window_id: string;
-  kind: "started" | "completed" | "bell" | "app" | "gone" | "claude";
-  // For kind "claude": the session state ("turn-start" | "turn-end" | "waiting").
+  // An agent kind ("claude" | "pi" | "opencode") means a turn-state transition;
+  // the others are command/bell/notification/teardown events.
+  kind: "started" | "completed" | "bell" | "app" | "gone" | AgentKind;
+  // For an agent kind: the session state ("turn-start" | "turn-end" | "waiting").
   detail: string;
-  // For kind "claude": the Claude session UUID that emitted the marker (empty
-  // when the hook couldn't extract it). Lets ADE map window→session for titles.
+  // For an agent kind: the agent session id that emitted the marker (empty when
+  // the shim couldn't extract it). Lets ADE map window→session for titles.
   session_id: string;
 }
 

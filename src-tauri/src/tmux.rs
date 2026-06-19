@@ -310,15 +310,47 @@ claude() {{
     )
 }
 
+/// `pi` and `opencode` shell functions, the analogues of `claude_wrapper_snippet`
+/// for the other agents. Both export `$ADE_TTY` (so the turn-state shims can
+/// write the OSC marker to the pane pty). pi loads its shim per-invocation via
+/// `-e`; opencode's shim is a global plugin gated on `$ADE_TTY`, so the wrapper
+/// only needs to export the tty.
+fn other_agent_wrapper_snippets() -> String {
+    let pi_ext = crate::agent_shims::pi_extension_path();
+    format!(
+        r#"
+# ade: load ADE's pi turn-state extension per-session (no global config edit).
+pi() {{
+  if [ -f '{pi_ext}' ]; then
+    ADE_TTY="$(tty)" command pi -e '{pi_ext}' "$@"
+  else
+    ADE_TTY="$(tty)" command pi "$@"
+  fi
+}}
+# ade: opencode's turn-state plugin is global but inert unless ADE_TTY is set.
+opencode() {{
+  ADE_TTY="$(tty)" command opencode "$@"
+}}
+"#,
+        pi_ext = pi_ext.display()
+    )
+}
+
 /// Write the shell-integration snippet to a stable temp path so new windows can
 /// `source` it. Returns the path on success. Best-effort; overwrites each call
 /// so the snippet stays current with the running build.
 pub fn ensure_integration_script() -> Result<std::path::PathBuf, AdeError> {
-    // Make sure the ADE-owned Claude settings file exists before any window's
-    // `claude` function references it.
+    // Make sure each agent's turn-state shim file exists before any window's
+    // wrapper function references it.
     crate::claude_hooks::ensure();
+    crate::agent_shims::ensure_pi();
+    crate::agent_shims::ensure_opencode();
     let path = integration_script_path();
-    let body = format!("{SHELL_INTEGRATION}{}", claude_wrapper_snippet());
+    let body = format!(
+        "{SHELL_INTEGRATION}{}{}",
+        claude_wrapper_snippet(),
+        other_agent_wrapper_snippets()
+    );
     std::fs::write(&path, body).map_err(|e| AdeError::Tmux(e.to_string()))?;
     Ok(path)
 }
