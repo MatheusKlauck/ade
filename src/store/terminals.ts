@@ -316,10 +316,14 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
     ),
   clearTerminalActivity: (windowId) =>
     set((s) => {
-      if (!(windowId in s.activityByWindow)) return s;
-      const next = { ...s.activityByWindow };
-      delete next[windowId];
-      return { activityByWindow: next };
+      const hadActivity = windowId in s.activityByWindow;
+      const hadSession = windowId in s.sessionIdByWindow;
+      if (!hadActivity && !hadSession) return s;
+      const activity = { ...s.activityByWindow };
+      delete activity[windowId];
+      const session = { ...s.sessionIdByWindow };
+      delete session[windowId];
+      return { activityByWindow: activity, sessionIdByWindow: session };
     }),
   focusedWindowId: null,
   lockedByWorkspace: {},
