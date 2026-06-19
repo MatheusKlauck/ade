@@ -185,6 +185,141 @@ export function terminalClose(paneId: string): Promise<void> {
   return invoke("terminal_close", { paneId });
 }
 
+export interface ChangedFile {
+  path: string;
+  status: string; // "M" | "A" | "D" | "?"
+}
+
+export function repoChanges(
+  workspaceId: string,
+  worktree?: string | null
+): Promise<ChangedFile[]> {
+  return invoke("repo_changes", { workspaceId, worktree: worktree ?? null });
+}
+
+export interface FileVersions {
+  original: string;
+  modified: string;
+}
+
+export function repoFileVersions(
+  workspaceId: string,
+  path: string,
+  worktree?: string | null
+): Promise<FileVersions> {
+  return invoke("repo_file_versions", {
+    workspaceId,
+    path,
+    worktree: worktree ?? null,
+  });
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  root: string;
+}
+
+export function worktreeAdd(
+  workspaceId: string,
+  paneId: string
+): Promise<WorktreeInfo> {
+  return invoke("worktree_add", { workspaceId, paneId });
+}
+
+export function worktreeRemove(
+  workspaceId: string,
+  path: string
+): Promise<void> {
+  return invoke("worktree_remove", { workspaceId, path });
+}
+
+export function openInFinder(
+  workspaceId: string,
+  path: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("open_in_finder", { workspaceId, path, worktree: worktree ?? null });
+}
+
+export function openInVscode(
+  workspaceId: string,
+  path: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("open_in_vscode", { workspaceId, path, worktree: worktree ?? null });
+}
+
+export function repoAbsPath(
+  workspaceId: string,
+  path: string,
+  worktree?: string | null
+): Promise<string> {
+  return invoke("repo_abs_path", { workspaceId, path, worktree: worktree ?? null });
+}
+
+export interface BranchInfo {
+  name: string;
+  updated: number; // unix seconds of last commit
+}
+
+export interface GitBranches {
+  current: string;
+  branches: BranchInfo[];
+}
+
+export function gitBranches(
+  workspaceId: string,
+  worktree?: string | null
+): Promise<GitBranches> {
+  return invoke("git_branches", { workspaceId, worktree: worktree ?? null });
+}
+
+export function gitCreateBranch(
+  workspaceId: string,
+  name: string,
+  from: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("git_create_branch", {
+    workspaceId,
+    name,
+    from,
+    worktree: worktree ?? null,
+  });
+}
+
+export function gitDeleteBranch(
+  workspaceId: string,
+  name: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("git_delete_branch", { workspaceId, name, worktree: worktree ?? null });
+}
+
+export function gitCheckout(
+  workspaceId: string,
+  branch: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("git_checkout", { workspaceId, branch, worktree: worktree ?? null });
+}
+
+export function gitCommit(
+  workspaceId: string,
+  message: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("git_commit", { workspaceId, message, worktree: worktree ?? null });
+}
+
+export function gitStash(
+  workspaceId: string,
+  worktree?: string | null
+): Promise<void> {
+  return invoke("git_stash", { workspaceId, worktree: worktree ?? null });
+}
+
 export function terminalKillWindow(
   workspaceId: string,
   windowId: string

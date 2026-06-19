@@ -3,19 +3,8 @@
 //! lock-stealing stdio serve to the shared HTTP endpoint.
 
 use crate::error::AdeError;
-use keyring_core::{Entry, Error as KeyringError};
 use serde_json::{json, Value};
 use std::process::Command;
-
-fn map_keyring(e: KeyringError) -> AdeError {
-    AdeError::Keychain(e.to_string())
-}
-
-/// Keychain slot for the serve bearer token (plaintext; the brain only stores
-/// its hash, so we keep our own copy for the app's own MCP client this session).
-fn token_entry() -> Result<Entry, AdeError> {
-    Entry::new("ade", "gbrain_serve_token").map_err(map_keyring)
-}
 
 /// Extract a `gbrain_<hex>` token from `gbrain auth create` output.
 fn parse_minted_token(stdout: &str) -> Option<String> {
@@ -58,17 +47,15 @@ fn mint_token(bin: &str) -> Result<String, AdeError> {
     )))
 }
 
-/// Mint a FRESH bearer on every startup and cache it. We deliberately do NOT
-/// reuse the keychain copy: a brain re-init (or a manual `gbrain auth revoke`)
-/// wipes the token's hash from the brain, leaving the cached / `~/.claude.json`
-/// copy stale — the serve then 401s every request. Re-minting here, while the
-/// PGLite lock is still free and before the serve starts, guarantees the token
-/// matches the live brain. Cost is one revoke+create per launch (negligible);
-/// `rewire_claude_code` writes the new token through to Claude Code's config.
+/// Mint a FRESH bearer on every startup. A brain re-init (or manual
+/// `gbrain auth revoke`) wipes the token's hash from the brain, so any stored
+/// copy goes stale and the serve 401s. Re-minting here, while the PGLite lock
+/// is still free and before the serve starts, guarantees the token matches the
+/// live brain. The token is returned in-process and `rewire_claude_code` writes
+/// it through to Claude Code's config — it is never persisted to the Keychain
+/// (no reader, and the write prompted for the login password on every launch).
 pub fn ensure_token(bin: &str) -> Result<String, AdeError> {
-    let token = mint_token(bin)?;
-    token_entry()?.set_password(&token).map_err(map_keyring)?;
-    Ok(token)
+    mint_token(bin)
 }
 
 /// Path to Claude Code's config (`~/.claude.json`).

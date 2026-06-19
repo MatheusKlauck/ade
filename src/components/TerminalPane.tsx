@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -13,8 +13,13 @@ import {
   terminalClose,
   terminalResize,
   terminalWrite,
+  worktreeAdd,
+  worktreeRemove,
   type ClaudeSession,
 } from "../lib/ipc";
+// Lazy so Monaco (a few MB) only loads the first time a pane opens the Repo
+// view — it stays out of the initial app bundle entirely.
+const RepoDiffPanel = lazy(() => import("./RepoDiffPanel"));
 import { COL_DOING } from "../lib/columns";
 import { useBoardStore } from "../store/board";
 import type { OpenTerminal } from "../store/terminals";
@@ -24,8 +29,24 @@ import { useCommandFreqStore } from "../store/commandFrequency";
 import { useSkillRecentsStore, skillNameFromLine } from "../store/skillRecents";
 import { useSettingsStore, type TerminalAppearance } from "../store/settings";
 import { ContextMenu, menuItemStyle, useContextMenu } from "./ContextMenu";
+import GitControls from "./GitControls";
 import TerminalCommandBar from "./TerminalCommandBar";
 import { BranchIcon, LockIcon, LockOpenIcon, PencilIcon, RefreshIcon } from "./icons";
+
+const TermGlyph = ({ size = 13 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 4l3 4-3 4" /><path d="M8 12h6" />
+  </svg>
+);
+// Diff glyph: a "+ line" over a "− line", the unified-diff shorthand.
+const DiffGlyph = ({ size = 13 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+    <path d="M3 4.5h3M4.5 3v3" />
+    <path d="M8.5 4.5H14" />
+    <path d="M3 11.5h3" />
+    <path d="M8.5 11.5H14" />
+  </svg>
+);
 
 /** Compact "2h ago" / "3d ago" label from a Claude session's epoch-seconds mtime. */
 function relativeSessionTime(epochSecs: number): string {
@@ -190,6 +211,24 @@ const iconBtnStyle: React.CSSProperties = {
   lineHeight: 1,
 };
 
+// One segment of the per-pane Terminal/Repo switcher. Active uses a 16% accent
+// tint + accent ink (DESIGN.md reserves the solid accent, so the view chrome
+// stays a tint, not a fill).
+const segBtnStyle = (active: boolean): React.CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  padding: "2px 8px",
+  border: "none",
+  borderRight: "1px solid var(--border)",
+  background: active ? "rgba(240,47,194,0.16)" : "transparent",
+  color: active ? "var(--accent)" : "var(--muted)",
+  fontSize: 10,
+  fontWeight: active ? 600 : 400,
+  lineHeight: 1.6,
+  cursor: "pointer",
+});
+
 // macOS-style traffic-light control (board header). The colour identifies the
 // action — red close, yellow minimize, green maximize — and a disabled control
 // (e.g. close on a locked pane) dims out.
@@ -226,6 +265,17 @@ function TerminalPane({
   const isBoard = headerVariant === "board";
   // Header context menu (right-click); Escape-to-dismiss is built in.
   const { menu, open: openMenu, close: closeMenu } = useContextMenu();
+  // Git controls popover, anchored to the branch chip. Separate menu instance so
+  // it doesn't collide with the header right-click menu.
+  const gitMenu = useContextMenu();
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const openGitMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    gitMenu.open(r.left, r.bottom + 4);
+  };
+  // Live branch (after a switch) wins over the prop the parent passed in.
+  const displayBranch = gitBranch ?? branch;
   // Claude session picker: null = menu shows normal items; an array = menu shows
   // the resumable sessions ("Open session" was picked). Reset whenever the menu
   // closes so the next right-click starts on the normal items.
@@ -281,6 +331,57 @@ function TerminalPane({
   // the bar stays gone for the rest of the pane's life (it comes back only on a
   // fresh pane / app restart).
   const [barDismissed, setBarDismissed] = useState(false);
+  // Per-pane view switcher (Terminal | Repo-diffs) and worktree toggle. View
+  // defaults to terminal so existing panes are unchanged. The Repo view and the
+  // worktree action are wired as the next step — here this is the chrome only.
+  const [view, setView] = useState<"terminal" | "repo">("terminal");
+  const [worktree, setWorktree] = useState(false);
+  const [worktreePath, setWorktreePath] = useState<string | null>(null);
+  const [worktreeRoot, setWorktreeRoot] = useState<string | null>(null);
+  const [worktreeBranch, setWorktreeBranch] = useState<string | null>(null);
+  const [wtBusy, setWtBusy] = useState(false);
+  const [wtError, setWtError] = useState<string | null>(null);
+
+  // Single-quote a path for the shell. Paths come from our own worktree_add, so
+  // the only metacharacter that can appear is a quote; escape it the POSIX way.
+  const shq = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
+
+  const toggleWorktree = async (on: boolean) => {
+    setWtError(null);
+    setWtBusy(true);
+    try {
+      if (on) {
+        const wt = await worktreeAdd(pane.workspaceId, pane.paneId);
+        setWorktreePath(wt.path);
+        setWorktreeRoot(wt.root);
+        setWorktreeBranch(wt.branch);
+        setWorktree(true);
+        // Move the live shell into the isolated worktree.
+        terminalWrite(pane.paneId, `cd ${shq(wt.path)}\n`);
+      } else {
+        const path = worktreePath;
+        const root = worktreeRoot;
+        setWorktree(false);
+        setWorktreePath(null);
+        setWorktreeBranch(null);
+        // cd the shell out first, then drop the worktree. Non-force remove: if
+        // it has uncommitted work git refuses and we keep it (no data loss).
+        if (root) terminalWrite(pane.paneId, `cd ${shq(root)}\n`);
+        if (path) {
+          try {
+            await worktreeRemove(pane.workspaceId, path);
+          } catch (e) {
+            setWtError(`Worktree mantido (tem mudanças): ${e}`);
+          }
+        }
+      }
+    } catch (e) {
+      setWtError(String(e));
+      setWorktree(false);
+    } finally {
+      setWtBusy(false);
+    }
+  };
   const dismissCommandBar = () => setBarDismissed(true);
   // The onData handler is registered once, so it reads the latest dismiss
   // function through a ref to avoid capturing a stale closure.
@@ -615,6 +716,77 @@ function TerminalPane({
     setRenameDraft(null);
   };
 
+  // Per-pane header controls: the Terminal/Repo pill and the Worktree checkbox.
+  // Rendered between the title and the branch in both header variants.
+  const viewControls = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+      <span
+        style={{
+          display: "inline-flex",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          overflow: "hidden",
+          background: "var(--input-bg)",
+        }}
+      >
+        <button
+          style={segBtnStyle(view === "terminal")}
+          title="Terminal"
+          aria-pressed={view === "terminal"}
+          onClick={() => setView("terminal")}
+        >
+          <TermGlyph />
+          Term
+        </button>
+        <button
+          style={{ ...segBtnStyle(view === "repo"), borderRight: "none" }}
+          title="Diff — mudanças deste terminal"
+          aria-pressed={view === "repo"}
+          onClick={() => setView("repo")}
+        >
+          <DiffGlyph />
+          Diff
+        </button>
+      </span>
+      <label
+        title={
+          wtError ??
+          (worktreeBranch
+            ? `Worktree isolado: ${worktreeBranch}`
+            : "Criar um git worktree isolado para as modificações deste terminal")
+        }
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          fontSize: 10,
+          color: wtError
+            ? "var(--status-error, #e74c3c)"
+            : worktree
+              ? "var(--accent-cyan)"
+              : "var(--muted)",
+          cursor: wtBusy ? "wait" : "pointer",
+          userSelect: "none",
+          opacity: wtBusy ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={worktree}
+          disabled={wtBusy}
+          onChange={(e) => toggleWorktree(e.target.checked)}
+          style={{ width: 13, height: 13, margin: 0, accentColor: "var(--accent-cyan)" }}
+        />
+        Worktree
+        {worktree && worktreeBranch && (
+          <span style={{ color: "var(--accent-cyan)", opacity: 0.85 }}>
+            · {worktreeBranch}
+          </span>
+        )}
+      </label>
+    </span>
+  );
+
   return (
     <div
       data-testid={`terminal-pane-${pane.windowId}`}
@@ -772,9 +944,12 @@ function TerminalPane({
             pushes the branch chip to the far right. The window controls live in
             the leading traffic-light cluster, so nothing trails on the right. */}
         {isBoard && <div style={{ flex: 1, minWidth: 8 }} />}
-        {isBoard && branch && renameDraft == null && (
-          <span
-            title={branch}
+        {renameDraft == null && viewControls}
+        {isBoard && displayBranch && renameDraft == null && (
+          <button
+            title={`Git: ${displayBranch} — trocar branch, commit, stash`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={openGitMenu}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -783,26 +958,36 @@ function TerminalPane({
               fontSize: 11,
               fontFamily: "var(--font-mono)",
               color: "var(--muted)",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              cursor: "pointer",
             }}
           >
             <BranchIcon size={11} />
-            {branch}
-          </span>
+            {displayBranch}
+          </button>
         )}
-        {!isBoard && branch && renameDraft == null && (
-          <span
-            title={branch}
-            aria-label={`git branch ${branch}`}
+        {!isBoard && displayBranch && renameDraft == null && (
+          <button
+            title={`Git: ${displayBranch} — trocar branch, commit, stash`}
+            aria-label={`git branch ${displayBranch}`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={openGitMenu}
             style={{
               display: "inline-flex",
               alignItems: "center",
               flexShrink: 0,
               color: "var(--muted)",
+              background: "transparent",
+              border: "none",
+              padding: 0,
               marginRight: 2,
+              cursor: "pointer",
             }}
           >
             <BranchIcon size={12} />
-          </span>
+          </button>
         )}
         {!isBoard && (
           <>
@@ -840,6 +1025,16 @@ function TerminalPane({
           </button>
         )}
       </div>
+      )}
+
+      {gitMenu.menu && (
+        <ContextMenu position={gitMenu.menu} onClose={gitMenu.close} minWidth={240}>
+          <GitControls
+            workspaceId={pane.workspaceId}
+            worktree={worktreePath}
+            onCurrentBranch={setGitBranch}
+          />
+        </ContextMenu>
       )}
 
       {!chromeless && menu && (
@@ -1038,17 +1233,45 @@ function TerminalPane({
           )}
         </ContextMenu>
       )}
-      <div
-        ref={containerRef}
-        onMouseDown={() => termRef.current?.focus()}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          background: appearance.background,
-          outline: dragOver ? "2px solid var(--accent)" : "none",
-          outlineOffset: "-2px",
-        }}
-      />
+      <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+        <div
+          ref={containerRef}
+          onMouseDown={() => termRef.current?.focus()}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            background: appearance.background,
+            outline: dragOver ? "2px solid var(--accent)" : "none",
+            outlineOffset: "-2px",
+          }}
+        />
+        {/* Repo view: an overlay over the live terminal (never unmounts the
+            xterm host — PTY invariant). Shows the diffs of this terminal's
+            changes; clicking a file opens its diff. Targets the worktree path
+            when isolation is on, else the workspace repo. */}
+        {view === "repo" && (
+          <Suspense
+            fallback={
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 50,
+                  display: "grid",
+                  placeItems: "center",
+                  background: "var(--panel)",
+                  color: "var(--muted)",
+                  fontSize: 12,
+                }}
+              >
+                Carregando editor…
+              </div>
+            }
+          >
+            <RepoDiffPanel workspaceId={pane.workspaceId} worktree={worktreePath} />
+          </Suspense>
+        )}
+      </div>
       </div>
       {/* Quick-command bar: the workspace's most-used commands, one click to
           re-run. Lives outside the clip so it sits flush at the pane's bottom

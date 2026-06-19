@@ -263,6 +263,10 @@ export default function App() {
   // Guards the view-toggle rebuild so a double-click mid-rebuild can't fire a
   // second teardown/reattach over the first.
   const toggleViewBusy = useRef(false);
+  // Workspaces with a reattach in flight. While a workspace is restoring its
+  // terminals, its panes are transiently empty — the persist effect must not
+  // write that empty snapshot back over the saved window IDs it's reading.
+  const reattachingRef = useRef<Set<string>>(new Set());
 
   // Persist window IDs to ui_state for a workspace
   const persistWindowIds = useCallback(
@@ -581,11 +585,14 @@ export default function App() {
     // Reattach terminals for the new workspace
     async function reattach() {
       if (!activeWorkspaceId) return;
-      // Check if we already have panes for this workspace (initial load)
-      const existing = getPanesForWorkspace(activeWorkspaceId);
-      if (existing.length > 0) return;
-
+      // Latch BEFORE the first await so the persist effect (which runs in the
+      // same commit) sees the in-flight flag and skips clobbering our saved IDs.
+      reattachingRef.current.add(activeWorkspaceId);
       try {
+        // Check if we already have panes for this workspace (initial load)
+        const existing = getPanesForWorkspace(activeWorkspaceId);
+        if (existing.length > 0) return;
+
         const stored = await uiStateGet(`terminals:${activeWorkspaceId}`);
         if (!stored) return;
         const windowIds: string[] = JSON.parse(stored);
@@ -617,13 +624,24 @@ export default function App() {
             code: "TERMINALS_NOT_RESTORED",
             message: `${failed} terminal${failed > 1 ? "s" : ""} couldn't be restored — the tmux window${failed > 1 ? "s are" : " is"} gone.`,
           });
+          // Prune the dead windowIds so the next switch doesn't retry them and
+          // re-toast forever. Write the survivors directly — we still hold the
+          // reattach latch, so the persist effect won't race this write.
+          const liveIds = results.flatMap((r) =>
+            r.status === "fulfilled" ? [r.value.windowId] : [],
+          );
+          await uiStateSet(
+            `terminals:${activeWorkspaceId}`,
+            JSON.stringify(liveIds),
+          ).catch(() => {});
         }
-        // Clear stored IDs after successful reattach (they'll be re-persisted on next switch)
-        await uiStateSet(`terminals:${activeWorkspaceId}`, "[]").catch(
-          () => {},
-        );
       } catch {
         // No stored terminals, that's fine
+      } finally {
+        // Reattach done (or bailed) — let the persist effect resume. The newly
+        // added panes trigger it, re-saving the live IDs; the saved value was
+        // never overwritten, so a lost race here just leaves it correct.
+        reattachingRef.current.delete(activeWorkspaceId);
       }
     }
     reattach();
@@ -637,7 +655,7 @@ export default function App() {
 
   // Persist window IDs when panes change (for current workspace)
   useEffect(() => {
-    if (activeWorkspaceId) {
+    if (activeWorkspaceId && !reattachingRef.current.has(activeWorkspaceId)) {
       persistWindowIds(activeWorkspaceId);
     }
   }, [panes, activeWorkspaceId, persistWindowIds]);

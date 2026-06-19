@@ -5,6 +5,7 @@ pub mod claude_sessions;
 pub mod gbrain;
 pub mod gestor;
 pub mod github;
+pub mod repo_view;
 pub mod settings;
 pub mod skills;
 pub mod sync;
