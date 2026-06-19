@@ -29,9 +29,15 @@ pub fn settings_path() -> PathBuf {
 /// `tmux::claude_wrapper_snippet`). Claude Code runs hooks WITHOUT a controlling
 /// terminal, so a bare `/dev/tty` is "not a tty" and the marker is lost — the
 /// explicit pane pty path is what `tmux pipe-pane` actually captures.
+///
+/// The hook JSON arrives on stdin; we pull `session_id` out of it and append it
+/// to the marker (`ade:claude:<state>:<sid>`), so `term_monitor` — which already
+/// reads each pane's stream per `window_id` — can map window→session for titles.
+/// An empty sid (extraction failed) just yields a trailing `:` the scanner drops.
 fn osc_command(state: &str) -> String {
     format!(
-        "printf '\\033]9;ade:claude:{state}\\007' > \"${{ADE_TTY:-/dev/tty}}\" 2>/dev/null || true"
+        "sid=$(sed -n 's/.*\"session_id\":\"\\([^\"]*\\)\".*/\\1/p' | head -1); \
+         printf '\\033]9;ade:claude:{state}:%s\\007' \"$sid\" > \"${{ADE_TTY:-/dev/tty}}\" 2>/dev/null || true"
     )
 }
 
@@ -74,6 +80,9 @@ mod tests {
         let cmd = osc_command("turn-start");
         assert!(cmd.contains("${ADE_TTY"), "must write to $ADE_TTY: {cmd}");
         assert!(cmd.contains("ade:claude:turn-start"));
+        // The marker carries the session id so window→session mapping works.
+        assert!(cmd.contains("session_id"), "must extract session_id: {cmd}");
+        assert!(cmd.contains(":%s"), "marker must append the sid: {cmd}");
         assert!(
             !cmd.contains("> /dev/tty "),
             "bare /dev/tty target regressed: {cmd}"

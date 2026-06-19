@@ -366,6 +366,9 @@ export default function App() {
         const w = useWorkspacesStore.getState();
         const isBackground = p.workspace_id !== w.activeWorkspaceId;
         t.markTerminalClaude(p.window_id);
+        // Learn which Claude session this window runs, so its title resolves
+        // per-pane instead of sharing the workspace's newest session.
+        if (p.session_id) t.setWindowSession(p.window_id, p.session_id);
         if (p.detail === "turn-start") {
           t.setTerminalWaiting(p.window_id, false);
           t.setTerminalWorking(p.window_id, true);

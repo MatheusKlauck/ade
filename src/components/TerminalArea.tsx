@@ -14,6 +14,7 @@ import {
   terminalKillWindow,
   claudeSessions,
   subscribeTerminalAlert,
+  type ClaudeSession,
 } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
 import { useTerminalsStore, normalizeLayout, reorderLayout } from "../store/terminals";
@@ -244,14 +245,13 @@ function MinimizedChip({
 
 type SessionInfo = { title: string; branch: string | null };
 
-// The Claude session each workspace is actively running, by reading the newest
-// transcript under the workspace cwd. ponytail: transcripts share the workspace
-// cwd, so when several claude sessions run in one workspace we can't map a
-// session to a specific window — newest-within-15min wins. Refetch is debounced
-// off terminal-alert; add a "newest-only" backend command if scanning all
-// transcripts per alert ever shows up in a profile.
-function useActiveSessions(panes: OpenTerminal[]): Record<string, SessionInfo | undefined> {
-  const [byWs, setByWs] = useState<Record<string, SessionInfo | undefined>>({});
+// All Claude sessions recorded under each workspace's cwd (newest first). The
+// per-window session id (learned from the Claude hook markers, see App.tsx) then
+// selects which one a given pane shows; the newest-active session is only a
+// fallback until that window's first hook fires. Refetch is debounced off
+// terminal-alert.
+function useActiveSessions(panes: OpenTerminal[]): Record<string, ClaudeSession[]> {
+  const [byWs, setByWs] = useState<Record<string, ClaudeSession[]>>({});
   const wsKey = useMemo(
     () => Array.from(new Set(panes.map((p) => p.workspaceId))).sort().join("|"),
     [panes]
@@ -259,15 +259,10 @@ function useActiveSessions(panes: OpenTerminal[]): Record<string, SessionInfo | 
   const debounce = useRef<number | null>(null);
 
   const refresh = useCallback(() => {
-    const now = Date.now() / 1000;
     for (const wsId of wsKey ? wsKey.split("|") : []) {
       claudeSessions(wsId)
         .then((sessions) => {
-          const active = sessions.find((s) => now - s.lastActive < 15 * 60);
-          setByWs((prev) => ({
-            ...prev,
-            [wsId]: active ? { title: active.title, branch: active.gitBranch } : undefined,
-          }));
+          setByWs((prev) => ({ ...prev, [wsId]: sessions }));
         })
         .catch(() => {}); // cwd/serve unavailable — keep the prior value
     }
@@ -304,7 +299,8 @@ export default function TerminalArea({
   onHighlightDone,
   variant = "classic",
 }: TerminalAreaProps) {
-  const sessionByWs = useActiveSessions(panes);
+  const sessionsByWs = useActiveSessions(panes);
+  const sessionIdByWindow = useTerminalsStore((s) => s.sessionIdByWindow);
   const isBoard = variant === "board";
   const boards = useBoardStore((s) => s.boards);
   const lockedByWorkspace = useTerminalsStore((s) => s.lockedByWorkspace);
@@ -389,8 +385,20 @@ export default function TerminalArea({
   const customNameFor = (pane: OpenTerminal): string | undefined =>
     namesByWorkspace[pane.workspaceId]?.[pane.windowId];
 
-  const sessionFor = (pane: OpenTerminal): SessionInfo | undefined =>
-    sessionByWs[pane.workspaceId];
+  // The session this specific pane runs: the one whose id its Claude hooks
+  // reported (sessionIdByWindow), else the newest-active session in the
+  // workspace as a fallback until that window's first hook fires.
+  const sessionFor = (pane: OpenTerminal): SessionInfo | undefined => {
+    const list = sessionsByWs[pane.workspaceId];
+    if (!list || list.length === 0) return undefined;
+    const sid = sessionIdByWindow[pane.windowId];
+    const now = Date.now() / 1000;
+    const match =
+      (sid && list.find((s) => s.id === sid)) ||
+      list.find((s) => now - s.lastActive < 15 * 60);
+    if (!match) return undefined;
+    return { title: match.title, branch: match.gitBranch };
+  };
 
   // Title: custom name if set, else the linked card/issue (e.g. "#123 | Fix
   // login"), else the active Claude session's title, else "Terminal".

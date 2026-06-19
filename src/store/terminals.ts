@@ -146,6 +146,11 @@ interface TerminalsState {
   setTerminalWaiting: (windowId: string, waiting: boolean) => void;
   // Latch a window as Claude-managed (hooks own its working/veil from now on).
   markTerminalClaude: (windowId: string) => void;
+  // The Claude session UUID each window is running, learned from the Claude
+  // hook markers (see App.tsx terminal-alert handler). Lets the title resolve
+  // per-window instead of sharing the workspace's newest session. In-memory.
+  sessionIdByWindow: Record<string, string>;
+  setWindowSession: (windowId: string, sessionId: string) => void;
   // Drop a window's activity entry (on pane unmount / close).
   clearTerminalActivity: (windowId: string) => void;
   // windowId of the terminal that currently holds keyboard focus (null if none).
@@ -300,6 +305,15 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
         },
       };
     }),
+  sessionIdByWindow: {},
+  setWindowSession: (windowId, sessionId) =>
+    set((s) =>
+      s.sessionIdByWindow[windowId] === sessionId
+        ? s
+        : {
+            sessionIdByWindow: { ...s.sessionIdByWindow, [windowId]: sessionId },
+          }
+    ),
   clearTerminalActivity: (windowId) =>
     set((s) => {
       if (!(windowId in s.activityByWindow)) return s;

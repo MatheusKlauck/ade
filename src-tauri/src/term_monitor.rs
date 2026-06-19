@@ -41,10 +41,15 @@ pub enum Alert {
     /// An app-emitted notification (OSC 9 / OSC 777 notify). Carries the text.
     App(String),
     /// A Claude Code session state transition, surfaced by ADE's own hooks via
-    /// `OSC 9;ade:claude:<state>` (`turn-start` | `turn-end` | `waiting`). See
-    /// `claude_hooks.rs`. Distinct from `App` so the frontend drives the pane's
-    /// comet/veil/pulse rather than a toast.
-    Claude(String),
+    /// `OSC 9;ade:claude:<state>[:<session_id>]` (`turn-start` | `turn-end` |
+    /// `waiting`). See `claude_hooks.rs`. Distinct from `App` so the frontend
+    /// drives the pane's comet/veil/pulse rather than a toast. `session_id` lets
+    /// the frontend map this window to its Claude session for per-pane titles
+    /// (None when the hook couldn't extract it, or for the old sid-less marker).
+    Claude {
+        state: String,
+        session_id: Option<String>,
+    },
     /// The monitored pane reached EOF — the window is gone (e.g. the shell
     /// exited via `exit`). Not produced by the scanner; emitted by the monitor
     /// loop on teardown so the UI can reconcile per-window state (a `Started`
@@ -153,11 +158,20 @@ impl Scanner {
                 emit(Alert::Started);
             }
         } else if let Some(text) = payload.strip_prefix("9;") {
-            if let Some(state) = text.strip_prefix("ade:claude:") {
+            if let Some(rest) = text.strip_prefix("ade:claude:") {
                 // ADE's own marker (see claude_hooks.rs) — a Claude turn boundary,
-                // not a user-facing notification.
+                // not a user-facing notification. Format is `<state>[:<sid>]`; the
+                // sid is optional (empty/absent for the old marker or a failed
+                // extraction), and state never contains a colon.
+                let (state, session_id) = match rest.split_once(':') {
+                    Some((s, sid)) => (s, (!sid.is_empty()).then(|| sid.to_string())),
+                    None => (rest, None),
+                };
                 if !state.is_empty() {
-                    emit(Alert::Claude(state.to_string()));
+                    emit(Alert::Claude {
+                        state: state.to_string(),
+                        session_id,
+                    });
                 }
             } else {
                 // OSC 9;<text> is an iTerm-style notification. ConEmu reuses OSC 9
@@ -267,13 +281,13 @@ fn run_monitor(app: &AppHandle, workspace_id: &str, window_id: &str) {
 }
 
 fn emit(app: &AppHandle, workspace_id: &str, window_id: &str, alert: Alert) {
-    let (kind, detail) = match alert {
-        Alert::Started => ("started", String::new()),
-        Alert::Completed(code) => ("completed", code.unwrap_or_default()),
-        Alert::Bell => ("bell", String::new()),
-        Alert::App(msg) => ("app", msg),
-        Alert::Claude(state) => ("claude", state),
-        Alert::Gone => ("gone", String::new()),
+    let (kind, detail, session_id) = match alert {
+        Alert::Started => ("started", String::new(), String::new()),
+        Alert::Completed(code) => ("completed", code.unwrap_or_default(), String::new()),
+        Alert::Bell => ("bell", String::new(), String::new()),
+        Alert::App(msg) => ("app", msg, String::new()),
+        Alert::Claude { state, session_id } => ("claude", state, session_id.unwrap_or_default()),
+        Alert::Gone => ("gone", String::new(), String::new()),
     };
     let _ = app.emit(
         "evt:terminal-alert",
@@ -282,6 +296,7 @@ fn emit(app: &AppHandle, workspace_id: &str, window_id: &str, alert: Alert) {
             "window_id": window_id,
             "kind": kind,
             "detail": detail,
+            "session_id": session_id,
         }),
     );
 }
@@ -380,11 +395,45 @@ mod tests {
 
     #[test]
     fn claude_state_marker() {
+        // Old sid-less marker: state only, no session id.
         let out = collect(&[b"\x1b]9;ade:claude:turn-start\x07"]);
-        assert_eq!(out, vec![Alert::Claude("turn-start".into())]);
+        assert_eq!(
+            out,
+            vec![Alert::Claude {
+                state: "turn-start".into(),
+                session_id: None
+            }]
+        );
         // ST-terminated and split-chunk variants resolve the same.
         let out = collect(&[b"\x1b]9;ade:cla", b"ude:waiting\x1b\\"]);
-        assert_eq!(out, vec![Alert::Claude("waiting".into())]);
+        assert_eq!(
+            out,
+            vec![Alert::Claude {
+                state: "waiting".into(),
+                session_id: None
+            }]
+        );
+    }
+
+    #[test]
+    fn claude_marker_carries_session_id() {
+        let out = collect(&[b"\x1b]9;ade:claude:turn-start:abc-123\x07"]);
+        assert_eq!(
+            out,
+            vec![Alert::Claude {
+                state: "turn-start".into(),
+                session_id: Some("abc-123".into())
+            }]
+        );
+        // A trailing empty sid (extraction failed) is treated as None.
+        let out = collect(&[b"\x1b]9;ade:claude:turn-end:\x07"]);
+        assert_eq!(
+            out,
+            vec![Alert::Claude {
+                state: "turn-end".into(),
+                session_id: None
+            }]
+        );
     }
 
     #[test]

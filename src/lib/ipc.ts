@@ -591,6 +591,9 @@ export interface TerminalAlertPayload {
   kind: "started" | "completed" | "bell" | "app" | "gone" | "claude";
   // For kind "claude": the session state ("turn-start" | "turn-end" | "waiting").
   detail: string;
+  // For kind "claude": the Claude session UUID that emitted the marker (empty
+  // when the hook couldn't extract it). Lets ADE map window→session for titles.
+  session_id: string;
 }
 
 // Emitted by the backend completion monitor (term_monitor) when a command or app

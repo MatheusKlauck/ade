@@ -23,6 +23,15 @@ const STATUS_COLOR: Record<string, string> = {
 // M/A/D letter convention. Data stays truthful ("?"); only the label changes.
 const STATUS_LABEL: Record<string, string> = { "?": "A" };
 
+const treeActionStyle: React.CSSProperties = {
+  border: "none",
+  background: "transparent",
+  color: "var(--muted)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: 10,
+};
+
 interface Props {
   workspaceId: string;
   /** When the pane runs in an isolated worktree, diffs target that path. */
@@ -43,6 +52,13 @@ export default function RepoDiffPanel({ workspaceId, worktree }: Props) {
   } | null>(null);
 
   const rows = useMemo(() => treeRows(files, collapsed), [files, collapsed]);
+  const allDirs = useMemo(
+    () =>
+      treeRows(files, new Set<string>())
+        .filter((r) => r.type === "dir")
+        .map((r) => (r as { path: string }).path),
+    [files]
+  );
 
   const onRowContextMenu = (
     e: React.MouseEvent,
@@ -117,6 +133,35 @@ export default function RepoDiffPanel({ workspaceId, worktree }: Props) {
           fontFamily: "var(--font-mono, monospace)",
         }}
       >
+        {!error && rows.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 8,
+              padding: "3px 8px",
+              borderBottom: "1px solid var(--border)",
+              position: "sticky",
+              top: 0,
+              background: "var(--panel)",
+            }}
+          >
+            <button
+              onClick={() => setCollapsed(new Set(allDirs))}
+              title="Compactar todas as pastas"
+              style={treeActionStyle}
+            >
+              Compactar tudo
+            </button>
+            <button
+              onClick={() => setCollapsed(new Set())}
+              title="Expandir todas as pastas"
+              style={treeActionStyle}
+            >
+              Expandir tudo
+            </button>
+          </div>
+        )}
         {error ? (
           <div style={{ padding: 10, color: "#e74c3c" }}>{error}</div>
         ) : rows.length === 0 ? (
