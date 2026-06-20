@@ -414,9 +414,13 @@ function TerminalPane({
     // Try WebGL renderer; fallback to canvas is automatic.
     import("@xterm/addon-webgl")
       .then((mod) => {
+        if (!termRef.current) return;
         const webgl = new mod.WebglAddon();
         webglRef.current = webgl;
         term.loadAddon(webgl);
+        // The GL renderer can round the cell to a different size than the canvas
+        // one used at mount — re-fit so the PTY column count tracks the new grid.
+        pushResize();
       })
       .catch(() => {
         // canvas fallback is built-in
@@ -524,23 +528,35 @@ function TerminalPane({
     // call when the grid size didn't actually change.
     let resizeTimer: number | null = null;
     let lastDims: { cols: number; rows: number } | null = null;
+    // Fit the grid and tell the backend the new size — but only when it actually
+    // changed, so divider-drag frames and no-op metric refreshes stay off the IPC
+    // wire. Called both on box-size changes (ResizeObserver) and on the two async
+    // events that resize the glyph cell *without* touching the box — the WebGL
+    // renderer attaching and the terminal font finishing load — either of which
+    // otherwise leaves the PTY wider than the visible grid, so a long line (e.g.
+    // dictated input) overflows right and never wraps.
+    const pushResize = () => {
+      if (!termRef.current) return;
+      const el = containerRef.current;
+      const dims = fit.proposeDimensions();
+      // A hidden pane (display:none) yields a degenerate 2x1 grid; pushing it
+      // to tmux corrupts the view. Only fit + resize at a real size.
+      if (!el || !isUsableResize(el.clientWidth, el.clientHeight, dims)) return;
+      fit.fit();
+      const cols = Math.floor(dims.cols);
+      const rows = Math.floor(dims.rows);
+      if (lastDims && lastDims.cols === cols && lastDims.rows === rows) return;
+      lastDims = { cols, rows };
+      terminalResize(pane.paneId, cols, rows).catch(() => {});
+    };
+    // Once the font is loaded, glyph metrics may differ from the fallback xterm
+    // measured at mount — re-fit so the column count matches what's drawn.
+    document.fonts.ready.then(pushResize).catch(() => {});
     const ro = new ResizeObserver(() => {
       if (resizeTimer != null) window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
         resizeTimer = null;
-        const el = containerRef.current;
-        const dims = fit.proposeDimensions();
-        // A hidden pane (display:none) yields a degenerate 2x1 grid; pushing it
-        // to tmux corrupts the view. Only fit + resize at a real size.
-        if (!el || !isUsableResize(el.clientWidth, el.clientHeight, dims)) return;
-        fit.fit();
-        const cols = Math.floor(dims.cols);
-        const rows = Math.floor(dims.rows);
-        if (lastDims && lastDims.cols === cols && lastDims.rows === rows) {
-          return;
-        }
-        lastDims = { cols, rows };
-        terminalResize(pane.paneId, cols, rows).catch(() => {});
+        pushResize();
       }, 80);
     });
     if (containerRef.current) {
