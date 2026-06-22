@@ -59,6 +59,7 @@ pub fn spawn(
     window_id: String,
     viewer: String,
     root_path: String,
+    bare: bool,
     on_data: impl Fn(Vec<u8>) + Send + 'static,
 ) -> Result<PtyPane, AdeError> {
     let pty_system = portable_pty::native_pty_system();
@@ -87,7 +88,19 @@ pub fn spawn(
     // The PTY is rendered by xterm.js on the frontend, so xterm-256color is the
     // correct, always-present type. Set it explicitly so behavior doesn't depend
     // on how the app was launched (dev shell vs. Finder).
-    cmd.env("TERM", "xterm-256color");
+    // Bare-shell panes attach with a TERM whose alternate-screen caps are stripped
+    // (see tmux::NOALT_TERM): tmux then draws into the primary screen, so xterm.js
+    // keeps real scrollback and the wheel scrolls natively. App/Claude panes keep
+    // the normal alt-screen TERM. Falls back to the normal TERM if `tic` is absent.
+    match bare.then(tmux::ensure_noalt_terminfo).flatten() {
+        Some(dir) => {
+            cmd.env("TERM", tmux::NOALT_TERM);
+            cmd.env("TERMINFO", dir);
+        }
+        None => {
+            cmd.env("TERM", "xterm-256color");
+        }
+    }
     // Propagate locale so UTF-8 input (emojis, accented characters) is accepted.
     // When launched from Finder/launchd the environment has no LANG, causing tmux
     // and the shell to treat input as ASCII and drop/garble multi-byte sequences.
@@ -157,6 +170,7 @@ mod tests {
             win.clone(),
             viewer.clone(),
             root.clone(),
+            false,
             move |bytes| output2.lock().unwrap().extend(bytes),
         )
         .unwrap();

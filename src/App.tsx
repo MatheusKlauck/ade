@@ -666,7 +666,9 @@ export default function App() {
   const handleNewTerminal = async (preset?: TerminalPreset) => {
     if (!activeWorkspaceId) return;
     try {
-      const result = await terminalOpen(activeWorkspaceId);
+      // A preset-less New terminal is a bare shell: open it with native scroll
+      // (no tmux alt-screen / copy-mode) so the wheel scrolls the buffer directly.
+      const result = await terminalOpen(activeWorkspaceId, undefined, !preset);
       const pane: OpenTerminal = {
         paneId: result.paneId,
         windowId: result.windowId,

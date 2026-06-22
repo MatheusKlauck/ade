@@ -25,6 +25,7 @@ async fn lookup_workspace(
 pub async fn terminal_open(
     workspace_id: String,
     window_id: Option<String>,
+    bare_shell: Option<bool>,
     channel: Channel<InvokeResponseBody>,
     app: tauri::AppHandle,
     state: State<'_, std::sync::Arc<crate::AppState>>,
@@ -57,6 +58,16 @@ pub async fn terminal_open(
         .await
         .map_err(|e| AdeError::Tmux(e.to_string()))??
     };
+    // Bare-shell panes render without tmux's alternate screen so xterm.js keeps a
+    // real scrollback to wheel through (native scroll); app/Claude panes keep the
+    // alt-screen + tmux-mouse path. The flag is stamped on the tmux window so it
+    // survives reattach/restart — only a freshly-opened bare pane passes the flag;
+    // reattach reads it back off the window.
+    if bare_shell == Some(true) {
+        let _ = tmux::set_window_bare(&window_id);
+    }
+    let is_bare = tmux::window_is_bare(&window_id);
+
     let slug = &ws.slug;
     let root_path = &ws.root_path;
 
@@ -82,6 +93,7 @@ pub async fn terminal_open(
         window_id.clone(),
         viewer.clone(),
         root_path.clone(),
+        is_bare,
         move |bytes| {
             let _ = channel.send(InvokeResponseBody::Raw(bytes));
         },
@@ -100,7 +112,12 @@ pub async fn terminal_open(
             for _ in 0..100 {
                 if tmux::session_exists(&viewer) {
                     let _ = tmux::viewer_status_off(&viewer);
-                    let _ = tmux::viewer_mouse_on(&viewer);
+                    // Bare-shell panes leave the wheel to xterm.js (native scroll of
+                    // the primary-screen scrollback). Mouse-on would hand the wheel
+                    // to tmux copy-mode instead — only wanted for app/Claude panes.
+                    if !is_bare {
+                        let _ = tmux::viewer_mouse_on(&viewer);
+                    }
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));

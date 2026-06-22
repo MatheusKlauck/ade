@@ -156,10 +156,16 @@ export interface TerminalOpenResult {
 
 export function terminalOpen(
   workspaceId: string,
-  windowId?: string
+  windowId?: string,
+  bareShell?: boolean
 ): Promise<TerminalOpenResult> {
   const channel = new ChannelCtor<unknown>();
-  return invoke("terminal_open", { workspaceId, windowId, channel }).then(
+  return invoke("terminal_open", {
+    workspaceId,
+    windowId,
+    bareShell,
+    channel,
+  }).then(
     (res: unknown) => {
       // Backend serializes snake_case (TerminalOpenResult { pane_id, window_id }),
       // per CONTRACTS §7. Read those keys, not camelCase.

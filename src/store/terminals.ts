@@ -316,14 +316,14 @@ export const useTerminalsStore = create<TerminalsState>((set, get) => ({
     ),
   clearTerminalActivity: (windowId) =>
     set((s) => {
-      const hadActivity = windowId in s.activityByWindow;
-      const hadSession = windowId in s.sessionIdByWindow;
-      if (!hadActivity && !hadSession) return s;
+      if (!(windowId in s.activityByWindow)) return s;
       const activity = { ...s.activityByWindow };
       delete activity[windowId];
-      const session = { ...s.sessionIdByWindow };
-      delete session[windowId];
-      return { activityByWindow: activity, sessionIdByWindow: session };
+      // Drop only the ephemeral comet. The window→session mapping is durable:
+      // a workspace switch unmounts the pane (and runs this) but the tmux
+      // window survives, so clearing the sid here would lose the title until
+      // Claude's next hook re-reports it.
+      return { activityByWindow: activity };
     }),
   focusedWindowId: null,
   lockedByWorkspace: {},

@@ -1,8 +1,17 @@
 use crate::error::AdeError;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 const TMUX_BIN: &str = "tmux";
 const MIN_VERSION: (u32, u32) = (3, 2);
+
+/// TERM for bare-shell viewers: xterm-256color minus the alternate-screen caps.
+/// tmux attached with this draws into the *primary* screen, so xterm.js keeps a
+/// real scrollback the user can wheel through natively — instead of the alt
+/// buffer (no scrollback) that makes a bare prompt unscrollable.
+pub const NOALT_TERM: &str = "xterm-256color-noalt";
 
 /// Check tmux version. Returns Ok(()) if >= 3.2, else TmuxTooOld or TmuxMissing.
 pub fn check_version() -> Result<(), AdeError> {
@@ -393,6 +402,65 @@ pub fn viewer_mouse_on(viewer: &str) -> Result<(), AdeError> {
         ));
     }
     Ok(())
+}
+
+/// Stamp the bare-shell flag on a window. Window-scoped user option, so it never
+/// touches the user's global tmux state, and it lives on the tmux window — which
+/// outlives ADE's viewers — so reattach/restart re-reads it via `window_is_bare`.
+pub fn set_window_bare(window_id: &str) -> Result<(), AdeError> {
+    let out = Command::new(TMUX_BIN)
+        .args(["set-option", "-w", "-t"])
+        .arg(window_id)
+        .args(["@ade_bare", "1"])
+        .output()
+        .map_err(|e| AdeError::Tmux(e.to_string()))?;
+    if !out.status.success() {
+        return Err(AdeError::Tmux(
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a window was opened as a bare shell (see `set_window_bare`). Defaults
+/// to false for untagged windows (app/Claude panes).
+pub fn window_is_bare(window_id: &str) -> bool {
+    Command::new(TMUX_BIN)
+        .args(["show-options", "-wqv", "-t"])
+        .arg(window_id)
+        .arg("@ade_bare")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Compile (once per process) the `NOALT_TERM` terminfo entry into a cache dir and
+/// return that dir, for use as TERMINFO on a bare-shell PTY. Returns None if `tic`
+/// is unavailable — the caller then falls back to the normal TERM (current
+/// behavior), so a missing toolchain degrades gracefully instead of breaking.
+/// ponytail: one shared cache dir, regenerated only when the process restarts.
+pub fn ensure_noalt_terminfo() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join("ade-terminfo");
+        let src = format!(
+            "{}|xterm-256color without alternate screen,\n smcup@, rmcup@, use=xterm-256color,\n",
+            NOALT_TERM
+        );
+        let mut child = Command::new("tic")
+            .args(["-x", "-o"])
+            .arg(&dir)
+            .arg("-")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        child.stdin.take()?.write_all(src.as_bytes()).ok()?;
+        child.wait().ok()?.success().then_some(dir)
+    })
+    .as_deref()
 }
 
 /// Send keys to a window. The command is passed as a single argv element.

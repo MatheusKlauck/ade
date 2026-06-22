@@ -542,11 +542,15 @@ function TerminalPane({
       // A hidden pane (display:none) yields a degenerate 2x1 grid; pushing it
       // to tmux corrupts the view. Only fit + resize at a real size.
       if (!el || !isUsableResize(el.clientWidth, el.clientHeight, dims)) return;
-      fit.fit();
       const cols = Math.floor(dims.cols);
       const rows = Math.floor(dims.rows);
+      // Bail BEFORE fit() when nothing changed: an unconditional fit reflows the
+      // whole buffer, and a redundant reflow (the WebGL-attach / font-load hooks
+      // firing at the size the ResizeObserver already settled, possibly late and
+      // mid-session) re-wraps it and leaves an inline TUI's cursor offset.
       if (lastDims && lastDims.cols === cols && lastDims.rows === rows) return;
       lastDims = { cols, rows };
+      fit.fit();
       terminalResize(pane.paneId, cols, rows).catch(() => {});
     };
     // Once the font is loaded, glyph metrics may differ from the fallback xterm

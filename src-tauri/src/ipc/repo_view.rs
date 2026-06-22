@@ -74,7 +74,10 @@ pub async fn repo_changes(
     let out = tokio::task::spawn_blocking(move || {
         // -z: NUL-separated, paths verbatim and unquoted — names with spaces or
         // unicode survive (plain --porcelain octal-escapes and quotes them).
-        git(&base, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        git(
+            &base,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )
     })
     .await
     .map_err(|e| AdeError::Other(e.to_string()))??;
@@ -153,17 +156,26 @@ pub async fn worktree_add(
     state: State<'_, Arc<crate::AppState>>,
 ) -> Result<WorktreeInfo, AdeError> {
     let root = repo_root(&workspace_id, None, &state).await?;
-    let short: String = pane_id.chars().filter(|c| c.is_alphanumeric()).take(8).collect();
+    let short: String = pane_id
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .take(8)
+        .collect();
     let branch = format!("ade-wt/{short}");
 
     let root_path = Path::new(&root);
-    let parent = root_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| root_path.to_path_buf());
+    let parent = root_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| root_path.to_path_buf());
     let reponame = root_path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".into());
     // Sibling dir so the worktree never shows up as untracked inside the repo.
-    let wt_path = parent.join(".ade-worktrees").join(format!("{reponame}-{short}"));
+    let wt_path = parent
+        .join(".ade-worktrees")
+        .join(format!("{reponame}-{short}"));
     let wt_str = wt_path.to_string_lossy().into_owned();
 
     let root2 = root.clone();
@@ -200,7 +212,11 @@ pub async fn worktree_add(
     .await
     .map_err(|e| AdeError::Other(e.to_string()))??;
 
-    Ok(WorktreeInfo { path: wt_str, branch, root })
+    Ok(WorktreeInfo {
+        path: wt_str,
+        branch,
+        root,
+    })
 }
 
 #[tauri::command]
