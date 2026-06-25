@@ -1,7 +1,11 @@
-// Lists the Claude Code sessions recorded for a workspace's cwd so the user can
-// resume one (`claude --resume <id>`) instead of always starting fresh. Claude
-// stores transcripts at ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl,
-// where the cwd is encoded by replacing every `/` and `.` with `-`.
+// Lists the coding-agent sessions recorded for a workspace's cwd so the user can
+// resume one instead of always starting fresh. Each agent stores sessions
+// differently:
+//   - claude:   ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl  (cwd: `/`+`.` → `-`)
+//   - pi:       ~/.pi/agent/sessions/<dir>/<ts>_<uuid>.jsonl    (header line has cwd)
+//   - opencode: ~/.local/share/opencode/opencode.db  (sqlite `session` table)
+// The resume command itself is built on the frontend (claude --resume / pi
+// --session / opencode --session); here we just enumerate the sessions.
 
 use crate::error::AdeError;
 use crate::AppState;
@@ -13,8 +17,9 @@ use std::time::UNIX_EPOCH;
 use tauri::State;
 
 #[derive(Debug, serde::Serialize, PartialEq)]
-pub struct ClaudeSession {
-    /// Session UUID — passed verbatim to `claude --resume <id>`.
+pub struct AgentSession {
+    /// Session id — passed to the agent's resume flag (claude `--resume`, pi/
+    /// opencode `--session`).
     pub id: String,
     /// AI-generated title when present, else the first user prompt, else a stub.
     pub title: String,
@@ -219,15 +224,15 @@ pub(crate) fn session_note_for(cwd: &str) -> Option<(String, String)> {
     Some(build_note(&uuid, &harvest_scan(&path)))
 }
 
-/// Read all sessions under a workspace cwd, newest first.
-fn read_sessions(cwd: &str) -> Vec<ClaudeSession> {
+/// Read all Claude sessions under a workspace cwd, newest first.
+fn read_sessions_claude(cwd: &str) -> Vec<AgentSession> {
     let Some(dir) = projects_dir(cwd) else {
         return vec![];
     };
     let Ok(entries) = fs::read_dir(&dir) else {
         return vec![]; // no sessions yet for this cwd
     };
-    let mut out: Vec<ClaudeSession> = entries
+    let mut out: Vec<AgentSession> = entries
         .flatten()
         .filter_map(|e| {
             let path = e.path();
@@ -235,18 +240,12 @@ fn read_sessions(cwd: &str) -> Vec<ClaudeSession> {
                 return None;
             }
             let id = path.file_stem()?.to_str()?.to_string();
-            let last_active = e
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let last_active = mtime_secs(&e.path());
             let (ai_title, first_user, git_branch) = scan_transcript(&path);
             let title = ai_title
                 .or(first_user)
                 .unwrap_or_else(|| "(untitled session)".to_string());
-            Some(ClaudeSession {
+            Some(AgentSession {
                 id,
                 title,
                 last_active,
@@ -258,17 +257,181 @@ fn read_sessions(cwd: &str) -> Vec<ClaudeSession> {
     out
 }
 
+/// A file's mtime as epoch seconds (0 if unavailable).
+fn mtime_secs(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The `cwd` recorded in a pi session file's header (its first JSONL line:
+/// `{"type":"session", "cwd": "...", ...}`).
+fn pi_header_cwd(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut first = String::new();
+    BufReader::new(file).read_line(&mut first).ok()?;
+    let v: serde_json::Value = serde_json::from_str(first.trim()).ok()?;
+    (v.get("type")?.as_str()? == "session")
+        .then(|| v.get("cwd").and_then(|c| c.as_str()).map(str::to_string))
+        .flatten()
+}
+
+/// (session id, title) for a pi session file. The id is the uuid from the header
+/// (`pi --session <uuid>` resumes it); the title is the first user prompt's text.
+fn pi_session_meta(path: &Path) -> Option<(String, String)> {
+    let file = fs::File::open(path).ok()?;
+    let mut id = None;
+    let mut title = None;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if id.is_none() && line.contains("\"session\"") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("session") {
+                    id = v.get("id").and_then(|i| i.as_str()).map(str::to_string);
+                }
+            }
+        } else if title.is_none() && line.contains("\"role\":\"user\"") {
+            // {"type":"message","message":{"role":"user","content":[{"type":"text","text":"…"}]}}
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                    let t: String = blocks
+                        .iter()
+                        .find(|b| b.get("type").and_then(|x| x.as_str()) == Some("text"))
+                        .and_then(|b| b.get("text").and_then(|x| x.as_str()))
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(80)
+                        .collect();
+                    if !t.is_empty() {
+                        title = Some(t);
+                    }
+                }
+            }
+        }
+        if id.is_some() && title.is_some() {
+            break;
+        }
+    }
+    Some((id?, title.unwrap_or_else(|| "(untitled session)".to_string())))
+}
+
+/// Read all pi sessions for a workspace cwd, newest first. pi encodes the cwd
+/// into the session dir name with a scheme we don't replicate; instead we find
+/// the matching dir by reading any session header's `cwd`.
+fn read_sessions_pi(cwd: &str) -> Vec<AgentSession> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return vec![];
+    };
+    let root = Path::new(&home).join(".pi").join("agent").join("sessions");
+    let Ok(dirs) = fs::read_dir(&root) else {
+        return vec![];
+    };
+    let mut out: Vec<AgentSession> = vec![];
+    for d in dirs.flatten() {
+        let dir = d.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let jsonls: Vec<PathBuf> = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect();
+        // All files in a per-cwd dir share the cwd, so one header check suffices.
+        if jsonls
+            .first()
+            .and_then(|p| pi_header_cwd(p))
+            .as_deref()
+            != Some(cwd)
+        {
+            continue;
+        }
+        for path in jsonls {
+            if let Some((id, title)) = pi_session_meta(&path) {
+                out.push(AgentSession {
+                    id,
+                    title,
+                    last_active: mtime_secs(&path),
+                    git_branch: None,
+                });
+            }
+        }
+        break; // found the matching project dir
+    }
+    out.sort_by_key(|b| std::cmp::Reverse(b.last_active));
+    out
+}
+
+/// Read all opencode root sessions for a workspace cwd, newest first. opencode
+/// stores sessions in a sqlite db; we read it read-only. Forked/child sessions
+/// (`parent_id IS NOT NULL`) are skipped — only resumable roots are listed.
+async fn read_sessions_opencode(cwd: &str) -> Vec<AgentSession> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return vec![];
+    };
+    let db = Path::new(&home)
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db");
+    if !db.exists() {
+        return vec![];
+    }
+    // NOT read_only: SQLite can't open a WAL database read-only (it needs write
+    // access to the -shm wal-index). WAL is built for concurrent readers, and our
+    // query is SELECT-only, so a normal connection reads the latest data safely.
+    // create_if_missing(false) guarantees we never write/create opencode's db.
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db)
+        .create_if_missing(false);
+    let Ok(pool) = sqlx::SqlitePool::connect_with(opts).await else {
+        return vec![];
+    };
+    let rows = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT id, title, time_updated FROM session \
+         WHERE directory = ?1 AND parent_id IS NULL ORDER BY time_updated DESC",
+    )
+    .bind(cwd)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+    pool.close().await;
+    rows.into_iter()
+        .map(|(id, title, t)| AgentSession {
+            id,
+            title,
+            last_active: t / 1000, // opencode stores ms; ClaudeSession uses secs
+            git_branch: None,
+        })
+        .collect()
+}
+
 #[tauri::command]
-pub async fn claude_sessions(
+pub async fn agent_sessions(
     state: State<'_, Arc<AppState>>,
     workspace_id: String,
-) -> Result<Vec<ClaudeSession>, AdeError> {
+    agent: String,
+) -> Result<Vec<AgentSession>, AdeError> {
     let ws = crate::repo::workspace_by_id(&state.db, &workspace_id).await?;
     let cwd = ws.root_path.clone();
-    // File I/O off the tokio workers that serve keystrokes (same as skills_list).
-    tokio::task::spawn_blocking(move || read_sessions(&cwd))
-        .await
-        .map_err(|e| AdeError::Other(e.to_string()))
+    match agent.as_str() {
+        "opencode" => Ok(read_sessions_opencode(&cwd).await),
+        // claude/pi are pure file I/O — keep it off the keystroke workers.
+        other => {
+            let other = other.to_string();
+            tokio::task::spawn_blocking(move || match other.as_str() {
+                "pi" => read_sessions_pi(&cwd),
+                _ => read_sessions_claude(&cwd),
+            })
+            .await
+            .map_err(|e| AdeError::Other(e.to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -307,9 +470,9 @@ mod tests {
         // A non-jsonl sibling is ignored.
         fs::write(proj.join("note.txt"), "x").unwrap();
 
-        // read_sessions reads $HOME/.claude/projects; point HOME at the temp dir.
+        // read_sessions_claude reads $HOME/.claude/projects; point HOME at temp.
         std::env::set_var("HOME", dir.path());
-        let sessions = read_sessions("/tmp/ws");
+        let sessions = read_sessions_claude("/tmp/ws");
 
         assert_eq!(sessions.len(), 2);
         let by_id = |id: &str| sessions.iter().find(|s| s.id == id).unwrap();

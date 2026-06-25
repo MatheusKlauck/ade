@@ -196,7 +196,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("ledger");
   // Whether the board view's lower Kanban panel is expanded. Collapsing it hands
   // the whole area to the terminal stage; toggled from the status bar.
-  const [boardOpen, setBoardOpen] = useState(true);
+  const [boardOpen, setBoardOpen] = useState(false);
   const toastIdRef = useRef(0);
 
   // Append a toast to the stack (capped; errors never silently dropped).
@@ -355,18 +355,19 @@ export default function App() {
         w.markTerminalWaiting(p.workspace_id, p.window_id, false);
         return;
       }
-      if (p.kind === "claude") {
-        // Authoritative turn state from ADE's Claude Code hooks (claude_hooks.rs).
+      if (p.kind === "claude" || p.kind === "pi" || p.kind === "opencode") {
+        // Authoritative turn state from ADE's per-agent hooks/shims (the alert
+        // `kind` IS the agent kind — see claude_hooks.rs / agent_shims.rs).
         // Drives BOTH the pane's affordances (terminals store, for the active
         // workspace) AND the workspace tab's comet/veil/pulse (workspaces store,
         // viewer-independent — so a background workspace surfaces it on its tab).
-        // Latches the window Claude-managed so the pane's screen-scrape fallback
-        // backs off.
+        // Latches the window's detected agent so the pane's screen-scrape
+        // fallback backs off and the resume menu knows which agent to list.
         const t = useTerminalsStore.getState();
         const w = useWorkspacesStore.getState();
         const isBackground = p.workspace_id !== w.activeWorkspaceId;
-        t.markTerminalClaude(p.window_id);
-        // Learn which Claude session this window runs, so its title resolves
+        t.markTerminalAgent(p.window_id, p.kind);
+        // Learn which agent session this window runs, so its title resolves
         // per-pane instead of sharing the workspace's newest session.
         if (p.session_id) t.setWindowSession(p.window_id, p.session_id);
         if (p.detail === "turn-start") {

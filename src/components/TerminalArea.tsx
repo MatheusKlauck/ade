@@ -12,9 +12,10 @@ import TerminalTile from "./terminal/TerminalTile";
 import ResizeDivider from "./terminal/ResizeDivider";
 import {
 	terminalKillWindow,
-	claudeSessions,
+	agentSessions,
 	subscribeTerminalAlert,
-	type ClaudeSession,
+	type AgentSession,
+	type AgentKind,
 } from "../lib/ipc";
 import { useBoardStore } from "../store/board";
 import {
@@ -254,10 +255,12 @@ type SessionInfo = { title: string; branch: string | null };
 // selects which one a given pane shows; a window with no known session id gets
 // a neutral placeholder title instead of borrowing another window's session.
 // Refetch is debounced off terminal-alert.
+const AGENT_KINDS: AgentKind[] = ["claude", "pi", "opencode"];
+
 function useActiveSessions(
 	panes: OpenTerminal[],
-): Record<string, ClaudeSession[]> {
-	const [byWs, setByWs] = useState<Record<string, ClaudeSession[]>>({});
+): Record<string, AgentSession[]> {
+	const [byWs, setByWs] = useState<Record<string, AgentSession[]>>({});
 	const wsKey = useMemo(
 		() =>
 			Array.from(new Set(panes.map((p) => p.workspaceId)))
@@ -269,9 +272,13 @@ function useActiveSessions(
 
 	const refresh = useCallback(() => {
 		for (const wsId of wsKey ? wsKey.split("|") : []) {
-			claudeSessions(wsId)
-				.then((sessions) => {
-					setByWs((prev) => ({ ...prev, [wsId]: sessions }));
+			// Merge every agent's sessions for the cwd: a window's per-pane session
+			// id (from the turn markers) is matched across the union, so a pi or
+			// opencode pane resolves its title without knowing the agent up front.
+			Promise.all(AGENT_KINDS.map((a) => agentSessions(wsId, a)))
+				.then((lists) => {
+					const merged = lists.flat();
+					setByWs((prev) => ({ ...prev, [wsId]: merged }));
 				})
 				.catch(() => {}); // cwd/serve unavailable — keep the prior value
 		}

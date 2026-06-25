@@ -9,13 +9,15 @@ import {
 import {
   boardGet,
   cardMove,
-  claudeSessions,
+  agentSessions,
+  resumeCommand,
   terminalClose,
   terminalResize,
   terminalWrite,
   worktreeAdd,
   worktreeRemove,
-  type ClaudeSession,
+  type AgentSession,
+  type AgentKind,
 } from "../lib/ipc";
 // Lazy so Monaco (a few MB) only loads the first time a pane opens the Repo
 // view — it stays out of the initial app bundle entirely.
@@ -279,7 +281,9 @@ function TerminalPane({
   // Claude session picker: null = menu shows normal items; an array = menu shows
   // the resumable sessions ("Open session" was picked). Reset whenever the menu
   // closes so the next right-click starts on the normal items.
-  const [sessionList, setSessionList] = useState<ClaudeSession[] | null>(null);
+  const [sessionList, setSessionList] = useState<
+    Array<AgentSession & { agent: AgentKind }> | null
+  >(null);
   const dismissMenu = () => {
     setSessionList(null);
     closeMenu();
@@ -476,11 +480,11 @@ function TerminalPane({
     const updateWorking = () => {
       const t = termRef.current;
       if (!t) return;
-      // Once ADE's Claude hooks have spoken for this window (claude_hooks.rs),
-      // they authoritatively own working/veil/waiting — back the screen-scrape
-      // fallback off so the two don't fight. It stays active until the first
-      // hook fires (or forever if hooks aren't installed).
-      if (acts().activityByWindow[windowId]?.claude) return;
+      // Once an agent's turn markers have spoken for this window (claude_hooks.rs
+      // / agent_shims.rs), they authoritatively own working/veil/waiting — back
+      // the screen-scrape fallback off so the two don't fight. It stays active
+      // until the first marker fires (or forever if no agent runs here).
+      if (acts().activityByWindow[windowId]?.agentKind) return;
       const buf = t.buffer.active;
       let hit = false;
       for (let i = buf.baseY; i < buf.baseY + t.rows; i++) {
@@ -1162,8 +1166,23 @@ function TerminalPane({
               }}
               onClick={() => {
                 // Swap the menu into the session picker (loaded async). Stays open.
-                claudeSessions(pane.workspaceId)
-                  .then(setSessionList)
+                // Fetch every agent's sessions and tag each with its agent so the
+                // right resume command runs, regardless of which agent ran here.
+                const kinds: AgentKind[] = ["claude", "pi", "opencode"];
+                Promise.all(
+                  kinds.map((agent) =>
+                    agentSessions(pane.workspaceId, agent).then((ss) =>
+                      ss.map((s) => ({ ...s, agent })),
+                    ),
+                  ),
+                )
+                  .then((lists) =>
+                    setSessionList(
+                      lists
+                        .flat()
+                        .sort((a, b) => b.lastActive - a.lastActive),
+                    ),
+                  )
                   .catch(() => setSessionList([]));
               }}
             >
@@ -1184,7 +1203,7 @@ function TerminalPane({
                   color: "var(--muted)",
                 }}
               >
-                Resume Claude session
+                Resume session
               </div>
               {sessionList.length === 0 ? (
                 <div
@@ -1199,8 +1218,8 @@ function TerminalPane({
               ) : (
                 sessionList.map((s) => (
                   <button
-                    key={s.id}
-                    title={`claude --resume ${s.id}`}
+                    key={`${s.agent}:${s.id}`}
+                    title={resumeCommand(s.agent, s.id)}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = "var(--panel)";
                     }}
@@ -1210,7 +1229,7 @@ function TerminalPane({
                     onClick={() => {
                       terminalWrite(
                         pane.paneId,
-                        `claude --resume ${s.id}\r`,
+                        `${resumeCommand(s.agent, s.id)}\r`,
                       ).catch(() => {});
                       dismissMenu();
                     }}
@@ -1243,7 +1262,7 @@ function TerminalPane({
                         color: "var(--muted)",
                       }}
                     >
-                      {relativeSessionTime(s.lastActive)}
+                      {s.agent} · {relativeSessionTime(s.lastActive)}
                       {s.gitBranch ? ` · ${s.gitBranch}` : ""}
                     </div>
                   </button>

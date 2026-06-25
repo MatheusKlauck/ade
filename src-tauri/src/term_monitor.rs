@@ -40,13 +40,16 @@ pub enum Alert {
     Bell,
     /// An app-emitted notification (OSC 9 / OSC 777 notify). Carries the text.
     App(String),
-    /// A Claude Code session state transition, surfaced by ADE's own hooks via
-    /// `OSC 9;ade:claude:<state>[:<session_id>]` (`turn-start` | `turn-end` |
-    /// `waiting`). See `claude_hooks.rs`. Distinct from `App` so the frontend
-    /// drives the pane's comet/veil/pulse rather than a toast. `session_id` lets
-    /// the frontend map this window to its Claude session for per-pane titles
-    /// (None when the hook couldn't extract it, or for the old sid-less marker).
-    Claude {
+    /// A coding-agent turn-state transition for one of the known agents (`claude`
+    /// | `pi` | `opencode`), surfaced by ADE's own hooks/shims via
+    /// `OSC 9;ade:<kind>:<state>[:<session_id>]` (`turn-start` | `turn-end` |
+    /// `waiting`). See `claude_hooks.rs` (claude) and `agent_shims.rs` (pi,
+    /// opencode). Distinct from `App` so the frontend drives the pane's
+    /// comet/veil/pulse rather than a toast. `session_id` maps this window to its
+    /// agent session for per-pane titles (None when the shim couldn't extract it,
+    /// or for the old sid-less marker).
+    Agent {
+        kind: String,
         state: String,
         session_id: Option<String>,
     },
@@ -158,20 +161,27 @@ impl Scanner {
                 emit(Alert::Started);
             }
         } else if let Some(text) = payload.strip_prefix("9;") {
-            if let Some(rest) = text.strip_prefix("ade:claude:") {
-                // ADE's own marker (see claude_hooks.rs) — a Claude turn boundary,
-                // not a user-facing notification. Format is `<state>[:<sid>]`; the
-                // sid is optional (empty/absent for the old marker or a failed
-                // extraction), and state never contains a colon.
-                let (state, session_id) = match rest.split_once(':') {
-                    Some((s, sid)) => (s, (!sid.is_empty()).then(|| sid.to_string())),
-                    None => (rest, None),
-                };
-                if !state.is_empty() {
-                    emit(Alert::Claude {
-                        state: state.to_string(),
-                        session_id,
-                    });
+            if let Some(rest) = text.strip_prefix("ade:") {
+                // ADE's own agent turn marker (see claude_hooks.rs / agent_shims.rs)
+                // — a turn boundary, not a user-facing notification. Format is
+                // `<kind>:<state>[:<sid>]`; kind is one of the known agents, the
+                // sid is optional (empty/absent for a failed extraction or the old
+                // marker), and state never contains a colon. Unknown `ade:` kinds
+                // are dropped (our namespace), not surfaced as notifications.
+                if let Some((kind, tail)) = rest.split_once(':') {
+                    if matches!(kind, "claude" | "pi" | "opencode") {
+                        let (state, session_id) = match tail.split_once(':') {
+                            Some((s, sid)) => (s, (!sid.is_empty()).then(|| sid.to_string())),
+                            None => (tail, None),
+                        };
+                        if !state.is_empty() {
+                            emit(Alert::Agent {
+                                kind: kind.to_string(),
+                                state: state.to_string(),
+                                session_id,
+                            });
+                        }
+                    }
                 }
             } else {
                 // OSC 9;<text> is an iTerm-style notification. ConEmu reuses OSC 9
@@ -281,13 +291,19 @@ fn run_monitor(app: &AppHandle, workspace_id: &str, window_id: &str) {
 }
 
 fn emit(app: &AppHandle, workspace_id: &str, window_id: &str, alert: Alert) {
-    let (kind, detail, session_id) = match alert {
-        Alert::Started => ("started", String::new(), String::new()),
-        Alert::Completed(code) => ("completed", code.unwrap_or_default(), String::new()),
-        Alert::Bell => ("bell", String::new(), String::new()),
-        Alert::App(msg) => ("app", msg, String::new()),
-        Alert::Claude { state, session_id } => ("claude", state, session_id.unwrap_or_default()),
-        Alert::Gone => ("gone", String::new(), String::new()),
+    let (kind, detail, session_id): (String, String, String) = match alert {
+        Alert::Started => ("started".into(), String::new(), String::new()),
+        Alert::Completed(code) => ("completed".into(), code.unwrap_or_default(), String::new()),
+        Alert::Bell => ("bell".into(), String::new(), String::new()),
+        Alert::App(msg) => ("app".into(), msg, String::new()),
+        // The alert `kind` IS the agent kind ("claude" | "pi" | "opencode") so the
+        // frontend can route turn-state per agent without a separate field.
+        Alert::Agent {
+            kind,
+            state,
+            session_id,
+        } => (kind, state, session_id.unwrap_or_default()),
+        Alert::Gone => ("gone".into(), String::new(), String::new()),
     };
     let _ = app.emit(
         "evt:terminal-alert",
@@ -394,12 +410,13 @@ mod tests {
     }
 
     #[test]
-    fn claude_state_marker() {
+    fn agent_state_marker() {
         // Old sid-less marker: state only, no session id.
         let out = collect(&[b"\x1b]9;ade:claude:turn-start\x07"]);
         assert_eq!(
             out,
-            vec![Alert::Claude {
+            vec![Alert::Agent {
+                kind: "claude".into(),
                 state: "turn-start".into(),
                 session_id: None
             }]
@@ -408,28 +425,44 @@ mod tests {
         let out = collect(&[b"\x1b]9;ade:cla", b"ude:waiting\x1b\\"]);
         assert_eq!(
             out,
-            vec![Alert::Claude {
+            vec![Alert::Agent {
+                kind: "claude".into(),
                 state: "waiting".into(),
                 session_id: None
             }]
         );
+        // pi and opencode markers parse to their own kind.
+        let out = collect(&[b"\x1b]9;ade:pi:turn-start\x07"]);
+        assert_eq!(
+            out,
+            vec![Alert::Agent {
+                kind: "pi".into(),
+                state: "turn-start".into(),
+                session_id: None
+            }]
+        );
+        // An unknown agent kind is dropped, not surfaced as a notification.
+        let out = collect(&[b"\x1b]9;ade:bogus:turn-start\x07"]);
+        assert_eq!(out, vec![]);
     }
 
     #[test]
-    fn claude_marker_carries_session_id() {
-        let out = collect(&[b"\x1b]9;ade:claude:turn-start:abc-123\x07"]);
+    fn agent_marker_carries_session_id() {
+        let out = collect(&[b"\x1b]9;ade:opencode:turn-start:ses_abc123\x07"]);
         assert_eq!(
             out,
-            vec![Alert::Claude {
+            vec![Alert::Agent {
+                kind: "opencode".into(),
                 state: "turn-start".into(),
-                session_id: Some("abc-123".into())
+                session_id: Some("ses_abc123".into())
             }]
         );
         // A trailing empty sid (extraction failed) is treated as None.
         let out = collect(&[b"\x1b]9;ade:claude:turn-end:\x07"]);
         assert_eq!(
             out,
-            vec![Alert::Claude {
+            vec![Alert::Agent {
+                kind: "claude".into(),
                 state: "turn-end".into(),
                 session_id: None
             }]

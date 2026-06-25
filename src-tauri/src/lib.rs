@@ -5,6 +5,7 @@ pub mod gbrain;
 pub mod gestor;
 pub mod notify;
 
+mod agent_shims;
 mod claude_hooks;
 mod gh;
 mod gitlocal;
@@ -286,10 +287,14 @@ pub fn run() {
             if reaped > 0 {
                 eprintln!("reaped {reaped} stranded tmux viewer session(s)");
             }
-            // Write the ADE-owned Claude hooks settings file up front so the
-            // first window's `claude` wrapper has it. (Also (re)written by
-            // ensure_integration_script per window — this just warms it early.)
-            std::thread::spawn(claude_hooks::ensure);
+            // Write each agent's turn-state shim file up front so the first
+            // window's wrapper functions have them. (Also (re)written by
+            // ensure_integration_script per window — this just warms them early.)
+            std::thread::spawn(|| {
+                claude_hooks::ensure();
+                agent_shims::ensure_pi();
+                agent_shims::ensure_opencode();
+            });
             // Register the OS-native credential store (macOS Keychain / Windows
             // Credential Manager / Linux Secret Service) as keyring-core's
             // default. keyring-core's Entry::new() has NO store until one is set
@@ -373,7 +378,7 @@ pub fn run() {
             ipc::repo_view::git_stash,
             ipc::sync::sync_now,
             ipc::skills::skills_list,
-            ipc::claude_sessions::claude_sessions,
+            ipc::claude_sessions::agent_sessions,
             ipc::gbrain::gbrain_status,
             ipc::gbrain::gbrain_query,
             ipc::gbrain::gbrain_identity,

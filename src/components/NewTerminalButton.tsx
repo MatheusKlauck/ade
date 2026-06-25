@@ -3,9 +3,25 @@ import { useSettingsStore, type TerminalPreset } from "../store/settings";
 import { ChevronIcon } from "./icons";
 import { menuItemBlockStyle as menuItemStyle } from "./ContextMenu";
 
+// The coding agents ADE can launch directly. Each opens a plain terminal that
+// runs the agent CLI via an ad-hoc preset (presets already drive the launch
+// path); ADE's shell wrappers add the turn-state shims, so the comet/veil/pulse
+// and session resume work the same as for a hand-typed `claude`/`pi`/`opencode`.
+const AGENTS = ["claude", "pi", "opencode"] as const;
+
+const agentPreset = (name: string): TerminalPreset => ({
+  id: `agent-${name}`,
+  name,
+  openCommands: [name],
+  closeCommands: [],
+  delaySecs: 0,
+  injectTask: false,
+});
+
 /** Split "New terminal" control: the main button opens a plain shell, the caret
- * opens a menu of the workspace's terminal presets. Each preset opens a terminal
- * that runs its command (and, when applicable, injects the task prompt). */
+ * opens a menu of agent quick-launches and the workspace's terminal presets.
+ * Each preset opens a terminal that runs its command (and, when applicable,
+ * injects the task prompt). */
 export default function NewTerminalButton({
   onNewTerminal,
 }: {
@@ -94,6 +110,20 @@ export default function NewTerminalButton({
           <button role="menuitem" onClick={() => pick()} style={menuItemStyle}>
             Plain shell
           </button>
+          <div
+            style={{ height: 1, background: "var(--border)", margin: "4px 0" }}
+          />
+          {AGENTS.map((a) => (
+            <button
+              key={a}
+              role="menuitem"
+              onClick={() => pick(agentPreset(a))}
+              title={a}
+              style={menuItemStyle}
+            >
+              New with {a}
+            </button>
+          ))}
           {presets.length > 0 && (
             <div
               style={{
